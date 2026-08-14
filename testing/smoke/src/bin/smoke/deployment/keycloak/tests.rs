@@ -16,8 +16,8 @@ use veoveo_deploy_contract::{
 
 use super::{
     CERT_MOUNT_DESTINATION, KEY_MOUNT_DESTINATION, KEYCLOAK_ENV_VARS, KEYCLOAK_IMAGE,
-    LOCAL_KEYCLOAK_CONFIG_DIGEST_LABEL, REALM_MOUNT_DESTINATION, ensure_generated_public_files,
-    profile_requires_local_keycloak, startup_args,
+    LOCAL_KEYCLOAK_CONFIG_DIGEST_LABEL, REALM_MOUNT_DESTINATION,
+    ensure_generated_public_files_with, profile_requires_local_keycloak, startup_args,
 };
 use super::{
     container::{
@@ -119,7 +119,8 @@ fn structural_validation_does_not_require_or_create_runtime_state() {
 #[test]
 fn generated_ca_is_held_consistent_through_activation_preparation() {
     let fixture = fixture();
-    let generated = ensure_generated_public_files(&fixture.profile).expect("generate CA");
+    let generated =
+        ensure_generated_public_files_with(&fixture.profile, |_, _| Ok(())).expect("generate CA");
     let activation = prepare_gateway_activation(&fixture.profile, &generated)
         .expect("prepare activation")
         .expect("activation exists");
@@ -130,6 +131,23 @@ fn generated_ca_is_held_consistent_through_activation_preparation() {
         activation.data["ca.pem"],
         fs::read_to_string(generation.ca_path).unwrap()
     );
+}
+
+#[test]
+fn generated_public_files_reconcile_keycloak_before_returning() {
+    use std::cell::Cell;
+
+    let fixture = fixture();
+    let reconciled = Cell::new(0_u8);
+    let generated = ensure_generated_public_files_with(&fixture.profile, |profile, _lock| {
+        assert!(std::ptr::eq(profile, &fixture.profile));
+        reconciled.set(reconciled.get() + 1);
+        Ok(())
+    })
+    .expect("materialize and reconcile local Keycloak");
+
+    assert_eq!(reconciled.get(), 1);
+    assert!(generated.path("ca.pem").is_some());
 }
 
 #[test]
@@ -149,14 +167,7 @@ fn invalid_and_traversal_current_pointers_are_rejected() {
 #[test]
 fn valid_material_under_the_wrong_digest_name_is_rejected() {
     let fixture = fixture();
-    let cluster = fixture
-        .profile
-        .definition
-        .kubernetes
-        .local_cluster
-        .as_ref()
-        .unwrap();
-    let lock = StateLock::acquire(&cluster.name).unwrap();
+    let lock = StateLock::acquire().unwrap();
     let generation = ensure_generation(&fixture.profile.repository, &lock).unwrap();
     let wrong_digest = "a".repeat(64);
     let wrong_dir = generation_directory(&fixture.profile.repository, &wrong_digest);
@@ -172,14 +183,7 @@ fn valid_material_under_the_wrong_digest_name_is_rejected() {
 #[test]
 fn generated_material_is_cryptographically_valid() {
     let fixture = fixture();
-    let cluster = fixture
-        .profile
-        .definition
-        .kubernetes
-        .local_cluster
-        .as_ref()
-        .unwrap();
-    let lock = StateLock::acquire(&cluster.name).unwrap();
+    let lock = StateLock::acquire().unwrap();
     let generation = ensure_generation(&fixture.profile.repository, &lock).unwrap();
     validate_generation(
         &generation.ca_path,
@@ -234,14 +238,7 @@ fn mismatched_private_key_and_signing_ca_are_rejected() {
 #[test]
 fn ensure_replaces_a_corrupt_active_generation() {
     let fixture = fixture();
-    let cluster = fixture
-        .profile
-        .definition
-        .kubernetes
-        .local_cluster
-        .as_ref()
-        .unwrap();
-    let lock = StateLock::acquire(&cluster.name).unwrap();
+    let lock = StateLock::acquire().unwrap();
     let first = ensure_generation(&fixture.profile.repository, &lock).unwrap();
     fs::write(&first.cert_path, b"corrupt").unwrap();
     let second = ensure_generation(&fixture.profile.repository, &lock).unwrap();
@@ -284,12 +281,16 @@ fn concurrent_ensures_publish_one_reusable_generation() {
 
 #[test]
 fn lock_process_helper() {
-    let Ok(lock_path) = std::env::var("VEOVEO_KEYCLOAK_LOCK_HELPER_PATH") else {
+    let Ok(signal) = std::env::var("VEOVEO_KEYCLOAK_LOCK_HELPER_SIGNAL") else {
         return;
     };
-    let signal = std::env::var("VEOVEO_KEYCLOAK_LOCK_HELPER_SIGNAL").unwrap();
-    let _lock = StateLock::acquire_at(Path::new(&lock_path)).unwrap();
-    fs::write(signal, b"acquired").unwrap();
+    let _lock = if std::env::var_os("VEOVEO_KEYCLOAK_LOCK_HELPER_GLOBAL").is_some() {
+        StateLock::acquire().unwrap()
+    } else {
+        let lock_path = std::env::var("VEOVEO_KEYCLOAK_LOCK_HELPER_PATH").unwrap();
+        StateLock::acquire_at(Path::new(&lock_path)).unwrap()
+    };
+    fs::write(&signal, b"acquired").unwrap();
 }
 
 #[test]
@@ -319,6 +320,75 @@ fn state_lock_serializes_independent_processes() {
         thread::sleep(Duration::from_millis(10));
     }
     assert!(signal.exists(), "child never acquired the released lock");
+    assert!(child.wait().unwrap().success());
+}
+
+#[test]
+fn global_lock_serializes_profiles_with_different_cluster_names() {
+    let mut first = fixture();
+    let mut second = fixture();
+    first
+        .profile
+        .definition
+        .kubernetes
+        .local_cluster
+        .as_mut()
+        .unwrap()
+        .name = "first-cluster".to_owned();
+    second
+        .profile
+        .definition
+        .kubernetes
+        .local_cluster
+        .as_mut()
+        .unwrap()
+        .name = "second-cluster".to_owned();
+    assert_ne!(
+        first
+            .profile
+            .definition
+            .kubernetes
+            .local_cluster
+            .as_ref()
+            .unwrap()
+            .name,
+        second
+            .profile
+            .definition
+            .kubernetes
+            .local_cluster
+            .as_ref()
+            .unwrap()
+            .name
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let signal = dir.path().join("global-child-acquired");
+    let parent_lock = StateLock::acquire().unwrap();
+    let module = module_path!()
+        .split_once("::")
+        .map_or(module_path!(), |(_, module)| module);
+    let exact_test = format!("{module}::lock_process_helper");
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", &exact_test, "--nocapture"])
+        .env("VEOVEO_KEYCLOAK_LOCK_HELPER_GLOBAL", "1")
+        .env("VEOVEO_KEYCLOAK_LOCK_HELPER_SIGNAL", &signal)
+        .spawn()
+        .unwrap();
+    thread::sleep(Duration::from_millis(250));
+    assert!(
+        !signal.exists(),
+        "a differently named profile bypassed the global lock"
+    );
+    drop(parent_lock);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !signal.exists() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        signal.exists(),
+        "child never acquired the released global lock"
+    );
     assert!(child.wait().unwrap().success());
 }
 

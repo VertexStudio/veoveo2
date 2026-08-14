@@ -90,21 +90,11 @@ fn control_plane_declares_local_keycloak(control_plane: &GatewayControlPlane) ->
     })
 }
 
-fn cluster_name(profile: &LoadedProfile) -> Result<&str> {
-    profile
-        .definition
-        .kubernetes
-        .local_cluster
-        .as_ref()
-        .map(|cluster| cluster.name.as_str())
-        .context("local Keycloak requires a profile-managed local cluster")
-}
-
 pub(super) fn ensure(profile: &LoadedProfile) -> Result<()> {
     if !profile_requires_local_keycloak(profile)? {
         return Ok(());
     }
-    let lock = StateLock::acquire(cluster_name(profile)?)?;
+    let lock = StateLock::acquire()?;
     container::ensure(profile, &lock)
 }
 
@@ -112,7 +102,7 @@ pub(super) fn stop(profile: &LoadedProfile) -> Result<()> {
     if !profile_requires_local_keycloak(profile)? {
         return Ok(());
     }
-    let lock = StateLock::acquire(cluster_name(profile)?)?;
+    let lock = StateLock::acquire()?;
     container::stop(&lock)
 }
 
@@ -120,7 +110,7 @@ pub(super) fn delete(profile: &LoadedProfile) -> Result<()> {
     if !profile_requires_local_keycloak(profile)? {
         return Ok(());
     }
-    let lock = StateLock::acquire(cluster_name(profile)?)?;
+    let lock = StateLock::acquire()?;
     container::delete(&lock)?;
     tls::remove_material(&profile.repository, &lock)
 }
@@ -142,6 +132,16 @@ impl GeneratedPublicFiles {
 pub(super) fn ensure_generated_public_files(
     profile: &LoadedProfile,
 ) -> Result<GeneratedPublicFiles> {
+    ensure_generated_public_files_with(profile, container::ensure)
+}
+
+fn ensure_generated_public_files_with<F>(
+    profile: &LoadedProfile,
+    reconcile: F,
+) -> Result<GeneratedPublicFiles>
+where
+    F: FnOnce(&LoadedProfile, &StateLock) -> Result<()>,
+{
     let Some(activation) = &profile.definition.gateway_activation else {
         return Ok(GeneratedPublicFiles {
             paths: BTreeMap::new(),
@@ -155,15 +155,20 @@ pub(super) fn ensure_generated_public_files(
         });
     }
 
-    let lock = StateLock::acquire(cluster_name(profile)?)?;
+    let lock = StateLock::acquire()?;
     let mut paths = BTreeMap::new();
+    let mut requires_local_keycloak = false;
     for (key, generated) in &activation.generated_public_files {
         let path = match generated.kind {
             GeneratedPublicFileKind::LocalKeycloakCa => {
+                requires_local_keycloak = true;
                 ensure_generation(&profile.repository, &lock)?.ca_path
             }
         };
         paths.insert(key.clone(), path);
+    }
+    if requires_local_keycloak {
+        reconcile(profile, &lock)?;
     }
     Ok(GeneratedPublicFiles {
         paths,

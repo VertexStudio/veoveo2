@@ -27,15 +27,15 @@ pub(super) struct TlsGeneration {
 
 /// Serializes every operation that observes or mutates one local Keycloak
 /// instance. The lock lives in the host temporary directory and is keyed by
-/// cluster name, so independent Git worktrees that target the same Docker
-/// container coordinate through the same inode.
+/// the fixed container identity, so profiles with different cluster names and
+/// independent Git worktrees coordinate access to the shared container and port.
 pub(super) struct StateLock {
     file: File,
 }
 
 impl StateLock {
-    pub(super) fn acquire(cluster_name: &str) -> Result<Self> {
-        Self::acquire_at(&lock_path(cluster_name))
+    pub(super) fn acquire() -> Result<Self> {
+        Self::acquire_at(&lock_path())
     }
 
     pub(super) fn acquire_at(path: &Path) -> Result<Self> {
@@ -64,10 +64,10 @@ impl Drop for StateLock {
     }
 }
 
-fn lock_path(cluster_name: &str) -> PathBuf {
+fn lock_path() -> PathBuf {
     let mut hasher = Sha256::new();
     hasher.update(b"veoveo.io/local-keycloak-lock/v1\0");
-    hasher.update(cluster_name.as_bytes());
+    hasher.update(KEYCLOAK_CONTAINER_NAME.as_bytes());
     let digest = hex::encode(hasher.finalize());
     std::env::temp_dir()
         .join("veoveo-local-keycloak-locks")
