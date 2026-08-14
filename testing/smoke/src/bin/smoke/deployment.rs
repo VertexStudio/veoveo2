@@ -313,6 +313,7 @@ pub(crate) fn profile_up(path: &Path, lock_path: &Path) -> Result<()> {
                 release,
                 &platform.components,
                 &platform.mcp_servers,
+                gateway_activation.as_ref(),
             )?;
         }
     }
@@ -1422,6 +1423,7 @@ fn helm_up(
     release: &ReleaseSpec,
     components: &BTreeSet<PlatformComponent>,
     mcp_servers: &BTreeSet<FirstPartyMcpServer>,
+    gateway_activation: Option<&PreparedGatewayActivation>,
 ) -> Result<()> {
     let chart = source.repository.join(&release.chart);
     let mut args = vec![
@@ -1451,9 +1453,12 @@ fn helm_up(
         profile,
         release,
         &source.revision,
-        Some(&image_digests),
-        components,
-        mcp_servers,
+        ReleaseValueContext {
+            image_digests: Some(&image_digests),
+            components,
+            mcp_servers,
+            gateway_activation,
+        },
     )?;
     args.extend([
         "--wait".to_owned(),
@@ -1497,14 +1502,18 @@ fn helm_render(
         args.push("--values".to_owned());
         args.push(path_str(&values)?.to_owned());
     }
+    let gateway_activation = prepare_gateway_activation_for_validation(profile)?;
     append_release_values(
         &mut args,
         profile,
         release,
         revision,
-        None,
-        components,
-        mcp_servers,
+        ReleaseValueContext {
+            image_digests: None,
+            components,
+            mcp_servers,
+            gateway_activation: gateway_activation.as_ref(),
+        },
     )?;
     let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
     let rendered = output_checked("helm", refs, None)
@@ -1530,15 +1539,26 @@ fn ordered_release_values(
         .collect()
 }
 
+struct ReleaseValueContext<'a> {
+    image_digests: Option<&'a BTreeMap<String, String>>,
+    components: &'a BTreeSet<PlatformComponent>,
+    mcp_servers: &'a BTreeSet<FirstPartyMcpServer>,
+    gateway_activation: Option<&'a PreparedGatewayActivation>,
+}
+
 fn append_release_values(
     args: &mut Vec<String>,
     profile: &LoadedProfile,
     release: &ReleaseSpec,
     revision: &str,
-    image_digests: Option<&BTreeMap<String, String>>,
-    components: &BTreeSet<PlatformComponent>,
-    mcp_servers: &BTreeSet<FirstPartyMcpServer>,
+    values: ReleaseValueContext<'_>,
 ) -> Result<()> {
+    let ReleaseValueContext {
+        image_digests,
+        components,
+        mcp_servers,
+        gateway_activation,
+    } = values;
     match release.values_contract {
         ReleaseValuesContract::Platform | ReleaseValuesContract::VeoveoSource => {
             args.extend([
@@ -1603,7 +1623,7 @@ fn append_release_values(
                         ),
                     ]);
                 }
-                if let Some(activation) = prepare_gateway_activation_for_validation(profile)? {
+                if let Some(activation) = gateway_activation {
                     args.extend([
                         "--set-string".to_owned(),
                         format!(
@@ -1858,17 +1878,20 @@ fn path_str(path: &Path) -> Result<&str> {
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::BTreeMap,
+        collections::{BTreeMap, BTreeSet},
         path::{Path, PathBuf},
     };
 
     use veoveo_deploy_contract::{
-        DeploymentSourceRole, LockedImage, LockedSource, ReleaseSpec, ReleaseValuesContract,
+        DeploymentSourceRole, LoadedProfile, LockedImage, LockedSource, ReleaseSpec,
+        ReleaseValuesContract,
     };
 
     use super::{
-        gateway_mount_key, locked_image_digests_for_registry, normalize_origin,
-        ordered_release_values, release_image_digests, validate_gateway_public_file,
+        PreparedGatewayActivation, ReleaseValueContext, append_release_values, gateway_mount_key,
+        locked_image_digests_for_registry, normalize_origin, ordered_release_values,
+        prepare_gateway_activation_for_validation, release_image_digests,
+        validate_gateway_public_file,
     };
 
     const DIGEST_A: &str =
@@ -1982,6 +2005,76 @@ mod tests {
             ]
         );
     }
+    #[test]
+    fn helm_install_uses_materialized_activation_while_render_uses_placeholder() {
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .unwrap();
+        let profile_path = repository.join("showcase/sumo/deploy/deployment.json");
+        let profile = LoadedProfile::load(&profile_path, &repository).unwrap();
+        let platform = profile.resolved_platform().unwrap();
+        let release = ReleaseSpec {
+            name: "veoveo".to_owned(),
+            chart: PathBuf::from("deploy/helm/veoveo"),
+            source_values: Vec::new(),
+            installation_values: Vec::new(),
+            values_contract: ReleaseValuesContract::Platform,
+            create_namespace: false,
+            timeout_seconds: 60,
+        };
+        let real_revision = "d".repeat(64);
+        let real = PreparedGatewayActivation {
+            config_map_name: "veoveo-gateway-deadbeefcafe".to_owned(),
+            revision: real_revision.clone(),
+            confidential_secret: "veoveo-installation-secrets".to_owned(),
+            required_secret_keys: BTreeSet::new(),
+            data: BTreeMap::new(),
+        };
+
+        let mut install_args = Vec::new();
+        append_release_values(
+            &mut install_args,
+            &profile,
+            &release,
+            "a-revision",
+            ReleaseValueContext {
+                image_digests: None,
+                components: &platform.components,
+                mcp_servers: &platform.mcp_servers,
+                gateway_activation: Some(&real),
+            },
+        )
+        .unwrap();
+        assert!(install_args.contains(
+            &"gateway.existingControlPlaneConfigMap=veoveo-gateway-deadbeefcafe".to_owned()
+        ));
+        assert!(install_args.contains(&format!("gateway.controlPlaneRevision={real_revision}")));
+        assert!(!install_args.iter().any(|arg| arg.contains("000000000000")));
+
+        let placeholder = prepare_gateway_activation_for_validation(&profile)
+            .unwrap()
+            .expect("SUMO profile has gateway activation");
+        let mut render_args = Vec::new();
+        append_release_values(
+            &mut render_args,
+            &profile,
+            &release,
+            "a-revision",
+            ReleaseValueContext {
+                image_digests: None,
+                components: &platform.components,
+                mcp_servers: &platform.mcp_servers,
+                gateway_activation: Some(&placeholder),
+            },
+        )
+        .unwrap();
+        assert!(render_args.contains(
+            &"gateway.existingControlPlaneConfigMap=veoveo-gateway-000000000000".to_owned()
+        ));
+        assert!(render_args.contains(&format!("gateway.controlPlaneRevision={}", "0".repeat(64))));
+    }
+
     #[test]
     fn gateway_public_file_validation_rejects_invalid_trust_material() {
         let invalid_jwks = validate_gateway_public_file("jwks.json", "not-json", true, false)
