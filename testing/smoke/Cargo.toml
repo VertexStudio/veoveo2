@@ -51,9 +51,7 @@ veoveo-recording-hub = { path = "../../platform/recordings/hub" }
 veoveo-recording-protocol = { path = "../../platform/recordings/protocol" }
 veoveo-stream-mcp = { path = "../../servers/stream-mcp" }
 veoveo-sumo-mcp = { path = "../../showcase/sumo/sumo-mcp" }
+x509-parser = { workspace = true, features = ["verify"] }
 
 [build-dependencies]
 duckdb.workspace = true
-
-[dev-dependencies]
-x509-parser.workspace = true

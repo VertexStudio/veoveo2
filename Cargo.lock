@@ -13834,6 +13834,7 @@ dependencies = [
  "url",
  "veoveo-deploy-contract",
  "veoveo-mcp-contract",
+ "x509-parser",
 ]
 
 [[package]]

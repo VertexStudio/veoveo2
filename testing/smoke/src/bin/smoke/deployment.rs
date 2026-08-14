@@ -1,14 +1,16 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     env, fs,
-    io::Write,
+    io::{Cursor, Write},
+    net::{Ipv4Addr, Ipv6Addr},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, anyhow, bail, ensure};
+use rcgen::PublicKeyData;
 use serde::Deserialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -20,6 +22,7 @@ use veoveo_deploy_contract::{
     load_local_registry,
 };
 use veoveo_mcp_contract::{GatewayControlPlane, GatewayInternalTrustBundle};
+use x509_parser::{extensions::GeneralName, pem::Pem};
 
 #[path = "deployment/gpu.rs"]
 mod gpu;
@@ -849,6 +852,11 @@ const KEYCLOAK_DISCOVERY_URL: &str =
 const LOCAL_KEYCLOAK_METADATA_PROVIDER: &str = "keycloak";
 const LOCAL_KEYCLOAK_METADATA_PURPOSE: &str = "local_development_identity";
 
+const REALM_MOUNT_DESTINATION: &str = "/opt/keycloak/data/import/veoveo-local-realm.json";
+const CERT_MOUNT_DESTINATION: &str = "/opt/keycloak/conf/tls.crt";
+const KEY_MOUNT_DESTINATION: &str = "/opt/keycloak/conf/tls.key";
+const REQUIRED_LOCAL_KEYCLOAK_SANS: &[&str] = &["localhost", "127.0.0.1", KEYCLOAK_CONTAINER_NAME];
+
 /// Detects whether a profile's gateway control plane declares a local-development
 /// Keycloak identity provider (via the `{"provider":"keycloak","purpose":"local_development_identity"}`
 /// metadata contract) and, if so, confirms the profile manages a local k3d cluster.
@@ -907,47 +915,72 @@ fn container_exists(name: &str) -> Result<bool> {
     Ok(!String::from_utf8_lossy(&output).trim().is_empty())
 }
 
-/// Local Keycloak's generated, gitignored TLS material and its mount plan. The CA,
-/// server certificate, and private key live under `target/local-keycloak/` so they
-/// are deterministic per checkout, reused across `profile-cluster-stop`/`-up`, and
-/// never a versioned secret. Keyed on the repository root (not a `LoadedProfile`)
-/// because it must run before `LoadedProfile::load`, whose own validation requires
-/// every `gatewayActivation.publicFiles` entry to already exist on disk.
+fn control_plane_declares_local_keycloak(control_plane: &GatewayControlPlane) -> bool {
+    control_plane.identity_providers.iter().any(|provider| {
+        provider.metadata.get("provider").and_then(Value::as_str)
+            == Some(LOCAL_KEYCLOAK_METADATA_PROVIDER)
+            && provider.metadata.get("purpose").and_then(Value::as_str)
+                == Some(LOCAL_KEYCLOAK_METADATA_PURPOSE)
+    })
+}
+
+// --- Local Keycloak TLS material: generations ---
+//
+// The CA, server certificate, and private key are one logical unit: reusing
+// any one of them without the other two is never valid. They live under
+// `target/local-keycloak/generations/<digest>/`, gitignored and deterministic
+// per checkout, and the currently active generation is named by a small
+// pointer file, `target/local-keycloak/current`, containing just its digest.
+// A generation is published by generating into a sibling temporary directory,
+// validating the complete set, and `rename`-ing the whole directory into
+// place — a single atomic filesystem operation — before the pointer file
+// itself is replaced the same way (write-temp, then rename). Nothing ever
+// exposes a partially written generation as reusable state.
+
+/// Local Keycloak's generated, gitignored TLS state directory. Keyed on the
+/// repository root (not a `LoadedProfile`) so it can be resolved before
+/// `LoadedProfile::load` if ever needed, and so tests can point it at an
+/// isolated tempdir instead of the real repository.
 fn local_keycloak_state_dir(repository: &Path) -> PathBuf {
     repository.join("target").join("local-keycloak")
 }
 
-fn local_keycloak_tls_paths(repository: &Path) -> (PathBuf, PathBuf, PathBuf) {
-    let dir = local_keycloak_state_dir(repository);
-    (dir.join("ca.pem"), dir.join("tls.crt"), dir.join("tls.key"))
+fn local_keycloak_generations_dir(repository: &Path) -> PathBuf {
+    local_keycloak_state_dir(repository).join("generations")
+}
+
+fn local_keycloak_current_pointer_path(repository: &Path) -> PathBuf {
+    local_keycloak_state_dir(repository).join("current")
+}
+
+fn local_keycloak_generation_dir(repository: &Path, digest: &str) -> PathBuf {
+    local_keycloak_generations_dir(repository).join(digest)
+}
+
+fn local_keycloak_generation_file_paths(generation_dir: &Path) -> (PathBuf, PathBuf, PathBuf) {
+    (
+        generation_dir.join("ca.pem"),
+        generation_dir.join("tls.crt"),
+        generation_dir.join("tls.key"),
+    )
 }
 
 /// The sole place that maps a typed `GeneratedPublicFileKind` to its concrete,
-/// deterministic on-disk location. `deploy/contract` intentionally knows nothing
-/// about this path: it only knows the declared kind exists and is exempt from
-/// the Git-tracked `publicFiles` reproducibility contract.
-fn generated_public_file_path(repository: &Path, kind: GeneratedPublicFileKind) -> PathBuf {
+/// on-disk location. `deploy/contract` intentionally knows nothing about this
+/// path: it only knows the declared kind exists and is exempt from the
+/// Git-tracked `publicFiles` reproducibility contract. Read-only: resolves the
+/// CA of the already-active generation, and never generates one — callers
+/// that need generation to happen call `ensure_local_keycloak_tls_material`
+/// first (`ensure_generated_public_files`, `profile-cluster-up`).
+fn generated_public_file_path(repository: &Path, kind: GeneratedPublicFileKind) -> Result<PathBuf> {
     match kind {
-        GeneratedPublicFileKind::LocalKeycloakCa => local_keycloak_tls_paths(repository).0,
+        GeneratedPublicFileKind::LocalKeycloakCa => {
+            let (_, ca_path, _, _) = active_local_keycloak_generation(repository)?.context(
+                "no local Keycloak TLS material generation is active; run `profile-cluster-up` first to generate it",
+            )?;
+            Ok(ca_path)
+        }
     }
-}
-
-/// Generates the local Keycloak CA/certificate/key once and reuses them on every
-/// later call.
-fn ensure_local_keycloak_tls_material(repository: &Path) -> Result<(PathBuf, PathBuf, PathBuf)> {
-    let (ca_path, cert_path, key_path) = local_keycloak_tls_paths(repository);
-    if ca_path.is_file() && cert_path.is_file() && key_path.is_file() {
-        return Ok((ca_path, cert_path, key_path));
-    }
-    let dir = local_keycloak_state_dir(repository);
-    fs::create_dir_all(&dir).with_context(|| {
-        format!(
-            "creating local Keycloak TLS material directory {}",
-            dir.display()
-        )
-    })?;
-    generate_local_keycloak_tls_material(&ca_path, &cert_path, &key_path)?;
-    Ok((ca_path, cert_path, key_path))
 }
 
 /// Ensures every `generatedPublicFiles` entry the profile declares actually
@@ -971,13 +1004,172 @@ fn ensure_generated_public_files(profile: &LoadedProfile) -> Result<()> {
     Ok(())
 }
 
-fn control_plane_declares_local_keycloak(control_plane: &GatewayControlPlane) -> bool {
-    control_plane.identity_providers.iter().any(|provider| {
-        provider.metadata.get("provider").and_then(Value::as_str)
-            == Some(LOCAL_KEYCLOAK_METADATA_PROVIDER)
-            && provider.metadata.get("purpose").and_then(Value::as_str)
-                == Some(LOCAL_KEYCLOAK_METADATA_PURPOSE)
-    })
+/// Resolves the active local Keycloak TLS generation without generating
+/// anything: reads the `current` pointer, then fully re-validates the
+/// referenced generation's cryptographic material — bare file existence never
+/// proves the set is a complete, matched, CA-signed triple. Returns `Ok(None)`
+/// for every recoverable "no valid generation yet" case (missing pointer,
+/// missing generation directory, corrupt or mismatched material) so the
+/// caller can decide whether to generate a fresh one or fail with a precise
+/// message.
+fn active_local_keycloak_generation(
+    repository: &Path,
+) -> Result<Option<(String, PathBuf, PathBuf, PathBuf)>> {
+    let pointer_path = local_keycloak_current_pointer_path(repository);
+    let Ok(digest) = fs::read_to_string(&pointer_path) else {
+        return Ok(None);
+    };
+    let digest = digest.trim();
+    if digest.is_empty() {
+        return Ok(None);
+    }
+    let generation_dir = local_keycloak_generation_dir(repository, digest);
+    let (ca_path, cert_path, key_path) = local_keycloak_generation_file_paths(&generation_dir);
+    if validate_local_keycloak_tls_generation(&ca_path, &cert_path, &key_path).is_err() {
+        return Ok(None);
+    }
+    Ok(Some((digest.to_owned(), ca_path, cert_path, key_path)))
+}
+
+/// Ensures a valid local Keycloak TLS generation exists: reuses the active
+/// one's exact bytes when it is already valid, otherwise generates and
+/// publishes a fresh one. Also sweeps any generation temporary directory
+/// abandoned by a previous interrupted run before deciding.
+fn ensure_local_keycloak_tls_material(
+    repository: &Path,
+) -> Result<(String, PathBuf, PathBuf, PathBuf)> {
+    cleanup_abandoned_local_keycloak_temp_state(repository)?;
+    if let Some(active) = active_local_keycloak_generation(repository)? {
+        return Ok(active);
+    }
+    generate_local_keycloak_tls_generation(repository)
+}
+
+/// Generates a fresh CA/certificate/key set into a sibling temporary
+/// directory, validates the complete set, then publishes it as the new active
+/// generation via two atomic renames (the generation directory, then the
+/// `current` pointer file). The temporary directory is removed on any error
+/// before publication so a failed attempt never leaves reusable-looking state
+/// and never disturbs whatever generation was active before.
+fn generate_local_keycloak_tls_generation(
+    repository: &Path,
+) -> Result<(String, PathBuf, PathBuf, PathBuf)> {
+    let generations_dir = local_keycloak_generations_dir(repository);
+    fs::create_dir_all(&generations_dir)
+        .with_context(|| format!("creating {}", generations_dir.display()))?;
+    let temp_dir = generations_dir.join(format!(".tmp-{}", unique_local_suffix()));
+    fs::create_dir_all(&temp_dir).with_context(|| format!("creating {}", temp_dir.display()))?;
+
+    let outcome = (|| -> Result<(String, PathBuf, PathBuf, PathBuf)> {
+        let (ca_path, cert_path, key_path) = local_keycloak_generation_file_paths(&temp_dir);
+        generate_local_keycloak_tls_material(&ca_path, &cert_path, &key_path)?;
+        restrict_local_keycloak_key_permissions(&key_path)?;
+        validate_local_keycloak_tls_generation(&ca_path, &cert_path, &key_path)
+            .context("validating freshly generated local Keycloak TLS material")?;
+
+        let digest = compute_local_keycloak_generation_digest(
+            &fs::read(&ca_path).with_context(|| format!("reading {}", ca_path.display()))?,
+            &fs::read(&cert_path).with_context(|| format!("reading {}", cert_path.display()))?,
+            &fs::read(&key_path).with_context(|| format!("reading {}", key_path.display()))?,
+        );
+        let published_dir = local_keycloak_generation_dir(repository, &digest);
+        if published_dir.is_dir() {
+            // Identical bytes are already published (astronomically unlikely,
+            // but harmless): keep the existing generation and discard the
+            // freshly generated duplicate rather than fail the rename.
+            fs::remove_dir_all(&temp_dir).ok();
+        } else {
+            fs::rename(&temp_dir, &published_dir).with_context(|| {
+                format!(
+                    "publishing local Keycloak TLS generation {} to {}",
+                    temp_dir.display(),
+                    published_dir.display()
+                )
+            })?;
+        }
+        publish_local_keycloak_current_pointer(repository, &digest)?;
+        let (ca_path, cert_path, key_path) = local_keycloak_generation_file_paths(&published_dir);
+        Ok((digest, ca_path, cert_path, key_path))
+    })();
+
+    if outcome.is_err() {
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+    outcome
+}
+
+/// Atomically replaces the `current` pointer file's contents: write to a
+/// sibling temporary file, then `rename` it over the real pointer. A reader
+/// can never observe a truncated or partially written pointer.
+fn publish_local_keycloak_current_pointer(repository: &Path, digest: &str) -> Result<()> {
+    let state_dir = local_keycloak_state_dir(repository);
+    fs::create_dir_all(&state_dir).with_context(|| format!("creating {}", state_dir.display()))?;
+    let pointer_path = local_keycloak_current_pointer_path(repository);
+    let temp_path = state_dir.join(format!(".current.tmp-{}", unique_local_suffix()));
+    fs::write(&temp_path, digest).with_context(|| format!("writing {}", temp_path.display()))?;
+    fs::rename(&temp_path, &pointer_path).with_context(|| {
+        format!(
+            "publishing local Keycloak current generation pointer {}",
+            pointer_path.display()
+        )
+    })?;
+    Ok(())
+}
+
+/// Removes generation and pointer temporary files left behind by a previous
+/// run that was interrupted between creating them and the atomic rename that
+/// would have published or replaced them. Best-effort: a leftover temp that
+/// cannot be removed does not block generating a fresh, independently named
+/// one.
+fn cleanup_abandoned_local_keycloak_temp_state(repository: &Path) -> Result<()> {
+    let generations_dir = local_keycloak_generations_dir(repository);
+    if let Ok(entries) = fs::read_dir(&generations_dir) {
+        for entry in entries.flatten() {
+            if entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.starts_with(".tmp-"))
+            {
+                let _ = fs::remove_dir_all(entry.path());
+            }
+        }
+    }
+    let state_dir = local_keycloak_state_dir(repository);
+    if let Ok(entries) = fs::read_dir(&state_dir) {
+        for entry in entries.flatten() {
+            if entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.starts_with(".current.tmp-"))
+            {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn unique_local_suffix() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!("{}-{nanos}", std::process::id())
+}
+
+fn compute_local_keycloak_generation_digest(
+    ca_bytes: &[u8],
+    cert_bytes: &[u8],
+    key_bytes: &[u8],
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"veoveo.io/local-keycloak-generation/v1\0");
+    hasher.update(ca_bytes);
+    hasher.update([0]);
+    hasher.update(cert_bytes);
+    hasher.update([0]);
+    hasher.update(key_bytes);
+    hex::encode(hasher.finalize())
 }
 
 fn generate_local_keycloak_tls_material(
@@ -993,11 +1185,10 @@ fn generate_local_keycloak_tls_material(
     let ca_key = rcgen::KeyPair::generate()?;
     let ca_cert = ca_params.self_signed(&ca_key)?;
 
-    let sans = vec![
-        "localhost".to_owned(),
-        "127.0.0.1".to_owned(),
-        KEYCLOAK_CONTAINER_NAME.to_owned(),
-    ];
+    let sans = REQUIRED_LOCAL_KEYCLOAK_SANS
+        .iter()
+        .map(|san| (*san).to_owned())
+        .collect::<Vec<_>>();
     let mut server_params = rcgen::CertificateParams::new(sans)?;
     server_params.is_ca = rcgen::IsCa::ExplicitNoCa;
     server_params
@@ -1021,6 +1212,179 @@ fn generate_local_keycloak_tls_material(
     })?;
     fs::write(key_path, server_key.serialize_pem())
         .with_context(|| format!("writing local Keycloak server key {}", key_path.display()))?;
+    Ok(())
+}
+
+/// Restricts the generated private key to owner-only access on Unix. A no-op
+/// on platforms without POSIX permission bits.
+fn restrict_local_keycloak_key_permissions(key_path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(key_path, fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("restricting permissions on {}", key_path.display()))?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = key_path;
+    }
+    Ok(())
+}
+
+/// Full cryptographic validation of one CA/certificate/key set before it is
+/// ever trusted as reusable: both PEMs and the key parse, the CA has
+/// `basicConstraints CA:true`, the server certificate is not a CA, carries
+/// every required SAN and the `serverAuth` extended key usage, is actually
+/// signed by the CA (a real signature check, not just "same file exists"),
+/// and the private key's public component matches the certificate's. Bare
+/// file presence never substitutes for any of these.
+fn validate_local_keycloak_tls_generation(
+    ca_path: &Path,
+    cert_path: &Path,
+    key_path: &Path,
+) -> Result<()> {
+    let ca_bytes = fs::read(ca_path).with_context(|| format!("reading {}", ca_path.display()))?;
+    ensure!(!ca_bytes.is_empty(), "{} is empty", ca_path.display());
+    let ca_pem = Pem::read(Cursor::new(ca_bytes))
+        .map_err(|error| anyhow!("parsing CA PEM {}: {error}", ca_path.display()))?
+        .0;
+    let ca_cert = ca_pem
+        .parse_x509()
+        .map_err(|error| anyhow!("parsing CA certificate {}: {error}", ca_path.display()))?;
+    ensure!(
+        ca_cert.is_ca(),
+        "local Keycloak CA {} does not set basicConstraints CA:true",
+        ca_path.display()
+    );
+
+    let cert_bytes =
+        fs::read(cert_path).with_context(|| format!("reading {}", cert_path.display()))?;
+    ensure!(!cert_bytes.is_empty(), "{} is empty", cert_path.display());
+    let cert_pem = Pem::read(Cursor::new(cert_bytes))
+        .map_err(|error| {
+            anyhow!(
+                "parsing server certificate PEM {}: {error}",
+                cert_path.display()
+            )
+        })?
+        .0;
+    let server_cert = cert_pem.parse_x509().map_err(|error| {
+        anyhow!(
+            "parsing server certificate {}: {error}",
+            cert_path.display()
+        )
+    })?;
+    ensure!(
+        !server_cert.is_ca(),
+        "local Keycloak server certificate {} must not be a CA",
+        cert_path.display()
+    );
+
+    let observed_sans = server_cert
+        .subject_alternative_name()
+        .with_context(|| format!("reading SAN extension of {}", cert_path.display()))?
+        .with_context(|| {
+            format!(
+                "server certificate {} omitted a Subject Alternative Name extension",
+                cert_path.display()
+            )
+        })?
+        .value
+        .general_names
+        .iter()
+        .filter_map(local_keycloak_general_name_value)
+        .collect::<BTreeSet<_>>();
+    for required in REQUIRED_LOCAL_KEYCLOAK_SANS {
+        ensure!(
+            observed_sans.contains(*required),
+            "local Keycloak server certificate {} is missing required SAN {required}; found {observed_sans:?}",
+            cert_path.display()
+        );
+    }
+
+    let extended_key_usage = server_cert
+        .extended_key_usage()
+        .with_context(|| format!("reading extended key usage of {}", cert_path.display()))?
+        .with_context(|| {
+            format!(
+                "server certificate {} omitted an Extended Key Usage extension",
+                cert_path.display()
+            )
+        })?;
+    ensure!(
+        extended_key_usage.value.server_auth,
+        "local Keycloak server certificate {} omits the serverAuth extended key usage",
+        cert_path.display()
+    );
+
+    server_cert
+        .verify_signature(Some(ca_cert.public_key()))
+        .with_context(|| {
+            format!(
+                "server certificate {} was not signed by CA {}",
+                cert_path.display(),
+                ca_path.display()
+            )
+        })?;
+
+    restrict_local_keycloak_key_permissions_check(key_path)?;
+    let key_text =
+        fs::read_to_string(key_path).with_context(|| format!("reading {}", key_path.display()))?;
+    ensure!(
+        !key_text.trim().is_empty(),
+        "{} is empty",
+        key_path.display()
+    );
+    let key_pair = rcgen::KeyPair::from_pem(&key_text)
+        .with_context(|| format!("parsing server private key {}", key_path.display()))?;
+    ensure!(
+        key_pair.subject_public_key_info() == server_cert.public_key().raw,
+        "local Keycloak server private key {} does not match the certificate's public key {}",
+        key_path.display(),
+        cert_path.display()
+    );
+
+    Ok(())
+}
+
+fn local_keycloak_general_name_value(name: &GeneralName<'_>) -> Option<String> {
+    match name {
+        GeneralName::DNSName(value) => Some((*value).to_owned()),
+        GeneralName::IPAddress(bytes) => match bytes.len() {
+            4 => Some(Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3]).to_string()),
+            16 => <[u8; 16]>::try_from(*bytes)
+                .ok()
+                .map(Ipv6Addr::from)
+                .map(|address| address.to_string()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Verifies the private key is not accessible by group or other on Unix; a
+/// no-op elsewhere. Part of the reuse-validity gate, not a repair step: a key
+/// whose permissions have drifted is treated the same as corrupt material and
+/// triggers a fresh generation rather than an in-place `chmod`.
+fn restrict_local_keycloak_key_permissions_check(key_path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(key_path)
+            .with_context(|| format!("reading permissions of {}", key_path.display()))?
+            .permissions()
+            .mode();
+        ensure!(
+            mode & 0o077 == 0,
+            "local Keycloak server private key {} is accessible by group or other (mode {:o}); expected owner-only access",
+            key_path.display(),
+            mode & 0o777
+        );
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = key_path;
+    }
     Ok(())
 }
 
@@ -1109,7 +1473,8 @@ fn ensure_local_keycloak(profile: &LoadedProfile) -> Result<()> {
         .context("deployment profile requiring local keycloak does not manage a local cluster")?;
     let network = format!("k3d-{}", cluster.name);
 
-    let (ca_path, cert_path, key_path) = ensure_local_keycloak_tls_material(&profile.repository)?;
+    let (_generation_digest, ca_path, cert_path, key_path) =
+        ensure_local_keycloak_tls_material(&profile.repository)?;
     let realm_path = profile
         .repository
         .join("configs/keycloak/veoveo-local-realm.json");
@@ -1120,12 +1485,9 @@ fn ensure_local_keycloak(profile: &LoadedProfile) -> Result<()> {
     );
 
     let expected_mounts = [
-        (
-            realm_path.as_path(),
-            "/opt/keycloak/data/import/veoveo-local-realm.json",
-        ),
-        (cert_path.as_path(), "/opt/keycloak/conf/tls.crt"),
-        (key_path.as_path(), "/opt/keycloak/conf/tls.key"),
+        (realm_path.as_path(), REALM_MOUNT_DESTINATION),
+        (cert_path.as_path(), CERT_MOUNT_DESTINATION),
+        (key_path.as_path(), KEY_MOUNT_DESTINATION),
     ];
 
     if container_exists(KEYCLOAK_CONTAINER_NAME)? {
@@ -1157,12 +1519,9 @@ fn ensure_local_keycloak(profile: &LoadedProfile) -> Result<()> {
         }
     }
 
-    let realm_mount = format!(
-        "{}:/opt/keycloak/data/import/veoveo-local-realm.json:ro",
-        path_str(&realm_path)?
-    );
-    let crt_mount = format!("{}:/opt/keycloak/conf/tls.crt:ro", path_str(&cert_path)?);
-    let key_mount = format!("{}:/opt/keycloak/conf/tls.key:ro", path_str(&key_path)?);
+    let realm_mount = format!("{}:{REALM_MOUNT_DESTINATION}:ro", path_str(&realm_path)?);
+    let crt_mount = format!("{}:{CERT_MOUNT_DESTINATION}:ro", path_str(&cert_path)?);
+    let key_mount = format!("{}:{KEY_MOUNT_DESTINATION}:ro", path_str(&key_path)?);
 
     let args = [
         "run",
@@ -1736,12 +2095,11 @@ fn prepare_gateway_activation(
         data.insert(key.clone(), text);
     }
     for (key, generated) in &activation.generated_public_files {
-        let resolved = generated_public_file_path(&profile.repository, generated.kind);
+        let resolved = generated_public_file_path(&profile.repository, generated.kind)?;
         let text = fs::read_to_string(&resolved).with_context(|| {
             format!(
-                "reading generated gateway activation file {} ({}); run `profile-cluster-up` first to generate it",
-                resolved.display(),
-                key
+                "reading generated gateway activation file {} ({key})",
+                resolved.display()
             )
         })?;
         validate_gateway_public_file(key, &text, jwks_keys.contains(key), ca_keys.contains(key))?;
@@ -2352,11 +2710,50 @@ mod tests {
     };
 
     use super::{
-        ensure_generated_public_files, gateway_mount_key, local_keycloak_state_dir,
-        local_keycloak_tls_paths, locked_image_digests_for_registry, normalize_origin,
-        ordered_release_values, prepare_gateway_activation, release_image_digests,
-        remove_generated_local_keycloak_material_if_present, validate_gateway_public_file,
+        active_local_keycloak_generation, cleanup_abandoned_local_keycloak_temp_state,
+        ensure_generated_public_files, ensure_local_keycloak_tls_material, gateway_mount_key,
+        generate_local_keycloak_tls_generation, generate_local_keycloak_tls_material, load_profile,
+        local_keycloak_current_pointer_path, local_keycloak_generations_dir,
+        local_keycloak_state_dir, locked_image_digests_for_registry, normalize_origin,
+        ordered_release_values, prepare_gateway_activation, profile_requires_local_keycloak,
+        release_image_digests, remove_generated_local_keycloak_material_if_present,
+        restrict_local_keycloak_key_permissions, validate_gateway_public_file,
+        validate_local_keycloak_tls_generation,
     };
+
+    /// Recursively lists every file under `dir`, relative to `dir`. Used to
+    /// prove a function touched nothing under a directory: compare the
+    /// snapshot before and after.
+    fn directory_snapshot(dir: &Path) -> BTreeSet<PathBuf> {
+        fn walk(dir: &Path, root: &Path, out: &mut BTreeSet<PathBuf>) {
+            let Ok(read_dir) = fs::read_dir(dir) else {
+                return;
+            };
+            for entry in read_dir.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, root, out);
+                } else if let Ok(relative) = path.strip_prefix(root) {
+                    out.insert(relative.to_path_buf());
+                }
+            }
+        }
+        let mut out = BTreeSet::new();
+        walk(dir, dir, &mut out);
+        out
+    }
+
+    /// Generates one valid CA/certificate/key set directly into `dir` (not
+    /// through the generation/`current`-pointer machinery), for tests that
+    /// exercise `validate_local_keycloak_tls_generation` in isolation.
+    fn generate_valid_local_keycloak_material(dir: &Path) -> (PathBuf, PathBuf, PathBuf) {
+        let ca = dir.join("ca.pem");
+        let cert = dir.join("tls.crt");
+        let key = dir.join("tls.key");
+        generate_local_keycloak_tls_material(&ca, &cert, &key).expect("generate material");
+        restrict_local_keycloak_key_permissions(&key).expect("restrict key permissions");
+        (ca, cert, key)
+    }
 
     /// A fully isolated, disposable "repository" for exercising the local
     /// Keycloak `generatedPublicFiles` lifecycle. Its `repository` (and
@@ -2564,7 +2961,7 @@ mod tests {
         let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let profile_path = repository.join("showcase/sumo/deploy/deployment.json");
         let profile = LoadedProfile::load(&profile_path, &repository).unwrap();
-        assert!(super::profile_requires_local_keycloak(&profile).unwrap());
+        assert!(profile_requires_local_keycloak(&profile).unwrap());
     }
 
     #[test]
@@ -2572,19 +2969,19 @@ mod tests {
         // This is the real repository and the real, checked-in SUMO profile —
         // deliberately, to prove `load_profile` is safe to call against it
         // regardless of whether `profile-cluster-up` has ever run. It only
-        // ever reads the on-disk existence of the generated material, so it
-        // cannot race with anything else and never mutates repository state.
+        // ever reads a directory listing, so it cannot race with anything
+        // else and never mutates repository state.
         let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let profile_path = repository.join("showcase/sumo/deploy/deployment.json");
-        let (ca_path, cert_path, key_path) = local_keycloak_tls_paths(&repository);
-        let before = (ca_path.is_file(), cert_path.is_file(), key_path.is_file());
+        let state_dir = local_keycloak_state_dir(&repository);
+        let before = directory_snapshot(&state_dir);
 
-        let profile = super::load_profile(&profile_path).unwrap();
+        let profile = load_profile(&profile_path).unwrap();
 
-        let after = (ca_path.is_file(), cert_path.is_file(), key_path.is_file());
+        let after = directory_snapshot(&state_dir);
         assert_eq!(
             before, after,
-            "load_profile must never create, delete, or otherwise touch generated local Keycloak material"
+            "load_profile must never create, delete, or modify generated local Keycloak material"
         );
         assert_eq!(profile.definition.name, "sumo");
     }
@@ -2596,7 +2993,7 @@ mod tests {
         // target/local-keycloak/, and must land under the fixture's tempdir.
         let real_repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let real_state_dir = local_keycloak_state_dir(&real_repository);
-        let real_before = real_state_dir.is_dir();
+        let real_before = directory_snapshot(&real_state_dir);
 
         let fixture = local_keycloak_fixture();
         ensure_generated_public_files(&fixture.profile).expect("generate fixture material");
@@ -2605,7 +3002,7 @@ mod tests {
         assert!(fixture_state_dir.starts_with(&fixture.profile.repository));
         assert_ne!(fixture_state_dir, real_state_dir);
 
-        let real_after = real_state_dir.is_dir();
+        let real_after = directory_snapshot(&real_state_dir);
         assert_eq!(
             real_before, real_after,
             "generating fixture material must never touch the real repository's target/local-keycloak/"
@@ -2615,28 +3012,40 @@ mod tests {
     #[test]
     fn ensure_generated_public_files_is_idempotent_and_dispatches_by_kind() {
         let fixture = local_keycloak_fixture();
-        let (ca_path, cert_path, key_path) = local_keycloak_tls_paths(&fixture.profile.repository);
-        assert!(!ca_path.exists());
+        assert!(
+            active_local_keycloak_generation(&fixture.profile.repository)
+                .unwrap()
+                .is_none()
+        );
 
         ensure_generated_public_files(&fixture.profile).expect("generate material");
+        let (digest_1, ca_path, cert_path, key_path) =
+            active_local_keycloak_generation(&fixture.profile.repository)
+                .unwrap()
+                .expect("a generation is now active");
         assert!(ca_path.is_file());
         assert!(cert_path.is_file());
         assert!(key_path.is_file());
         let first_bytes = fs::read(&ca_path).unwrap();
 
         ensure_generated_public_files(&fixture.profile).expect("reuse existing material");
+        let (digest_2, ..) = active_local_keycloak_generation(&fixture.profile.repository)
+            .unwrap()
+            .unwrap();
         assert_eq!(
-            fs::read(&ca_path).unwrap(),
-            first_bytes,
-            "a second call must reuse, not regenerate, existing material"
+            digest_1, digest_2,
+            "a second call must reuse, not regenerate, the active generation"
         );
+        assert_eq!(fs::read(&ca_path).unwrap(), first_bytes);
     }
 
     #[test]
     fn prepare_gateway_activation_embeds_the_real_generated_ca_bytes() {
         let fixture = local_keycloak_fixture();
         ensure_generated_public_files(&fixture.profile).expect("generate material");
-        let (ca_path, ..) = local_keycloak_tls_paths(&fixture.profile.repository);
+        let (_, ca_path, ..) = active_local_keycloak_generation(&fixture.profile.repository)
+            .unwrap()
+            .unwrap();
         let generated_bytes = fs::read_to_string(&ca_path).unwrap();
 
         let activation = prepare_gateway_activation(&fixture.profile)
@@ -2665,21 +3074,14 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        let (ca_path, cert_path, key_path) = local_keycloak_tls_paths(&fixture.profile.repository);
-        let another = tempfile::tempdir().expect("second tempdir");
-        super::generate_local_keycloak_tls_material(
-            &another.path().join("ca.pem"),
-            &another.path().join("tls.crt"),
-            &another.path().join("tls.key"),
-        )
-        .expect("generate different CA material");
-        fs::write(&ca_path, fs::read(another.path().join("ca.pem")).unwrap()).unwrap();
-        fs::write(
-            &cert_path,
-            fs::read(another.path().join("tls.crt")).unwrap(),
-        )
+        // Force a fresh generation with different bytes by invalidating the
+        // active one (through the real "current" pointer, not by splicing
+        // files), then let the real ensure/generate path run again.
+        fs::remove_file(local_keycloak_current_pointer_path(
+            &fixture.profile.repository,
+        ))
         .unwrap();
-        fs::write(&key_path, fs::read(another.path().join("tls.key")).unwrap()).unwrap();
+        ensure_generated_public_files(&fixture.profile).expect("generate a second generation");
 
         let second = prepare_gateway_activation(&fixture.profile)
             .unwrap()
@@ -2688,7 +3090,7 @@ mod tests {
         assert_ne!(first.data["ca.pem"], second.data["ca.pem"]);
         assert_ne!(
             first.revision, second.revision,
-            "the activation revision must incorporate the real generated CA bytes"
+            "the activation revision must incorporate the real active CA's bytes"
         );
         assert_ne!(first.config_map_name, second.config_map_name);
     }
@@ -2752,6 +3154,227 @@ mod tests {
             .expect("remove existing material");
 
         assert!(!state_dir.exists());
+    }
+
+    // --- Fix 2: TLS generation validity, corruption recovery, atomicity ---
+
+    #[test]
+    fn valid_generation_passes_validation_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let (ca, cert, key) = generate_valid_local_keycloak_material(dir.path());
+        let before = (
+            fs::read(&ca).unwrap(),
+            fs::read(&cert).unwrap(),
+            fs::read(&key).unwrap(),
+        );
+
+        validate_local_keycloak_tls_generation(&ca, &cert, &key)
+            .expect("freshly generated material must pass validation");
+
+        let after = (
+            fs::read(&ca).unwrap(),
+            fs::read(&cert).unwrap(),
+            fs::read(&key).unwrap(),
+        );
+        assert_eq!(before, after, "validation must never modify its inputs");
+    }
+
+    #[test]
+    fn corrupt_ca_fails_validation() {
+        let dir = tempfile::tempdir().unwrap();
+        let (ca, cert, key) = generate_valid_local_keycloak_material(dir.path());
+        fs::write(&ca, b"not a certificate").unwrap();
+        validate_local_keycloak_tls_generation(&ca, &cert, &key)
+            .expect_err("a corrupt CA must fail validation");
+    }
+
+    #[test]
+    fn corrupt_server_certificate_fails_validation() {
+        let dir = tempfile::tempdir().unwrap();
+        let (ca, cert, key) = generate_valid_local_keycloak_material(dir.path());
+        fs::write(&cert, b"not a certificate").unwrap();
+        validate_local_keycloak_tls_generation(&ca, &cert, &key)
+            .expect_err("a corrupt server certificate must fail validation");
+    }
+
+    #[test]
+    fn corrupt_key_fails_validation() {
+        let dir = tempfile::tempdir().unwrap();
+        let (ca, cert, key) = generate_valid_local_keycloak_material(dir.path());
+        fs::write(&key, b"not a key").unwrap();
+        validate_local_keycloak_tls_generation(&ca, &cert, &key)
+            .expect_err("a corrupt private key must fail validation");
+    }
+
+    #[test]
+    fn key_from_a_different_generation_fails_validation() {
+        let dir = tempfile::tempdir().unwrap();
+        let (ca, cert, key) = generate_valid_local_keycloak_material(dir.path());
+        let other_dir = tempfile::tempdir().unwrap();
+        let (_, _, other_key) = generate_valid_local_keycloak_material(other_dir.path());
+        fs::copy(&other_key, &key).unwrap();
+
+        validate_local_keycloak_tls_generation(&ca, &cert, &key)
+            .expect_err("a private key from a different generation must fail validation");
+    }
+
+    #[test]
+    fn ca_that_did_not_sign_the_certificate_fails_validation() {
+        let dir = tempfile::tempdir().unwrap();
+        let (ca, cert, key) = generate_valid_local_keycloak_material(dir.path());
+        let other_dir = tempfile::tempdir().unwrap();
+        let (other_ca, _, _) = generate_valid_local_keycloak_material(other_dir.path());
+        fs::copy(&other_ca, &ca).unwrap();
+
+        validate_local_keycloak_tls_generation(&ca, &cert, &key)
+            .expect_err("a certificate not signed by this CA must fail validation");
+    }
+
+    #[test]
+    fn incomplete_sans_fail_validation() {
+        let dir = tempfile::tempdir().unwrap();
+        let ca_path = dir.path().join("ca.pem");
+        let cert_path = dir.path().join("tls.crt");
+        let key_path = dir.path().join("tls.key");
+
+        // Bypass the normal generator, which always uses the full required
+        // SAN set, to produce a certificate missing one required name.
+        let mut ca_params = rcgen::CertificateParams::default();
+        ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        ca_params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, "Test Incomplete SAN CA");
+        let ca_key = rcgen::KeyPair::generate().unwrap();
+        let ca_cert = ca_params.self_signed(&ca_key).unwrap();
+        let mut server_params =
+            rcgen::CertificateParams::new(vec!["localhost".to_owned()]).unwrap();
+        server_params.is_ca = rcgen::IsCa::ExplicitNoCa;
+        server_params
+            .extended_key_usages
+            .push(rcgen::ExtendedKeyUsagePurpose::ServerAuth);
+        let server_key = rcgen::KeyPair::generate().unwrap();
+        let ca_issuer = rcgen::Issuer::from_params(&ca_params, &ca_key);
+        let server_cert = server_params.signed_by(&server_key, &ca_issuer).unwrap();
+        fs::write(&ca_path, ca_cert.pem()).unwrap();
+        fs::write(&cert_path, server_cert.pem()).unwrap();
+        fs::write(&key_path, server_key.serialize_pem()).unwrap();
+        restrict_local_keycloak_key_permissions(&key_path).unwrap();
+
+        let error = validate_local_keycloak_tls_generation(&ca_path, &cert_path, &key_path)
+            .expect_err("a certificate missing required SANs must fail validation");
+        assert!(error.to_string().contains("missing required SAN"));
+    }
+
+    #[test]
+    fn missing_file_fails_validation() {
+        let dir = tempfile::tempdir().unwrap();
+        let (ca, cert, key) = generate_valid_local_keycloak_material(dir.path());
+        fs::remove_file(&key).unwrap();
+        validate_local_keycloak_tls_generation(&ca, &cert, &key)
+            .expect_err("a missing file must fail validation");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn generated_key_has_owner_only_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let (_, _, key) = generate_valid_local_keycloak_material(dir.path());
+        let mode = fs::metadata(&key).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn group_readable_key_fails_validation() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let (ca, cert, key) = generate_valid_local_keycloak_material(dir.path());
+        fs::set_permissions(&key, fs::Permissions::from_mode(0o640)).unwrap();
+
+        let error = validate_local_keycloak_tls_generation(&ca, &cert, &key)
+            .expect_err("a group-readable private key must fail validation");
+        assert!(error.to_string().contains("accessible by group or other"));
+    }
+
+    #[test]
+    fn abandoned_temp_state_is_cleaned_up() {
+        let fixture = local_keycloak_fixture();
+        let repository = &fixture.profile.repository;
+        let generations_dir = local_keycloak_generations_dir(repository);
+        fs::create_dir_all(generations_dir.join(".tmp-abandoned")).unwrap();
+        fs::write(
+            generations_dir.join(".tmp-abandoned").join("ca.pem"),
+            b"partial",
+        )
+        .unwrap();
+        let state_dir = local_keycloak_state_dir(repository);
+        fs::create_dir_all(&state_dir).unwrap();
+        fs::write(state_dir.join(".current.tmp-abandoned"), b"deadbeef").unwrap();
+
+        cleanup_abandoned_local_keycloak_temp_state(repository).expect("cleanup must succeed");
+
+        assert!(!generations_dir.join(".tmp-abandoned").exists());
+        assert!(!state_dir.join(".current.tmp-abandoned").exists());
+    }
+
+    #[test]
+    fn ensure_recovers_from_an_abandoned_temp_directory() {
+        let fixture = local_keycloak_fixture();
+        let generations_dir = local_keycloak_generations_dir(&fixture.profile.repository);
+        fs::create_dir_all(generations_dir.join(".tmp-abandoned")).unwrap();
+
+        let (_, ca, cert, key) = ensure_local_keycloak_tls_material(&fixture.profile.repository)
+            .expect(
+                "ensure must recover from the abandoned temp directory and generate fresh material",
+            );
+
+        assert!(!generations_dir.join(".tmp-abandoned").exists());
+        validate_local_keycloak_tls_generation(&ca, &cert, &key)
+            .expect("the freshly generated material must be valid");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_failed_generation_attempt_does_not_alter_the_previously_active_generation() {
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = local_keycloak_fixture();
+        let (digest_1, ca_1, cert_1, key_1) =
+            ensure_local_keycloak_tls_material(&fixture.profile.repository)
+                .expect("create the first generation");
+        let bytes_before = (
+            fs::read(&ca_1).unwrap(),
+            fs::read(&cert_1).unwrap(),
+            fs::read(&key_1).unwrap(),
+        );
+
+        // Make the generations directory read-only so the next attempt fails
+        // while creating its temporary directory, before it ever touches the
+        // existing generation.
+        let generations_dir = local_keycloak_generations_dir(&fixture.profile.repository);
+        fs::set_permissions(&generations_dir, fs::Permissions::from_mode(0o500)).unwrap();
+        let attempt = generate_local_keycloak_tls_generation(&fixture.profile.repository);
+        fs::set_permissions(&generations_dir, fs::Permissions::from_mode(0o700)).unwrap();
+
+        assert!(
+            attempt.is_err(),
+            "generation must fail when it cannot write a temporary directory"
+        );
+
+        let (digest_2, ca_2, cert_2, key_2) =
+            active_local_keycloak_generation(&fixture.profile.repository)
+                .unwrap()
+                .expect("the previously active generation must still be active");
+        assert_eq!(digest_1, digest_2);
+        let bytes_after = (
+            fs::read(&ca_2).unwrap(),
+            fs::read(&cert_2).unwrap(),
+            fs::read(&key_2).unwrap(),
+        );
+        assert_eq!(
+            bytes_before, bytes_after,
+            "a failed generation attempt must not alter the previously active generation"
+        );
     }
 
     #[test]
