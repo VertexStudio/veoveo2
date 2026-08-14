@@ -440,7 +440,7 @@
         "client_boundary": "admin_console"
       },
       "redirect_uris": [
-        "http://localhost:8780/admin/callback"
+        "http://localhost:8780/auth/callback"
       ]
     },
     {

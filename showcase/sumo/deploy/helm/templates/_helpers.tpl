@@ -1,9 +1,12 @@
 {{- define "sumo.image" -}}
 {{- $root := index . 0 -}}
 {{- $image := index . 1 -}}
-{{- $registry := trimSuffix "/" $root.Values.global.veoveoRegistry -}}
-{{- $repository := $image.repository -}}
-{{- if $registry -}}{{- $repository = printf "%s/%s" $registry $repository -}}{{- end -}}
+{{- $lockedDigest := get $root.Values.global.imageDigests $image.repository | default "" -}}
+{{- $digest := $image.digest | default $lockedDigest -}}
 {{- $tag := default $image.tag $root.Values.global.veoveoTag -}}
-{{- printf "%s:%s" $repository $tag -}}
+{{- include "veoveo-extension.image" (dict
+    "registry" $root.Values.global.veoveoRegistry
+    "production" $root.Values.global.production
+    "image" (dict "repository" $image.repository "tag" $tag "digest" $digest)
+  ) -}}
 {{- end }}

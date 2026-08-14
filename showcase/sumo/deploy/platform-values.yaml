@@ -19,3 +19,6 @@ recording:
 # the source values while selecting the in-cluster Console MCP transport here.
 consoleBff:
   mcpTransportUrl: http://mcp-gateway:8788/mcp/admin
+  oauthScopes:
+    - operator:use
+    - admin:manage

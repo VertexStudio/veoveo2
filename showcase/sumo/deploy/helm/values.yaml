@@ -1,18 +1,23 @@
 global:
+  production: false
   veoveoRegistry: ""
   veoveoTag: ""
+  imageDigests: {}
 
 images:
   pullPolicy: IfNotPresent
   sim:
     repository: veoveo/sumo-sim
     tag: 1.27.1
+    digest: ""
   mcp:
     repository: veoveo/sumo-mcp
     tag: 0.1.0
+    digest: ""
   forwarder:
     repository: veoveo/recording-forwarder
     tag: 0.1.0
+    digest: ""
 
 platform:
   publicBaseUrl: http://localhost:8780

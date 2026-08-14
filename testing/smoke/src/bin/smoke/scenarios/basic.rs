@@ -739,6 +739,82 @@ pub(crate) async fn helm_config() -> Result<()> {
         bail!("SUMO chart must not export telemetry when its profile disables telemetry");
     }
 
+    let digest = format!("sha256:{}", "a".repeat(64));
+    let image_digests = format!(
+        "global.imageDigests={{\"veoveo/sumo-sim\":\"{digest}\",\"veoveo/sumo-mcp\":\"{digest}\",\"veoveo/recording-forwarder\":\"{digest}\"}}"
+    );
+    let production_sumo = run_checked(
+        Path::new("helm"),
+        [
+            "template".into(),
+            "sumo".into(),
+            "showcase/sumo/deploy/helm".into(),
+            "--set".into(),
+            "global.production=true".into(),
+            "--set-json".into(),
+            image_digests.into(),
+        ],
+        [],
+    )?;
+    ensure!(
+        production_sumo.matches(&format!("@{digest}")).count() == 3,
+        "production SUMO render must pin the simulator, MCP server, and recording forwarder"
+    );
+
+    let production_sumo_without_forwarder = Command::new("helm")
+        .args([
+            "template",
+            "sumo",
+            "showcase/sumo/deploy/helm",
+            "--set",
+            "global.production=true",
+            "--set-json",
+            &format!(
+                "global.imageDigests={{\"veoveo/sumo-sim\":\"{digest}\",\"veoveo/sumo-mcp\":\"{digest}\"}}"
+            ),
+        ])
+        .output()
+        .context("rendering production SUMO without the cross-source forwarder digest")?;
+    ensure!(
+        !production_sumo_without_forwarder.status.success(),
+        "production SUMO render must reject a mutable recording forwarder"
+    );
+
+    let sumo_gateway: Value =
+        serde_json::from_str(&fs::read_to_string("showcase/sumo/deploy/gateway.json")?)?;
+    let admin_console = sumo_gateway
+        .get("oauth_clients")
+        .and_then(Value::as_array)
+        .and_then(|clients| {
+            clients
+                .iter()
+                .find(|client| client.get("id").and_then(Value::as_str) == Some("admin-console"))
+        })
+        .context("SUMO gateway omitted the admin-console OAuth client")?;
+    ensure!(
+        admin_console.get("redirect_uris").and_then(Value::as_array)
+            == Some(&vec![Value::String(
+                "http://localhost:8780/auth/callback".to_owned()
+            )]),
+        "SUMO admin-console must register the Console BFF callback exactly"
+    );
+
+    let sumo_platform_values = fs::read_to_string("showcase/sumo/deploy/platform-values.yaml")?;
+    contains(
+        &sumo_platform_values,
+        "consoleBff:\n  mcpTransportUrl: http://mcp-gateway:8788/mcp/admin\n  oauthScopes:\n    - operator:use\n    - admin:manage",
+    )?;
+    ensure!(
+        admin_console
+            .get("allowed_scopes")
+            .and_then(Value::as_array)
+            == Some(&vec![
+                Value::String("operator:use".to_owned()),
+                Value::String("admin:manage".to_owned()),
+            ]),
+        "SUMO Console BFF scopes must match the admin-console OAuth grant"
+    );
+
     let uav_dependencies: Value = serde_json::from_str(&fs::read_to_string(
         "showcase/uav-sim/dependencies.lock.json",
     )?)?;
