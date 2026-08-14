@@ -85,6 +85,48 @@
       "metadata": {
         "profile": "sumo"
       }
+    },
+    {
+      "slug": "recording",
+      "uri_scheme": "recording",
+      "mount_path": "/recording",
+      "mcp_path": "/recording/mcp",
+      "upstream": {
+        "transport": "streamable_http",
+        "url": "http://recording-mcp:8796/mcp",
+        "security": "cluster_internal_http"
+      },
+      "capabilities": {
+        "tools": true,
+        "resources": true,
+        "resource_templates": true,
+        "resource_subscriptions": true,
+        "prompts": true,
+        "completions": true,
+        "tasks": false,
+        "resources_list_changed": true
+      },
+      "tools": [
+        "query_recording",
+        "seal_recording"
+      ],
+      "prompts": [
+        "recording-inspect",
+        "recording-query",
+        "recording-seal"
+      ],
+      "required_scopes": [
+        "operator:use"
+      ],
+      "owned_routes": [
+        {
+          "path": "/recordings",
+          "purpose": "artifact_bytes"
+        }
+      ],
+      "metadata": {
+        "raw_ingest": "internal_only"
+      }
     }
   ],
   "profiles": [
@@ -160,6 +202,26 @@
           },
           "completions": "disabled",
           "tasks": "enabled"
+        },
+        {
+          "server": "recording",
+          "tools": {
+            "mode": "none"
+          },
+          "resources": {
+            "mode": "listed",
+            "items": [
+              {
+                "kind": "scheme",
+                "scheme": "recording"
+              }
+            ]
+          },
+          "prompts": {
+            "mode": "none"
+          },
+          "completions": "disabled",
+          "tasks": "disabled"
         }
       ],
       "metadata": {
@@ -299,6 +361,27 @@
             "admin"
           ],
           "required_scopes": [
+            "admin:manage"
+          ],
+          "metadata": {}
+        },
+        {
+          "id": "allow_admin_recording_playback",
+          "effect": "allow",
+          "actions": [
+            "resources_read"
+          ],
+          "profiles": [
+            "admin"
+          ],
+          "servers": [
+            "recording"
+          ],
+          "resource_schemes": [
+            "recording"
+          ],
+          "required_scopes": [
+            "operator:use",
             "admin:manage"
           ],
           "metadata": {}

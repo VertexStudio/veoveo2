@@ -420,7 +420,56 @@ async fn verify_console_keycloak_login(console_base_url: &str) -> Result<()> {
         response.status()
     );
 
-    println!("Console login verified ok via local Keycloak at {console_base_url}");
+    let response = client
+        .get(format!("{console_base_url}/console/api/snapshot"))
+        .send()
+        .await
+        .context("loading authenticated Console snapshot")?;
+    ensure!(
+        response.status() == StatusCode::OK,
+        "Console snapshot returned {}, expected 200 OK",
+        response.status()
+    );
+    let snapshot: Value = response.json().await.context("decoding Console snapshot")?;
+    let recording_id = snapshot
+        .get("recordings")
+        .and_then(Value::as_array)
+        .and_then(|recordings| {
+            recordings.iter().find_map(|recording| {
+                recording
+                    .get("recordingKey")
+                    .and_then(Value::as_str)
+                    .filter(|key| key.starts_with("sumo-live"))
+                    .and_then(|_| recording.get("id"))
+                    .and_then(Value::as_str)
+            })
+        })
+        .context("Console snapshot omitted the live SUMO recording")?;
+
+    let response = client
+        .get(format!(
+            "{console_base_url}/console/api/recordings/{recording_id}/playback"
+        ))
+        .send()
+        .await
+        .context("loading live SUMO playback manifest")?;
+    ensure!(
+        response.status() == StatusCode::OK,
+        "Console SUMO playback manifest returned {}, expected 200 OK",
+        response.status()
+    );
+    let manifest: Value = response
+        .json()
+        .await
+        .context("decoding live SUMO playback manifest")?;
+    ensure!(
+        manifest.get("recording_id").and_then(Value::as_str) == Some(recording_id),
+        "Console SUMO playback manifest targeted another recording: {manifest}"
+    );
+
+    println!(
+        "Console login and live SUMO playback verified ok via local Keycloak at {console_base_url}"
+    );
     Ok(())
 }
 
