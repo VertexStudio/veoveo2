@@ -6,7 +6,12 @@ use std::sync::{
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
+use bytes::BytesMut;
+use futures::StreamExt as _;
 use re_grpc_server::{MemoryLimit, ServerOptions, shutdown};
+use re_log_encoding::Decoder;
+use re_log_types::LogMsg;
+use serde::Deserialize;
 use veoveo_recording_hub::{
     DatasetName, DatasetRoute, SegmentReadScope, Spooler, SpoolerConfig, query_tree, run_blocking,
 };
@@ -16,6 +21,35 @@ use veoveo_sumo_mcp::{
 };
 
 use super::*;
+
+const PLAYBACK_MANIFEST_SCHEMA: &str = "veoveo.io/recording-playback/v8";
+const LIVE_RRD_CONTENT_TYPE: &str =
+    "application/vnd.veoveo.rerun.rrd-stream; framing=be32; version=2";
+const LIVE_RRD_START_HEADER: &str = "x-veoveo-rerun-live-start";
+const MAX_LIVE_RRD_FRAME_BYTES: usize = 64 * 1024 * 1024;
+
+#[derive(Debug, Deserialize)]
+struct SumoPlaybackManifest {
+    schema: String,
+    recording_id: String,
+    state: String,
+    archive: Option<SumoPlaybackArchive>,
+    live: Option<SumoPlaybackLive>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SumoPlaybackArchive {
+    uri: String,
+    dataset_id: String,
+    byte_len: u64,
+    layer_count: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct SumoPlaybackLive {
+    current_byte_len: u64,
+    transport: String,
+}
 
 pub(crate) async fn sumo_push(steps: u32) -> Result<()> {
     ensure!(steps > 0, "steps must be positive");
@@ -458,19 +492,121 @@ async fn verify_console_keycloak_login(console_base_url: &str) -> Result<()> {
         "Console SUMO playback manifest returned {}, expected 200 OK",
         response.status()
     );
-    let manifest: Value = response
+    let manifest: SumoPlaybackManifest = response
         .json()
         .await
         .context("decoding live SUMO playback manifest")?;
     ensure!(
-        manifest.get("recording_id").and_then(Value::as_str) == Some(recording_id),
-        "Console SUMO playback manifest targeted another recording: {manifest}"
+        manifest.schema == PLAYBACK_MANIFEST_SCHEMA,
+        "Console SUMO playback manifest used unsupported schema {}",
+        manifest.schema
+    );
+    ensure!(
+        manifest.recording_id == recording_id,
+        "Console SUMO playback manifest targeted another recording: {}",
+        manifest.recording_id
+    );
+    ensure!(
+        manifest.state == "live",
+        "Console SUMO recording is not live: {}",
+        manifest.state
+    );
+    let archive = manifest
+        .archive
+        .context("Console SUMO playback manifest omitted History archive")?;
+    ensure!(
+        archive.uri.starts_with("rerun+http"),
+        "Console SUMO History archive used an invalid Redap URI: {}",
+        archive.uri
+    );
+    ensure!(
+        !archive.dataset_id.is_empty() && archive.byte_len > 0 && archive.layer_count > 0,
+        "Console SUMO History archive is empty or incomplete: {archive:?}"
+    );
+    let live = manifest
+        .live
+        .context("Console SUMO playback manifest omitted Live segment")?;
+    ensure!(
+        live.transport == "rerun_rrd_channel_v2" && live.current_byte_len > 0,
+        "Console SUMO Live segment is empty or unsupported: {live:?}"
+    );
+
+    let response = client
+        .get(format!(
+            "{console_base_url}/console/api/recordings/{recording_id}/live/rrd-stream"
+        ))
+        .header(reqwest::header::ACCEPT, LIVE_RRD_CONTENT_TYPE)
+        .header(LIVE_RRD_START_HEADER, "bootstrap")
+        .send()
+        .await
+        .context("opening Console SUMO Live RRD stream")?;
+    ensure!(
+        response.status() == StatusCode::OK,
+        "Console SUMO Live RRD stream returned {}, expected 200 OK",
+        response.status()
+    );
+    ensure!(
+        response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            == Some(LIVE_RRD_CONTENT_TYPE),
+        "Console SUMO Live RRD stream returned unexpected content type {:?}",
+        response.headers().get(CONTENT_TYPE)
+    );
+    let messages = read_one_live_rrd_frame(response).await?;
+    ensure!(
+        !messages.is_empty(),
+        "Console SUMO Live RRD stream produced an empty frame"
     );
 
     println!(
-        "Console login and live SUMO playback verified ok via local Keycloak at {console_base_url}"
+        "Console login, SUMO History archive, and Live RRD stream verified ok via local Keycloak at {console_base_url}"
     );
     Ok(())
+}
+
+async fn read_one_live_rrd_frame(response: reqwest::Response) -> Result<Vec<LogMsg>> {
+    tokio::time::timeout(Duration::from_secs(30), async move {
+        let mut body = response.bytes_stream();
+        let mut framed = BytesMut::new();
+        let frame_len = loop {
+            if framed.len() >= 4 {
+                let len = u32::from_be_bytes(framed[..4].try_into().expect("four-byte prefix"));
+                let len = usize::try_from(len).context("RRD frame length does not fit usize")?;
+                ensure!(
+                    len > 0 && len <= MAX_LIVE_RRD_FRAME_BYTES,
+                    "Console SUMO Live RRD frame length {len} is outside 1..={MAX_LIVE_RRD_FRAME_BYTES}"
+                );
+                break len;
+            }
+            let chunk = body
+                .next()
+                .await
+                .context("Console SUMO Live RRD stream ended before its frame prefix")?
+                .context("reading Console SUMO Live RRD frame prefix")?;
+            framed.extend_from_slice(&chunk);
+        };
+        while framed.len() < 4 + frame_len {
+            let chunk = body
+                .next()
+                .await
+                .context("Console SUMO Live RRD stream ended inside a frame")?
+                .context("reading Console SUMO Live RRD frame payload")?;
+            framed.extend_from_slice(&chunk);
+            ensure!(
+                framed.len() <= 4 + MAX_LIVE_RRD_FRAME_BYTES,
+                "Console SUMO Live RRD stream exceeded the bounded frame buffer"
+            );
+        }
+        let frame = framed.split_to(4 + frame_len).freeze();
+        Decoder::<LogMsg>::decode_eager(std::io::Cursor::new(&frame[4..]))
+            .context("opening complete Console SUMO Live RRD frame")?
+            .collect::<Result<Vec<_>, _>>()
+            .context("decoding complete Console SUMO Live RRD frame")
+    })
+    .await
+    .context("timed out waiting for one complete Console SUMO Live RRD frame")?
 }
 
 fn structured_output(output: &str) -> Result<Value> {
