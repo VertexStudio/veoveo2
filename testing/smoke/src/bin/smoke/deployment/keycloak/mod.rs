@@ -155,13 +155,23 @@ where
         });
     }
 
+    let requires_local_keycloak = activation
+        .generated_public_files
+        .values()
+        .any(|generated| matches!(generated.kind, GeneratedPublicFileKind::LocalKeycloakCa));
+    if requires_local_keycloak {
+        ensure!(
+            profile_requires_local_keycloak(profile)?,
+            "deployment profile {} declares generatedPublicFiles kind local_keycloak_ca but its gateway control plane does not declare the local-development Keycloak identity provider metadata",
+            profile.definition.name
+        );
+    }
+
     let lock = StateLock::acquire()?;
     let mut paths = BTreeMap::new();
-    let mut requires_local_keycloak = false;
     for (key, generated) in &activation.generated_public_files {
         let path = match generated.kind {
             GeneratedPublicFileKind::LocalKeycloakCa => {
-                requires_local_keycloak = true;
                 ensure_generation(&profile.repository, &lock)?.ca_path
             }
         };

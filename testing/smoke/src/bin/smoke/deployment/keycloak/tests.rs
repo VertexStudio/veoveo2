@@ -117,6 +117,45 @@ fn structural_validation_does_not_require_or_create_runtime_state() {
 }
 
 #[test]
+fn generated_keycloak_ca_requires_local_identity_metadata() {
+    let fixture = fixture();
+    let control_plane_path = fixture.profile.resolve(
+        &fixture
+            .profile
+            .definition
+            .gateway_activation
+            .as_ref()
+            .unwrap()
+            .control_plane,
+    );
+    let mut control_plane: Value =
+        serde_json::from_slice(&fs::read(&control_plane_path).unwrap()).unwrap();
+    for provider in control_plane["identity_providers"].as_array_mut().unwrap() {
+        let metadata = provider["metadata"].as_object_mut().unwrap();
+        if metadata.get("provider").and_then(Value::as_str) == Some("keycloak") {
+            metadata.remove("purpose");
+        }
+    }
+    fs::write(
+        &control_plane_path,
+        serde_json::to_vec_pretty(&control_plane).unwrap(),
+    )
+    .unwrap();
+
+    let error = ensure_generated_public_files_with(&fixture.profile, |_, _| {
+        panic!("metadata mismatch must fail before reconciliation")
+    })
+    .err()
+    .expect("missing local identity metadata must fail closed");
+    assert!(
+        error
+            .to_string()
+            .contains("does not declare the local-development Keycloak")
+    );
+    assert!(!state_dir(&fixture.profile.repository).exists());
+}
+
+#[test]
 fn generated_ca_is_held_consistent_through_activation_preparation() {
     let fixture = fixture();
     let generated =

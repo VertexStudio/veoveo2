@@ -226,8 +226,6 @@ pub(crate) fn profile_cluster_delete(path: &Path) -> Result<()> {
 
 pub(crate) fn profile_up(path: &Path, lock_path: &Path) -> Result<()> {
     let profile = load_profile(path)?;
-    let generated_public_files = keycloak::ensure_generated_public_files(&profile)?;
-    let gateway_activation = prepare_gateway_activation(&profile, &generated_public_files)?;
     let lock = load_deployment_lock(lock_path)?;
     validate_locked_profile(&profile, &lock)?;
     let sources = resolve_locked_sources(&profile, &lock)?;
@@ -237,6 +235,12 @@ pub(crate) fn profile_up(path: &Path, lock_path: &Path) -> Result<()> {
     validate_helm_releases(&profile, &sources)?;
     let platform = profile.resolved_platform()?;
     let context = profile.definition.kubernetes.context.as_str();
+    // Runtime mutation starts only after the lock, sources, images, and rendered
+    // Helm releases have passed their pure validation gates. The generated-file
+    // guard remains live through the remainder of profile application.
+    let generated_public_files = keycloak::ensure_generated_public_files(&profile)?;
+    let gateway_activation = prepare_gateway_activation(&profile, &generated_public_files)?;
+
     apply_local_cluster_bootstrap(&profile)?;
     if platform.gpu_scheduling.is_some() {
         wait_for_cluster_nodes(context, Duration::from_secs(120))?;
