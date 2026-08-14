@@ -856,6 +856,79 @@ const REALM_MOUNT_DESTINATION: &str = "/opt/keycloak/data/import/veoveo-local-re
 const CERT_MOUNT_DESTINATION: &str = "/opt/keycloak/conf/tls.crt";
 const KEY_MOUNT_DESTINATION: &str = "/opt/keycloak/conf/tls.key";
 const REQUIRED_LOCAL_KEYCLOAK_SANS: &[&str] = &["localhost", "127.0.0.1", KEYCLOAK_CONTAINER_NAME];
+const KEYCLOAK_ENV_VARS: &[(&str, &str)] = &[
+    ("KC_BOOTSTRAP_ADMIN_USERNAME", "admin"),
+    ("KC_BOOTSTRAP_ADMIN_PASSWORD", "admin"),
+];
+/// Docker label namespace for the reconciliation fingerprint. A stale or
+/// missing label means the container was not created for the exact
+/// configuration `ensure_local_keycloak` expects, so it is stale regardless of
+/// whether its image, network, and mounts happen to still look right.
+const LOCAL_KEYCLOAK_CONFIG_DIGEST_LABEL: &str = "io.veoveo.local-keycloak.config-digest";
+
+/// The exact `docker run` startup arguments after the image name, built from
+/// the same mount-destination constants used for the container's volume
+/// mounts so the two can never silently drift apart.
+fn keycloak_startup_args() -> Vec<String> {
+    vec![
+        "start-dev".to_owned(),
+        "--import-realm".to_owned(),
+        "--http-enabled=true".to_owned(),
+        "--http-port=8080".to_owned(),
+        "--https-port=8443".to_owned(),
+        format!("--https-certificate-file={CERT_MOUNT_DESTINATION}"),
+        format!("--https-certificate-key-file={KEY_MOUNT_DESTINATION}"),
+        "--hostname=http://localhost:8080".to_owned(),
+        "--hostname-strict=false".to_owned(),
+        "--hostname-backchannel-dynamic=true".to_owned(),
+    ]
+}
+
+/// Deterministic fingerprint over every input that requires recreating the
+/// local Keycloak container: the pinned image, the realm import bytes, the
+/// startup arguments and environment (order-fixed, never a hashed map),
+/// the active TLS generation (server certificate bytes plus the generation
+/// digest, which already covers the CA), the mount destinations, and the
+/// expected Docker network. Deliberately excludes anything accidental: no
+/// timestamps, no host-specific mount *source* paths, no non-deterministic
+/// ordering.
+fn compute_local_keycloak_config_fingerprint(
+    image: &str,
+    realm_bytes: &[u8],
+    startup_args: &[String],
+    env_vars: &[(&str, &str)],
+    server_cert_pem: &[u8],
+    active_generation_digest: &str,
+    mount_destinations: &[&str],
+    network: &str,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"veoveo.io/local-keycloak-config/v1\0");
+    hasher.update(image.as_bytes());
+    hasher.update([0]);
+    hasher.update(realm_bytes);
+    hasher.update([0]);
+    for arg in startup_args {
+        hasher.update(arg.as_bytes());
+        hasher.update([0]);
+    }
+    for (key, value) in env_vars {
+        hasher.update(key.as_bytes());
+        hasher.update(b"=");
+        hasher.update(value.as_bytes());
+        hasher.update([0]);
+    }
+    hasher.update(server_cert_pem);
+    hasher.update([0]);
+    hasher.update(active_generation_digest.as_bytes());
+    hasher.update([0]);
+    for destination in mount_destinations {
+        hasher.update(destination.as_bytes());
+        hasher.update([0]);
+    }
+    hasher.update(network.as_bytes());
+    hex::encode(hasher.finalize())
+}
 
 /// Detects whether a profile's gateway control plane declares a local-development
 /// Keycloak identity provider (via the `{"provider":"keycloak","purpose":"local_development_identity"}`
@@ -1402,6 +1475,8 @@ struct ContainerInspect {
 struct ContainerInspectConfig {
     #[serde(rename = "Image")]
     image: String,
+    #[serde(rename = "Labels", default)]
+    labels: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1428,17 +1503,32 @@ fn inspect_container(name: &str) -> Result<ContainerInspect> {
 }
 
 /// Reconciliation predicate for an existing `k3d-veoveo-keycloak` container: it is
-/// reusable only if it runs the expected image, is attached to the expected k3d
-/// cluster network, and mounts the expected realm/certificate/key sources at the
-/// expected in-container destinations. Anything else (stale image, wrong network,
-/// leftover mounts from a prior cluster or a prior TLS material generation) is
-/// treated as invalid so the caller removes and recreates the container.
+/// reusable only if it runs the expected image, carries the expected
+/// configuration fingerprint label (image, realm bytes, startup args/env,
+/// active TLS generation, mount destinations, and network — see
+/// `compute_local_keycloak_config_fingerprint`), is attached to the expected
+/// k3d cluster network, and mounts the expected realm/certificate/key sources
+/// at the expected in-container destinations. The fingerprint check catches
+/// changes the other checks cannot see, such as an edited realm file at the
+/// same mount source path; it does not replace them, since a matching
+/// fingerprint says nothing about network attachment or mount identity on its
+/// own. Anything mismatched is treated as stale so the caller removes and
+/// recreates the container.
 fn local_keycloak_container_is_valid(
     inspect: &ContainerInspect,
     network: &str,
     expected_mounts: &[(&Path, &str)],
+    expected_fingerprint: &str,
 ) -> Result<bool> {
     if inspect.config.image != KEYCLOAK_IMAGE {
+        return Ok(false);
+    }
+    let stored_fingerprint = inspect
+        .config
+        .labels
+        .as_ref()
+        .and_then(|labels| labels.get(LOCAL_KEYCLOAK_CONFIG_DIGEST_LABEL));
+    if stored_fingerprint.map(String::as_str) != Some(expected_fingerprint) {
         return Ok(false);
     }
     if !inspect.network_settings.networks.contains_key(network) {
@@ -1460,7 +1550,8 @@ fn local_keycloak_container_is_valid(
 /// Idempotently reconciles the local Keycloak container against the profile's
 /// expected configuration: create it if missing, start it if stopped-and-valid,
 /// reuse it if running-and-valid, or remove and recreate it if it is stale
-/// (wrong image, wrong network, wrong mounts) or fails full readiness.
+/// (wrong image, wrong configuration fingerprint, wrong network, wrong mounts)
+/// or fails full readiness.
 fn ensure_local_keycloak(profile: &LoadedProfile) -> Result<()> {
     if !profile_requires_local_keycloak(profile)? {
         return Ok(());
@@ -1473,7 +1564,7 @@ fn ensure_local_keycloak(profile: &LoadedProfile) -> Result<()> {
         .context("deployment profile requiring local keycloak does not manage a local cluster")?;
     let network = format!("k3d-{}", cluster.name);
 
-    let (_generation_digest, ca_path, cert_path, key_path) =
+    let (generation_digest, ca_path, cert_path, key_path) =
         ensure_local_keycloak_tls_material(&profile.repository)?;
     let realm_path = profile
         .repository
@@ -1482,6 +1573,24 @@ fn ensure_local_keycloak(profile: &LoadedProfile) -> Result<()> {
         realm_path.is_file(),
         "local Keycloak realm fixture {} does not exist",
         realm_path.display()
+    );
+    let realm_bytes =
+        fs::read(&realm_path).with_context(|| format!("reading {}", realm_path.display()))?;
+    let server_cert_pem =
+        fs::read(&cert_path).with_context(|| format!("reading {}", cert_path.display()))?;
+    let expected_fingerprint = compute_local_keycloak_config_fingerprint(
+        KEYCLOAK_IMAGE,
+        &realm_bytes,
+        &keycloak_startup_args(),
+        KEYCLOAK_ENV_VARS,
+        &server_cert_pem,
+        &generation_digest,
+        &[
+            REALM_MOUNT_DESTINATION,
+            CERT_MOUNT_DESTINATION,
+            KEY_MOUNT_DESTINATION,
+        ],
+        &network,
     );
 
     let expected_mounts = [
@@ -1492,7 +1601,12 @@ fn ensure_local_keycloak(profile: &LoadedProfile) -> Result<()> {
 
     if container_exists(KEYCLOAK_CONTAINER_NAME)? {
         let inspect = inspect_container(KEYCLOAK_CONTAINER_NAME)?;
-        let valid = local_keycloak_container_is_valid(&inspect, &network, &expected_mounts)?;
+        let valid = local_keycloak_container_is_valid(
+            &inspect,
+            &network,
+            &expected_mounts,
+            &expected_fingerprint,
+        )?;
         if valid {
             if !is_container_running(KEYCLOAK_CONTAINER_NAME)? {
                 status_checked("docker", ["start", KEYCLOAK_CONTAINER_NAME], &[], None)?;
@@ -1513,7 +1627,7 @@ fn ensure_local_keycloak(profile: &LoadedProfile) -> Result<()> {
             }
         } else {
             println!(
-                "Local Keycloak {KEYCLOAK_CONTAINER_NAME} configuration is stale (image, network, or mounts changed) and will be recreated"
+                "Local Keycloak {KEYCLOAK_CONTAINER_NAME} configuration is stale (image, realm/TLS configuration, network, or mounts changed) and will be recreated"
             );
             status_checked("docker", ["rm", "-f", KEYCLOAK_CONTAINER_NAME], &[], None)?;
         }
@@ -1522,39 +1636,37 @@ fn ensure_local_keycloak(profile: &LoadedProfile) -> Result<()> {
     let realm_mount = format!("{}:{REALM_MOUNT_DESTINATION}:ro", path_str(&realm_path)?);
     let crt_mount = format!("{}:{CERT_MOUNT_DESTINATION}:ro", path_str(&cert_path)?);
     let key_mount = format!("{}:{KEY_MOUNT_DESTINATION}:ro", path_str(&key_path)?);
+    let label = format!("{LOCAL_KEYCLOAK_CONFIG_DIGEST_LABEL}={expected_fingerprint}");
 
-    let args = [
-        "run",
-        "-d",
-        "--name",
-        KEYCLOAK_CONTAINER_NAME,
-        "--network",
-        &network,
-        "-p",
-        "127.0.0.1:8080:8080",
-        "-e",
-        "KC_BOOTSTRAP_ADMIN_USERNAME=admin",
-        "-e",
-        "KC_BOOTSTRAP_ADMIN_PASSWORD=admin",
-        "-v",
-        &realm_mount,
-        "-v",
-        &crt_mount,
-        "-v",
-        &key_mount,
-        KEYCLOAK_IMAGE,
-        "start-dev",
-        "--import-realm",
-        "--http-enabled=true",
-        "--http-port=8080",
-        "--https-port=8443",
-        "--https-certificate-file=/opt/keycloak/conf/tls.crt",
-        "--https-certificate-key-file=/opt/keycloak/conf/tls.key",
-        "--hostname=http://localhost:8080",
-        "--hostname-strict=false",
-        "--hostname-backchannel-dynamic=true",
+    let mut args: Vec<String> = vec![
+        "run".to_owned(),
+        "-d".to_owned(),
+        "--name".to_owned(),
+        KEYCLOAK_CONTAINER_NAME.to_owned(),
+        "--network".to_owned(),
+        network,
+        "-p".to_owned(),
+        "127.0.0.1:8080:8080".to_owned(),
+        "--label".to_owned(),
+        label,
     ];
-    status_checked("docker", args, &[], None)?;
+    for (key, value) in KEYCLOAK_ENV_VARS {
+        args.push("-e".to_owned());
+        args.push(format!("{key}={value}"));
+    }
+    args.extend([
+        "-v".to_owned(),
+        realm_mount,
+        "-v".to_owned(),
+        crt_mount,
+        "-v".to_owned(),
+        key_mount,
+        KEYCLOAK_IMAGE.to_owned(),
+    ]);
+    args.extend(keycloak_startup_args());
+
+    let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
+    status_checked("docker", refs, &[], None)?;
     wait_for_local_keycloak_ready(&cluster.name, &ca_path, Duration::from_secs(120))?;
     println!("Local Keycloak {KEYCLOAK_CONTAINER_NAME} is ready at {KEYCLOAK_ISSUER}");
     Ok(())
@@ -2702,6 +2814,7 @@ mod tests {
         path::{Path, PathBuf},
     };
 
+    use serde_json::Value;
     use veoveo_deploy_contract::{
         DeploymentProfile, DeploymentSourceRole, GatewayActivationSpec, GeneratedPublicFile,
         GeneratedPublicFileKind, InstallationPreset, KubernetesTarget, LoadedProfile,
@@ -2710,9 +2823,14 @@ mod tests {
     };
 
     use super::{
+        CERT_MOUNT_DESTINATION, ContainerInspect, ContainerInspectConfig, ContainerInspectMount,
+        ContainerInspectNetworkSettings, KEY_MOUNT_DESTINATION, KEYCLOAK_ENV_VARS, KEYCLOAK_IMAGE,
+        LOCAL_KEYCLOAK_CONFIG_DIGEST_LABEL, REALM_MOUNT_DESTINATION,
         active_local_keycloak_generation, cleanup_abandoned_local_keycloak_temp_state,
-        ensure_generated_public_files, ensure_local_keycloak_tls_material, gateway_mount_key,
-        generate_local_keycloak_tls_generation, generate_local_keycloak_tls_material, load_profile,
+        compute_local_keycloak_config_fingerprint, ensure_generated_public_files,
+        ensure_local_keycloak_tls_material, gateway_mount_key,
+        generate_local_keycloak_tls_generation, generate_local_keycloak_tls_material,
+        keycloak_startup_args, load_profile, local_keycloak_container_is_valid,
         local_keycloak_current_pointer_path, local_keycloak_generations_dir,
         local_keycloak_state_dir, locked_image_digests_for_registry, normalize_origin,
         ordered_release_values, prepare_gateway_activation, profile_requires_local_keycloak,
@@ -3374,6 +3492,381 @@ mod tests {
         assert_eq!(
             bytes_before, bytes_after,
             "a failed generation attempt must not alter the previously active generation"
+        );
+    }
+
+    // --- Fix 1: configuration fingerprint ---
+
+    fn sample_fingerprint_inputs() -> (Vec<u8>, Vec<String>, Vec<u8>, String) {
+        (
+            b"{\"realm\":\"veoveo-local\"}".to_vec(),
+            keycloak_startup_args(),
+            b"-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n".to_vec(),
+            "aaaabbbbccccdddd".to_owned(),
+        )
+    }
+
+    #[test]
+    fn fingerprint_is_deterministic_for_identical_inputs() {
+        let (realm, args, cert, digest) = sample_fingerprint_inputs();
+        let mounts = [
+            REALM_MOUNT_DESTINATION,
+            CERT_MOUNT_DESTINATION,
+            KEY_MOUNT_DESTINATION,
+        ];
+        let first = compute_local_keycloak_config_fingerprint(
+            KEYCLOAK_IMAGE,
+            &realm,
+            &args,
+            KEYCLOAK_ENV_VARS,
+            &cert,
+            &digest,
+            &mounts,
+            "k3d-veoveo-sumo",
+        );
+        let second = compute_local_keycloak_config_fingerprint(
+            KEYCLOAK_IMAGE,
+            &realm,
+            &args,
+            KEYCLOAK_ENV_VARS,
+            &cert,
+            &digest,
+            &mounts,
+            "k3d-veoveo-sumo",
+        );
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn fingerprint_changes_with_realm_bytes() {
+        let (realm, args, cert, digest) = sample_fingerprint_inputs();
+        let mounts = [
+            REALM_MOUNT_DESTINATION,
+            CERT_MOUNT_DESTINATION,
+            KEY_MOUNT_DESTINATION,
+        ];
+        let baseline = compute_local_keycloak_config_fingerprint(
+            KEYCLOAK_IMAGE,
+            &realm,
+            &args,
+            KEYCLOAK_ENV_VARS,
+            &cert,
+            &digest,
+            &mounts,
+            "k3d-veoveo-sumo",
+        );
+        let mut changed_realm = realm.clone();
+        changed_realm.extend_from_slice(b"x");
+        let changed = compute_local_keycloak_config_fingerprint(
+            KEYCLOAK_IMAGE,
+            &changed_realm,
+            &args,
+            KEYCLOAK_ENV_VARS,
+            &cert,
+            &digest,
+            &mounts,
+            "k3d-veoveo-sumo",
+        );
+        assert_ne!(baseline, changed);
+    }
+
+    #[test]
+    fn fingerprint_changes_with_image() {
+        let (realm, args, cert, digest) = sample_fingerprint_inputs();
+        let mounts = [
+            REALM_MOUNT_DESTINATION,
+            CERT_MOUNT_DESTINATION,
+            KEY_MOUNT_DESTINATION,
+        ];
+        let baseline = compute_local_keycloak_config_fingerprint(
+            KEYCLOAK_IMAGE,
+            &realm,
+            &args,
+            KEYCLOAK_ENV_VARS,
+            &cert,
+            &digest,
+            &mounts,
+            "k3d-veoveo-sumo",
+        );
+        let changed = compute_local_keycloak_config_fingerprint(
+            "quay.io/keycloak/keycloak@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            &realm,
+            &args,
+            KEYCLOAK_ENV_VARS,
+            &cert,
+            &digest,
+            &mounts,
+            "k3d-veoveo-sumo",
+        );
+        assert_ne!(baseline, changed);
+    }
+
+    #[test]
+    fn fingerprint_changes_with_server_certificate_bytes() {
+        let (realm, args, cert, digest) = sample_fingerprint_inputs();
+        let mounts = [
+            REALM_MOUNT_DESTINATION,
+            CERT_MOUNT_DESTINATION,
+            KEY_MOUNT_DESTINATION,
+        ];
+        let baseline = compute_local_keycloak_config_fingerprint(
+            KEYCLOAK_IMAGE,
+            &realm,
+            &args,
+            KEYCLOAK_ENV_VARS,
+            &cert,
+            &digest,
+            &mounts,
+            "k3d-veoveo-sumo",
+        );
+        let changed_cert =
+            b"-----BEGIN CERTIFICATE-----\nBBBB\n-----END CERTIFICATE-----\n".to_vec();
+        let changed = compute_local_keycloak_config_fingerprint(
+            KEYCLOAK_IMAGE,
+            &realm,
+            &args,
+            KEYCLOAK_ENV_VARS,
+            &changed_cert,
+            &digest,
+            &mounts,
+            "k3d-veoveo-sumo",
+        );
+        assert_ne!(baseline, changed);
+    }
+
+    #[test]
+    fn fingerprint_changes_with_ca_generation_digest() {
+        let (realm, args, cert, _digest) = sample_fingerprint_inputs();
+        let mounts = [
+            REALM_MOUNT_DESTINATION,
+            CERT_MOUNT_DESTINATION,
+            KEY_MOUNT_DESTINATION,
+        ];
+        let baseline = compute_local_keycloak_config_fingerprint(
+            KEYCLOAK_IMAGE,
+            &realm,
+            &args,
+            KEYCLOAK_ENV_VARS,
+            &cert,
+            "aaaabbbbccccdddd",
+            &mounts,
+            "k3d-veoveo-sumo",
+        );
+        let changed = compute_local_keycloak_config_fingerprint(
+            KEYCLOAK_IMAGE,
+            &realm,
+            &args,
+            KEYCLOAK_ENV_VARS,
+            &cert,
+            "eeeeffff00001111",
+            &mounts,
+            "k3d-veoveo-sumo",
+        );
+        assert_ne!(baseline, changed);
+    }
+
+    #[test]
+    fn fingerprint_changes_with_a_startup_argument() {
+        let (realm, mut args, cert, digest) = sample_fingerprint_inputs();
+        let mounts = [
+            REALM_MOUNT_DESTINATION,
+            CERT_MOUNT_DESTINATION,
+            KEY_MOUNT_DESTINATION,
+        ];
+        let baseline = compute_local_keycloak_config_fingerprint(
+            KEYCLOAK_IMAGE,
+            &realm,
+            &args,
+            KEYCLOAK_ENV_VARS,
+            &cert,
+            &digest,
+            &mounts,
+            "k3d-veoveo-sumo",
+        );
+        *args.last_mut().unwrap() = "--hostname-backchannel-dynamic=false".to_owned();
+        let changed = compute_local_keycloak_config_fingerprint(
+            KEYCLOAK_IMAGE,
+            &realm,
+            &args,
+            KEYCLOAK_ENV_VARS,
+            &cert,
+            &digest,
+            &mounts,
+            "k3d-veoveo-sumo",
+        );
+        assert_ne!(baseline, changed);
+    }
+
+    #[test]
+    fn fingerprint_changes_with_an_environment_variable() {
+        let (realm, args, cert, digest) = sample_fingerprint_inputs();
+        let mounts = [
+            REALM_MOUNT_DESTINATION,
+            CERT_MOUNT_DESTINATION,
+            KEY_MOUNT_DESTINATION,
+        ];
+        let baseline = compute_local_keycloak_config_fingerprint(
+            KEYCLOAK_IMAGE,
+            &realm,
+            &args,
+            KEYCLOAK_ENV_VARS,
+            &cert,
+            &digest,
+            &mounts,
+            "k3d-veoveo-sumo",
+        );
+        let changed_env: Vec<(&str, &str)> = vec![
+            ("KC_BOOTSTRAP_ADMIN_USERNAME", "admin"),
+            ("KC_BOOTSTRAP_ADMIN_PASSWORD", "changed"),
+        ];
+        let changed = compute_local_keycloak_config_fingerprint(
+            KEYCLOAK_IMAGE,
+            &realm,
+            &args,
+            &changed_env,
+            &cert,
+            &digest,
+            &mounts,
+            "k3d-veoveo-sumo",
+        );
+        assert_ne!(baseline, changed);
+    }
+
+    #[test]
+    fn fingerprint_changes_with_network() {
+        let (realm, args, cert, digest) = sample_fingerprint_inputs();
+        let mounts = [
+            REALM_MOUNT_DESTINATION,
+            CERT_MOUNT_DESTINATION,
+            KEY_MOUNT_DESTINATION,
+        ];
+        let baseline = compute_local_keycloak_config_fingerprint(
+            KEYCLOAK_IMAGE,
+            &realm,
+            &args,
+            KEYCLOAK_ENV_VARS,
+            &cert,
+            &digest,
+            &mounts,
+            "k3d-veoveo-sumo",
+        );
+        let changed = compute_local_keycloak_config_fingerprint(
+            KEYCLOAK_IMAGE,
+            &realm,
+            &args,
+            KEYCLOAK_ENV_VARS,
+            &cert,
+            &digest,
+            &mounts,
+            "k3d-veoveo-other",
+        );
+        assert_ne!(baseline, changed);
+    }
+
+    fn sample_container_inspect(fingerprint: &str, network: &str) -> ContainerInspect {
+        ContainerInspect {
+            config: ContainerInspectConfig {
+                image: KEYCLOAK_IMAGE.to_owned(),
+                labels: Some(BTreeMap::from([(
+                    LOCAL_KEYCLOAK_CONFIG_DIGEST_LABEL.to_owned(),
+                    fingerprint.to_owned(),
+                )])),
+            },
+            mounts: vec![
+                ContainerInspectMount {
+                    source: "/host/realm.json".to_owned(),
+                    destination: REALM_MOUNT_DESTINATION.to_owned(),
+                },
+                ContainerInspectMount {
+                    source: "/host/tls.crt".to_owned(),
+                    destination: CERT_MOUNT_DESTINATION.to_owned(),
+                },
+                ContainerInspectMount {
+                    source: "/host/tls.key".to_owned(),
+                    destination: KEY_MOUNT_DESTINATION.to_owned(),
+                },
+            ],
+            network_settings: ContainerInspectNetworkSettings {
+                networks: BTreeMap::from([(network.to_owned(), Value::Null)]),
+            },
+        }
+    }
+
+    #[test]
+    fn container_without_a_label_is_considered_stale() {
+        let mut inspect = sample_container_inspect("expected-fingerprint", "k3d-veoveo-sumo");
+        inspect.config.labels = None;
+        let expected_mounts = [
+            (Path::new("/host/realm.json"), REALM_MOUNT_DESTINATION),
+            (Path::new("/host/tls.crt"), CERT_MOUNT_DESTINATION),
+            (Path::new("/host/tls.key"), KEY_MOUNT_DESTINATION),
+        ];
+        assert!(
+            !local_keycloak_container_is_valid(
+                &inspect,
+                "k3d-veoveo-sumo",
+                &expected_mounts,
+                "expected-fingerprint"
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn container_with_the_wrong_label_is_considered_stale() {
+        let inspect = sample_container_inspect("stale-fingerprint", "k3d-veoveo-sumo");
+        let expected_mounts = [
+            (Path::new("/host/realm.json"), REALM_MOUNT_DESTINATION),
+            (Path::new("/host/tls.crt"), CERT_MOUNT_DESTINATION),
+            (Path::new("/host/tls.key"), KEY_MOUNT_DESTINATION),
+        ];
+        assert!(
+            !local_keycloak_container_is_valid(
+                &inspect,
+                "k3d-veoveo-sumo",
+                &expected_mounts,
+                "expected-fingerprint"
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn container_with_the_correct_label_and_matching_checks_is_reused() {
+        let inspect = sample_container_inspect("expected-fingerprint", "k3d-veoveo-sumo");
+        let expected_mounts = [
+            (Path::new("/host/realm.json"), REALM_MOUNT_DESTINATION),
+            (Path::new("/host/tls.crt"), CERT_MOUNT_DESTINATION),
+            (Path::new("/host/tls.key"), KEY_MOUNT_DESTINATION),
+        ];
+        assert!(
+            local_keycloak_container_is_valid(
+                &inspect,
+                "k3d-veoveo-sumo",
+                &expected_mounts,
+                "expected-fingerprint"
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn container_with_correct_label_but_wrong_network_is_still_stale() {
+        // The fingerprint check does not replace the existing checks.
+        let inspect = sample_container_inspect("expected-fingerprint", "k3d-veoveo-old");
+        let expected_mounts = [
+            (Path::new("/host/realm.json"), REALM_MOUNT_DESTINATION),
+            (Path::new("/host/tls.crt"), CERT_MOUNT_DESTINATION),
+            (Path::new("/host/tls.key"), KEY_MOUNT_DESTINATION),
+        ];
+        assert!(
+            !local_keycloak_container_is_valid(
+                &inspect,
+                "k3d-veoveo-sumo",
+                &expected_mounts,
+                "expected-fingerprint"
+            )
+            .unwrap()
         );
     }
 
