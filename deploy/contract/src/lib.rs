@@ -296,12 +296,45 @@ pub struct GatewayActivationSpec {
     /// Installation-repository path to the composed control-plane document.
     pub control_plane: PathBuf,
     /// Additional public mounted filename to installation-repository source path.
+    /// Every referenced file must be committed: `profile-up` enforces that its
+    /// bytes are Git-tracked and unchanged from the locked profile revision.
     #[serde(default)]
     pub public_files: BTreeMap<String, PathBuf>,
+    /// Additional public mounted filename produced by a local-cluster lifecycle
+    /// command instead of a committed installation-repository path. Valid only
+    /// when the profile manages `kubernetes.localCluster`; see
+    /// [`GeneratedPublicFile`].
+    #[serde(default)]
+    pub generated_public_files: BTreeMap<String, GeneratedPublicFile>,
     /// Pre-existing Secret containing confidential gateway and identity material.
     pub confidential_secret: String,
     /// Exact Secret data keys that must exist before activation.
     pub required_secret_keys: BTreeSet<String>,
+}
+
+/// A gateway activation public file whose bytes are produced by a same-profile
+/// local-cluster lifecycle command (for example `profile-cluster-up`) instead of
+/// being resolved from a committed installation-repository path. This is the only
+/// way a `gatewayActivation` file may be exempt from Git-tracked reproducibility:
+/// the exemption is scoped to one declared [`GeneratedPublicFileKind`], never to
+/// an arbitrary path, and is rejected outright on a profile that does not manage
+/// `kubernetes.localCluster`. The concrete on-disk location and generator for each
+/// kind are owned by the lifecycle tooling that produces it, not by this contract.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GeneratedPublicFile {
+    /// The exact local generator that owns and produces this file's bytes.
+    pub kind: GeneratedPublicFileKind,
+}
+
+/// Local generators permitted to back a `generatedPublicFiles` entry. Adding a
+/// new local generator means adding a new variant here, not accepting a path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum GeneratedPublicFileKind {
+    /// The CA certificate for a disposable local Keycloak identity provider,
+    /// generated and reconciled by `profile-cluster-up`/`profile-up`.
+    LocalKeycloakCa,
 }
 
 /// Controlled validation applied to a Secret value.
@@ -798,7 +831,10 @@ impl LoadedProfile {
     }
 
     /// Returns every installation-repository file whose bytes affect profile
-    /// validation, resource application, or Helm values.
+    /// validation, resource application, or Helm values. `gatewayActivation`
+    /// contributes only `publicFiles`; `generatedPublicFiles` entries are
+    /// produced locally by lifecycle tooling and are never part of the
+    /// Git-tracked reproducibility contract this method backs.
     pub fn installation_inputs(&self) -> Result<BTreeSet<PathBuf>> {
         let mut paths = BTreeSet::from([self.path.clone()]);
         if let Some(path) = &self.definition.registry.local_config {
@@ -1101,6 +1137,18 @@ impl LoadedProfile {
                 validate_data_key(key)?;
                 require_file(&self.resolve(path), "gateway activation public file")?;
             }
+            for key in activation.generated_public_files.keys() {
+                validate_data_key(key)?;
+                ensure!(
+                    !activation.public_files.contains_key(key),
+                    "gateway activation key {key} is declared in both publicFiles and generatedPublicFiles",
+                );
+            }
+            ensure!(
+                activation.generated_public_files.is_empty()
+                    || profile.kubernetes.local_cluster.is_some(),
+                "gateway activation generatedPublicFiles requires a profile that manages kubernetes.localCluster"
+            );
             validate_name(
                 "gateway activation confidential Secret",
                 &activation.confidential_secret,
@@ -2525,6 +2573,104 @@ mod tests {
         assert!(loaded.definition.sources[0].image_groups.is_empty());
         assert_eq!(loaded.definition.sources[1].image_groups, ["showcase-sumo"]);
         loaded.resolved_platform().expect("resolve platform");
+    }
+
+    #[test]
+    fn sumo_profile_declares_generated_local_keycloak_ca() {
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let profile_path = repository.join("showcase/sumo/deploy/deployment.json");
+        let loaded = LoadedProfile::load(&profile_path, &repository).expect("load SUMO profile");
+        let activation = loaded
+            .definition
+            .gateway_activation
+            .as_ref()
+            .expect("SUMO profile activates the gateway");
+        assert_eq!(
+            activation
+                .generated_public_files
+                .get("ca.pem")
+                .map(|entry| entry.kind),
+            Some(super::GeneratedPublicFileKind::LocalKeycloakCa)
+        );
+        assert!(!activation.public_files.contains_key("ca.pem"));
+    }
+
+    #[test]
+    fn generated_public_files_require_a_local_cluster() {
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let profile_path = repository.join("showcase/sumo/deploy/deployment.json");
+        let loaded = LoadedProfile::load(&profile_path, &repository).expect("load SUMO profile");
+
+        let mut definition = loaded.definition.clone();
+        definition.kubernetes.local_cluster = None;
+        let mutated = LoadedProfile {
+            definition,
+            path: loaded.path.clone(),
+            directory: loaded.directory.clone(),
+            repository: loaded.repository.clone(),
+        };
+        let error = mutated
+            .validate()
+            .expect_err("generatedPublicFiles without a local cluster must fail closed");
+        assert!(error.to_string().contains(
+            "generatedPublicFiles requires a profile that manages kubernetes.localCluster"
+        ));
+    }
+
+    #[test]
+    fn generated_and_public_file_keys_must_be_disjoint() {
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let profile_path = repository.join("showcase/sumo/deploy/deployment.json");
+        let loaded = LoadedProfile::load(&profile_path, &repository).expect("load SUMO profile");
+
+        let mut definition = loaded.definition.clone();
+        let activation = definition
+            .gateway_activation
+            .as_mut()
+            .expect("SUMO profile activates the gateway");
+        let jwks_path = activation
+            .public_files
+            .get("jwks.json")
+            .expect("SUMO profile publishes jwks.json")
+            .clone();
+        activation
+            .public_files
+            .insert("ca.pem".to_owned(), jwks_path);
+        let mutated = LoadedProfile {
+            definition,
+            path: loaded.path.clone(),
+            directory: loaded.directory.clone(),
+            repository: loaded.repository.clone(),
+        };
+        let error = mutated
+            .validate()
+            .expect_err("a key declared in both publicFiles and generatedPublicFiles must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("declared in both publicFiles and generatedPublicFiles")
+        );
+    }
+
+    #[test]
+    fn installation_inputs_include_public_files_but_exclude_generated_public_files() {
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let profile_path = repository.join("showcase/sumo/deploy/deployment.json");
+        let loaded = LoadedProfile::load(&profile_path, &repository).expect("load SUMO profile");
+        let inputs = loaded
+            .installation_inputs()
+            .expect("resolve installation inputs");
+
+        assert!(
+            inputs
+                .iter()
+                .any(|path| path.ends_with("showcase/sumo/deploy/jwks.json")),
+            "publicFiles entries must remain part of the reproducibility contract"
+        );
+        assert!(
+            inputs.iter().all(|path| !path.ends_with("ca.pem")),
+            "generatedPublicFiles must never enter installation_inputs()"
+        );
     }
 
     #[test]

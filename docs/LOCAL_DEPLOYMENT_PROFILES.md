@@ -37,6 +37,14 @@ cargo xtask release images \
 cargo xtask smoke profile-up --profile "$PROFILE" --lock "$LOCK"
 ~~~
 
+A profile whose `gatewayActivation` declares `generatedPublicFiles` (see
+[Generated public files](#generated-public-files)) needs `profile-cluster-up` to have
+generated that material at least once in the current checkout before `profile-validate`
+can fully evaluate the gateway activation; run `profile-cluster-up` first, or expect
+`profile-validate` to fail naming the missing generated file. `profile-up` and
+`release images` are unaffected by this ordering: `profile-up` generates the material
+itself if it is still missing, and `release images` never reads it.
+
 BuildKit pushes images directly to the profile-selected OCI registry. It does not load
 release images into the host Docker image store. The publisher configures the managed
 builder from `registry.pushAddress` and `registry.transport`. Kubernetes receives
@@ -77,7 +85,8 @@ paths resolve inside that source's exact checkout. The fields are:
 | resources.configMaps | File-backed development ConfigMaps |
 | resources.secrets | Environment-backed development Secrets |
 | gatewayActivation.controlPlane | Complete installation-owned composed gateway document |
-| gatewayActivation.publicFiles | Exact public JWKS and CA files referenced by that document |
+| gatewayActivation.publicFiles | Exact public JWKS and CA files referenced by that document, resolved from a committed installation-repository path |
+| gatewayActivation.generatedPublicFiles | Public files referenced by that document but produced by a local-cluster lifecycle command instead of a committed path; see [Generated public files](#generated-public-files) |
 | gatewayActivation.confidentialSecret | Pre-existing Secret that `profile-up` verifies but never rewrites |
 | gatewayActivation.requiredSecretKeys | Secret data keys required before gateway rollout |
 | platform | Typed installation preset or exact components, MCP servers, and artifact audiences |
@@ -105,11 +114,60 @@ digest map in production mode. Installation never re-resolves `HEAD`, a branch, 
 another mutable source expression.
 
 When `gatewayActivation` is present, profile validation parses the control plane, checks
-that its complete file reference set exactly matches `publicFiles`, and validates each
-JWKS or CA bundle. Profile application verifies the confidential Secret keys, creates a
-digest-named immutable ConfigMap, and supplies that name and digest to the platform
-release. A repeated application reuses the same revision, while a changed public input
-is fully installed before Helm starts the replacement gateway.
+that its complete file reference set exactly matches the union of `publicFiles` and
+`generatedPublicFiles`, and validates each JWKS or CA bundle. Profile application
+verifies the confidential Secret keys, creates a digest-named immutable ConfigMap, and
+supplies that name and digest to the platform release. A repeated application reuses
+the same revision, while a changed public input is fully installed before Helm starts
+the replacement gateway.
+
+### Generated public files
+
+A `gatewayActivation.publicFiles` entry is a committed installation-repository path:
+`cargo xtask release images --profile-revision` and `profile-up` both require its bytes
+to be Git-tracked and byte-identical to the locked revision, because that is what makes
+a deployment lock reproducible from a clean checkout. Local material with no stable
+committed form — the CA for a disposable local Keycloak identity provider, generated
+fresh per checkout because its signing key is never persisted — cannot honor that
+contract and must not be forced into it (no `git add -f`, no versioned CA, no versioned
+key).
+
+`gatewayActivation.generatedPublicFiles` is the explicit, typed escape hatch for exactly
+this case. Each entry declares a `kind` from a closed set of local generators (currently
+`local_keycloak_ca`); it never carries a path. The concrete on-disk location and the
+generator that produces it are owned by the lifecycle tooling in
+`testing/smoke/src/bin/smoke/deployment.rs`, not by the profile or by `deploy/contract`.
+Validation enforces:
+
+- `generatedPublicFiles` is valid only on a profile with `kubernetes.localCluster`; a
+  profile without a local cluster cannot declare one.
+- A key cannot appear in both `publicFiles` and `generatedPublicFiles`.
+- The union of both key sets must exactly match the control plane's JWKS and CA
+  references, exactly as it already did for `publicFiles` alone.
+- `generatedPublicFiles` entries are never part of `installation_inputs()`, so they
+  never enter the `release images` or `profile-up` Git-tracked reproducibility checks
+  that cover every other installation input, and `release images` succeeds from a clean
+  checkout of the locked revision even though the CA does not exist yet there.
+
+Local material lifecycle is explicit, not implicit in profile loading:
+
+- `profile-cluster-up` generates each declared kind if missing (idempotent — an existing,
+  valid file is reused) and then reconciles the local service that depends on it (for
+  `local_keycloak_ca`, the `k3d-veoveo-keycloak` container).
+- `profile-up` ensures the same material exists before it builds the gateway activation
+  ConfigMap, so its digest always incorporates the real generated bytes. Running
+  `profile-up` against a profile with `generatedPublicFiles` implicitly generates
+  missing material the same way `profile-cluster-up` does; there is no separate
+  fail-with-a-message mode, because ensuring the material is the lifecycle-consistent
+  choice and the material itself never affects reproducibility.
+- `profile-cluster-stop` never generates material.
+- `profile-cluster-delete` never generates material; it removes whatever already exists.
+- `profile-validate` and every other read-only command never generate or delete
+  anything. For a profile that declares `generatedPublicFiles`, this means
+  `profile-validate` can only fully evaluate the gateway activation after
+  `profile-cluster-up` has generated the material at least once in that checkout; before
+  that, it fails with a message naming the missing file and pointing at
+  `profile-cluster-up`.
 
 The `extension-foundation` preset selects the gateway, platform store, object store,
 artifact service, Artifact MCP, Frames MCP, and Recording MCP/hub. A custom selection
