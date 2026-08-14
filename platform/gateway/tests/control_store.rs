@@ -171,15 +171,16 @@ async fn replicas_reject_a_stale_revision_and_accept_the_declared_revision_concu
     .build()
     .unwrap();
     let store = GatewayControlStore::connect(config).await.unwrap();
-    let previous = revision("gcp-previous", "a".repeat(64), empty_control_plane());
-    let declared = revision("gcp-declared", "b".repeat(64), empty_control_plane());
+    let previous = revision("gcp-seed-a", "a".repeat(64), empty_control_plane());
+    let mut declared = revision("gcp-seed-b", "b".repeat(64), empty_control_plane());
+    declared.applied_at = previous.applied_at;
     store.record_revision(&previous).await.unwrap();
 
     let stale_reads = (0..8)
         .map(|_| {
             let store = store.clone();
             let expected = declared.sha256.clone();
-            tokio::spawn(async move { store.load_active_revision_matching_sha256(&expected).await })
+            tokio::spawn(async move { store.load_active_revision_after_seed(&expected).await })
         })
         .collect::<Vec<_>>();
     for read in stale_reads {
@@ -194,7 +195,7 @@ async fn replicas_reject_a_stale_revision_and_accept_the_declared_revision_concu
         .map(|_| {
             let store = store.clone();
             let expected = declared.sha256.clone();
-            tokio::spawn(async move { store.load_active_revision_matching_sha256(&expected).await })
+            tokio::spawn(async move { store.load_active_revision_after_seed(&expected).await })
         })
         .collect::<Vec<_>>();
     for read in converged_reads {
@@ -202,6 +203,32 @@ async fn replicas_reject_a_stale_revision_and_accept_the_declared_revision_concu
         assert_eq!(loaded.revision_id, declared.revision_id);
         assert_eq!(loaded.sha256, declared.sha256);
     }
+
+    let mut administrative = revision("gcp-administrative", "c".repeat(64), empty_control_plane());
+    administrative.source = GatewayControlPlaneRevisionSource::AdminApi;
+    store.record_revision(&administrative).await.unwrap();
+    let loaded = store
+        .load_active_revision_after_seed(&declared.sha256)
+        .await
+        .unwrap();
+    assert_eq!(loaded.revision_id, administrative.revision_id);
+
+    let newer_seed = revision("gcp-newer-seed", "d".repeat(64), empty_control_plane());
+    store.record_revision(&newer_seed).await.unwrap();
+    let mut later_administrative = revision(
+        "gcp-later-administrative",
+        "e".repeat(64),
+        empty_control_plane(),
+    );
+    later_administrative.source = GatewayControlPlaneRevisionSource::AdminApi;
+    store.record_revision(&later_administrative).await.unwrap();
+    assert!(
+        store
+            .load_active_revision_after_seed(&declared.sha256)
+            .await
+            .is_err(),
+        "a replica accepted an active AdminApi revision after a different seed rollout"
+    );
 }
 
 fn revision(

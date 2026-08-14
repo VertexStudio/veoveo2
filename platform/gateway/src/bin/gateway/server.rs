@@ -338,7 +338,7 @@ async fn load_initial_catalog(
     expected_sha256: &str,
 ) -> anyhow::Result<Arc<GatewayCatalog>> {
     let revision = store
-        .load_active_revision_matching_sha256(expected_sha256)
+        .load_active_revision_after_seed(expected_sha256)
         .await?;
     let catalog = Arc::new(GatewayCatalog::from_control_plane(revision.control_plane)?);
     tracing::info!(

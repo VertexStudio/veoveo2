@@ -66,21 +66,60 @@ impl GatewayControlStore {
             .context("active gateway control-plane revision is invalid")
     }
 
-    pub async fn load_active_revision_matching_sha256(
+    pub async fn load_active_revision_after_seed(
         &self,
-        expected_sha256: &str,
+        expected_seed_sha256: &str,
     ) -> Result<GatewayControlPlaneRevision> {
-        let revision = self.load_active_revision().await?.context(
-            "SurrealDB platform store has no active gateway control-plane revision; run installation-bootstrap first",
+        let seed_before = self.latest_seed_revision_head().await?.context(
+            "SurrealDB platform store has no seed gateway control-plane revision; run installation-bootstrap first",
         )?;
         anyhow::ensure!(
-            revision.sha256 == expected_sha256,
-            "active gateway control-plane revision {} has SHA-256 {}, but this replica requires {}; installation-bootstrap has not activated the mounted control plane",
-            revision.revision_id,
-            revision.sha256,
-            expected_sha256
+            seed_before.sha256 == expected_seed_sha256,
+            "latest seed gateway control-plane revision {} has SHA-256 {}, but this replica requires {}; installation-bootstrap has not activated the mounted seed",
+            seed_before.revision_id,
+            seed_before.sha256,
+            expected_seed_sha256
         );
-        Ok(revision)
+        let active = self.load_active_revision().await?.context(
+            "SurrealDB platform store has no active gateway control-plane revision; run installation-bootstrap first",
+        )?;
+        let seed_after = self.latest_seed_revision_head().await?.context(
+            "seed gateway control-plane revision disappeared while loading the active revision",
+        )?;
+        anyhow::ensure!(
+            seed_after == seed_before,
+            "seed gateway control-plane revision changed from {} to {} while loading the active revision; refusing a mixed rollout snapshot",
+            seed_before.revision_id,
+            seed_after.revision_id
+        );
+        Ok(active)
+    }
+
+    async fn latest_seed_revision_head(&self) -> Result<Option<GatewayControlPlaneRevisionHead>> {
+        let mut response = self
+            .platform
+            .client()
+            .query(
+                r#"SELECT * FROM gateway_control_revision WHERE source = "seed_file" ORDER BY applied_at DESC, revision_id DESC LIMIT 1;"#,
+            )
+            .await
+            .context("failed to load the latest seed gateway control-plane revision")?
+            .check()
+            .context("latest seed gateway control-plane revision query failed")?;
+        let records: Vec<GatewayControlRevisionRecord> = response
+            .take(0)
+            .context("failed to decode the latest seed gateway control-plane revision")?;
+        records
+            .into_iter()
+            .next()
+            .map(|record| -> Result<GatewayControlPlaneRevisionHead> {
+                Ok(GatewayControlPlaneRevisionHead {
+                    revision_id: GatewayControlPlaneRevisionId::new(record.revision_id)?,
+                    sha256: record.sha256,
+                })
+            })
+            .transpose()
+            .context("latest seed gateway control-plane revision head is invalid")
     }
 
     pub async fn load_active_revision_head(
