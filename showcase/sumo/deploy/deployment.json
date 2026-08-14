@@ -82,6 +82,11 @@
     "publicFiles": {
       "jwks.json": "jwks.json"
     },
+    "generatedPublicFiles": {
+      "ca.pem": {
+        "kind": "local_keycloak_ca"
+      }
+    },
     "confidentialSecret": "veoveo-installation-secrets",
     "requiredSecretKeys": [
       "authorization-server-private-key-der-b64",

@@ -279,7 +279,148 @@ pub(crate) async fn sumo_verify(conformance: &Path, context: &str) -> Result<()>
         "Recording Hub did not retain the live SUMO world: {rows:?}"
     );
 
-    println!("sumo verify ok: live k3d TraCI, authenticated MCP task/actuation, and durable world");
+    verify_console_keycloak_login("http://localhost:8780").await?;
+
+    println!(
+        "sumo verify ok: live k3d TraCI, authenticated MCP task/actuation, durable world, and Console Keycloak login"
+    );
+    Ok(())
+}
+
+async fn verify_console_keycloak_login(console_base_url: &str) -> Result<()> {
+    let client = reqwest::Client::builder()
+        .cookie_store(true)
+        .redirect(Policy::none())
+        .timeout(Duration::from_secs(15))
+        .build()?;
+
+    // 1. Hit Console BFF /auth/login
+    let response = client
+        .get(format!("{console_base_url}/auth/login"))
+        .send()
+        .await
+        .context("connecting to Console BFF /auth/login")?;
+    let status = response.status();
+    ensure!(
+        status == StatusCode::SEE_OTHER || status == StatusCode::FOUND,
+        "Console /auth/login returned {status}, expected 303 or 302"
+    );
+    let authorize_location = response
+        .headers()
+        .get(LOCATION)
+        .and_then(|val| val.to_str().ok())
+        .context("Console /auth/login omitted Location header")?
+        .to_owned();
+
+    // 2. Follow redirect to Gateway /oauth/authorize
+    let response = client
+        .get(&authorize_location)
+        .send()
+        .await
+        .context("connecting to Gateway /oauth/authorize")?;
+    let status = response.status();
+    ensure!(
+        status == StatusCode::FOUND || status == StatusCode::SEE_OTHER,
+        "Gateway /oauth/authorize returned {status}, expected 302"
+    );
+    let idp_auth_location = response
+        .headers()
+        .get(LOCATION)
+        .and_then(|val| val.to_str().ok())
+        .context("Gateway /oauth/authorize omitted Location header")?
+        .to_owned();
+
+    // 3. Load Keycloak login page
+    let response = client
+        .get(&idp_auth_location)
+        .send()
+        .await
+        .context("connecting to Keycloak authorization endpoint")?;
+    ensure!(
+        response.status() == StatusCode::OK,
+        "Keycloak authorization page returned {}",
+        response.status()
+    );
+    let html = response.text().await?;
+    let document = scraper::Html::parse_document(&html);
+    let selector = scraper::Selector::parse("form#kc-form-login")
+        .map_err(|err| anyhow!("invalid Keycloak login form selector: {err}"))?;
+    let form_action = document
+        .select(&selector)
+        .next()
+        .and_then(|form| form.value().attr("action"))
+        .context("Keycloak login form omitted action attribute")?;
+    let parsed_action = reqwest::Url::parse(form_action)
+        .or_else(|_| reqwest::Url::parse(&idp_auth_location)?.join(form_action))?;
+
+    // 4. Submit login credentials (alice / keycloak-local-password)
+    let form_body = form_urlencoded(&[
+        ("username", "alice"),
+        ("password", "keycloak-local-password"),
+        ("credentialId", ""),
+    ]);
+    let response = client
+        .post(parsed_action)
+        .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .body(form_body)
+        .send()
+        .await
+        .context("submitting Keycloak login credentials")?;
+    let status = response.status();
+    ensure!(
+        status == StatusCode::FOUND || status == StatusCode::SEE_OTHER,
+        "Keycloak login POST returned {status}, expected redirect"
+    );
+    let gateway_callback_url = response
+        .headers()
+        .get(LOCATION)
+        .and_then(|val| val.to_str().ok())
+        .context("Keycloak login omitted Location header")?
+        .to_owned();
+
+    // 5. Follow redirect to Gateway /oauth/callback
+    let response = client
+        .get(&gateway_callback_url)
+        .send()
+        .await
+        .context("connecting to Gateway /oauth/callback")?;
+    let status = response.status();
+    ensure!(
+        status == StatusCode::FOUND || status == StatusCode::SEE_OTHER,
+        "Gateway /oauth/callback returned {status}, expected redirect to Console /auth/callback"
+    );
+    let console_callback_url = response
+        .headers()
+        .get(LOCATION)
+        .and_then(|val| val.to_str().ok())
+        .context("Gateway /oauth/callback omitted Location header")?
+        .to_owned();
+
+    // 6. Follow redirect to Console BFF /auth/callback
+    let response = client
+        .get(&console_callback_url)
+        .send()
+        .await
+        .context("connecting to Console /auth/callback")?;
+    let status = response.status();
+    ensure!(
+        status == StatusCode::SEE_OTHER || status == StatusCode::FOUND,
+        "Console /auth/callback returned {status}, expected redirect to /console/"
+    );
+
+    // 7. Verify Console /console/ loads with the authenticated session
+    let response = client
+        .get(format!("{console_base_url}/console/"))
+        .send()
+        .await
+        .context("accessing /console/ with authenticated session")?;
+    ensure!(
+        response.status() == StatusCode::OK,
+        "Console /console/ returned {}, expected 200 OK",
+        response.status()
+    );
+
+    println!("Console login verified ok via local Keycloak at {console_base_url}");
     Ok(())
 }
 

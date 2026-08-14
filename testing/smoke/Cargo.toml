@@ -54,3 +54,6 @@ veoveo-sumo-mcp = { path = "../../showcase/sumo/sumo-mcp" }
 
 [build-dependencies]
 duckdb.workspace = true
+
+[dev-dependencies]
+x509-parser.workspace = true

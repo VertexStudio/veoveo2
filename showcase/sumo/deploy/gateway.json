@@ -2,15 +2,30 @@
   "identity_providers": [
     {
       "id": "enterprise",
-      "issuer": "https://idp.example.com",
+      "issuer": "http://localhost:8080/realms/veoveo-local",
       "jwks": {
-        "source": "file",
-        "path": "/etc/veoveo/gateway/jwks.json"
+        "source": "remote",
+        "jwks_uri": "https://k3d-veoveo-keycloak:8443/realms/veoveo-local/protocol/openid-connect/certs"
       },
-      "authorization_endpoint": "https://idp.example.com/oauth2/authorize",
-      "token_endpoint": "https://idp.example.com/oauth2/token",
-      "enterprise_managed_authorization_endpoint": "https://idp.example.com/oauth2/id-jag",
-      "metadata": {}
+      "trusted_certificate_authorities": [
+        {
+          "source": "file",
+          "path": "/etc/veoveo/gateway/ca.pem"
+        }
+      ],
+      "claim_mapping": {
+        "subject": "sub",
+        "tenant": {
+          "claim": "tenant"
+        }
+      },
+      "authorization_endpoint": "http://localhost:8080/realms/veoveo-local/protocol/openid-connect/auth",
+      "token_endpoint": "https://k3d-veoveo-keycloak:8443/realms/veoveo-local/protocol/openid-connect/token",
+      "metadata": {
+        "provider": "keycloak",
+        "realm": "veoveo-local",
+        "purpose": "local_development_identity"
+      }
     }
   ],
   "authorization_servers": [

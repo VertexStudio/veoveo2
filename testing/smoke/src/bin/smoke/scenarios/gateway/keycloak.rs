@@ -1,4 +1,3 @@
-use rcgen::generate_simple_self_signed;
 use scraper::{Html, Selector};
 
 use super::*;
@@ -38,12 +37,18 @@ pub(crate) async fn gateway_keycloak(
     let keycloak_base = format!("https://127.0.0.1:{keycloak_port}");
     let issuer = format!("{keycloak_base}/realms/{KEYCLOAK_REALM}");
     let discovery_url = format!("{issuer}/.well-known/openid-configuration");
+    let ca_path = tmpdir.join("keycloak-ca.pem");
     let cert_path = tmpdir.join("keycloak-cert.pem");
     let key_path = tmpdir.join("keycloak-key.pem");
     let control_plane = tmpdir.join("gateway.keycloak.json");
     let gateway_log = tmpdir.join("gateway.log");
 
-    write_keycloak_certificate(&cert_path, &key_path)?;
+    generate_keycloak_tls_material(
+        &ca_path,
+        &cert_path,
+        &key_path,
+        vec!["127.0.0.1".to_owned(), "localhost".to_owned()],
+    )?;
     let suffix = uuid::Uuid::now_v7().simple().to_string();
     let container_name = format!("veoveo-keycloak-{suffix}");
     let _keycloak = ContainerGuard::new(container_name.clone());
@@ -85,10 +90,10 @@ pub(crate) async fn gateway_keycloak(
         [],
     )?;
 
-    let idp = keycloak_client(&cert_path)?;
+    let idp = keycloak_client(&ca_path)?;
     let discovery = wait_for_keycloak(&idp, &discovery_url, &container_name).await?;
     validate_keycloak_discovery(&discovery, &issuer)?;
-    write_keycloak_control_plane(base_control_plane, &control_plane, &cert_path, &discovery)?;
+    write_keycloak_control_plane(base_control_plane, &control_plane, &ca_path, &discovery)?;
 
     let auth_private_key = run_checked(conformance, ["gateway-private-key-der-b64".into()], [])?;
     let platform_store = spawn_gateway_platform_store(gateway, &control_plane).await?;
@@ -114,7 +119,7 @@ pub(crate) async fn gateway_keycloak(
     wait_for_http(&format!("{gateway_base}/healthz")).await?;
     assert_ready_profiles(&gateway_base, 2).await?;
 
-    exercise_keycloak_browser_flow(&gateway_base, &issuer, &cert_path).await?;
+    exercise_keycloak_browser_flow(&gateway_base, &issuer, &ca_path).await?;
 
     gateway_child.stop();
     cleanup.remove_on_drop();
@@ -122,11 +127,32 @@ pub(crate) async fn gateway_keycloak(
     Ok(())
 }
 
-fn write_keycloak_certificate(cert_path: &Path, key_path: &Path) -> Result<()> {
-    let certified_key =
-        generate_simple_self_signed(vec!["127.0.0.1".to_owned(), "localhost".to_owned()])?;
-    fs::write(cert_path, certified_key.cert.pem())?;
-    fs::write(key_path, certified_key.signing_key.serialize_pem())?;
+pub fn generate_keycloak_tls_material(
+    ca_cert_path: &Path,
+    server_cert_path: &Path,
+    server_key_path: &Path,
+    sans: Vec<String>,
+) -> Result<()> {
+    let mut ca_params = rcgen::CertificateParams::default();
+    ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    ca_params
+        .distinguished_name
+        .push(rcgen::DnType::CommonName, "Veoveo Local Keycloak CA");
+    let ca_key = rcgen::KeyPair::generate()?;
+    let ca_cert = ca_params.self_signed(&ca_key)?;
+
+    let mut server_params = rcgen::CertificateParams::new(sans)?;
+    server_params.is_ca = rcgen::IsCa::ExplicitNoCa;
+    server_params
+        .extended_key_usages
+        .push(rcgen::ExtendedKeyUsagePurpose::ServerAuth);
+    let server_key = rcgen::KeyPair::generate()?;
+    let ca_issuer = rcgen::Issuer::from_params(&ca_params, &ca_key);
+    let server_cert = server_params.signed_by(&server_key, &ca_issuer)?;
+
+    fs::write(ca_cert_path, ca_cert.pem())?;
+    fs::write(server_cert_path, server_cert.pem())?;
+    fs::write(server_key_path, server_key.serialize_pem())?;
     Ok(())
 }
 
@@ -201,6 +227,148 @@ fn discovery_string<'a>(discovery: &'a Value, field: &str) -> Result<&'a str> {
         .ok_or_else(|| anyhow!("Keycloak discovery omitted `{field}`: {discovery}"))
 }
 
+pub(crate) fn remove_enterprise_managed_authorization(control_plane: &mut Value) -> Result<()> {
+    let cp_obj = control_plane
+        .as_object_mut()
+        .context("gateway control plane root must be a JSON object")?;
+
+    if let Some(idps) = cp_obj.get_mut("identity_providers") {
+        let idps_arr = idps
+            .as_array_mut()
+            .context("`identity_providers` must be a JSON array")?;
+        for idp in idps_arr {
+            let idp_obj = idp
+                .as_object_mut()
+                .context("identity provider must be a JSON object")?;
+            idp_obj.remove("enterprise_managed_authorization_endpoint");
+        }
+    }
+
+    if let Some(profiles) = cp_obj.get_mut("profiles") {
+        let profiles_arr = profiles
+            .as_array_mut()
+            .context("`profiles` must be a JSON array")?;
+        for profile in profiles_arr {
+            let profile_obj = profile
+                .as_object_mut()
+                .context("profile must be a JSON object")?;
+            if let Some(auth_modes) = profile_obj.get_mut("auth_modes") {
+                let auth_modes_arr = auth_modes
+                    .as_array_mut()
+                    .context("`auth_modes` must be a JSON array")?;
+                auth_modes_arr.retain(|mode| mode != "enterprise_managed_authorization");
+            }
+        }
+    }
+
+    let mut removed_client_ids = std::collections::HashSet::new();
+    if let Some(clients) = cp_obj.get_mut("oauth_clients") {
+        let clients_arr = clients
+            .as_array_mut()
+            .context("`oauth_clients` must be a JSON array")?;
+
+        let mut retained_clients = Vec::new();
+        for mut client in clients_arr.drain(..) {
+            let client_obj = client
+                .as_object_mut()
+                .context("oauth client must be a JSON object")?;
+            let client_id = client_obj
+                .get("id")
+                .and_then(Value::as_str)
+                .context("oauth client missing `id` string field")?
+                .to_string();
+
+            let grant_types_val = client_obj
+                .get_mut("grant_types")
+                .context("oauth client missing `grant_types`")?;
+            let grant_types_arr = grant_types_val
+                .as_array_mut()
+                .context("oauth client `grant_types` must be a JSON array")?;
+
+            grant_types_arr.retain(|grant| grant != "enterprise_managed_authorization");
+
+            if grant_types_arr.is_empty() {
+                removed_client_ids.insert(client_id);
+            } else {
+                retained_clients.push(client);
+            }
+        }
+        *clients_arr = retained_clients;
+    }
+
+    if let Some(work_contexts) = cp_obj.get_mut("work_contexts") {
+        let work_contexts_arr = work_contexts
+            .as_array_mut()
+            .context("`work_contexts` must be a JSON array")?;
+        for wc in work_contexts_arr {
+            let wc_obj = wc
+                .as_object_mut()
+                .context("work context must be a JSON object")?;
+            if let Some(memberships) = wc_obj.get_mut("memberships") {
+                let memberships_arr = memberships
+                    .as_array_mut()
+                    .context("`memberships` must be a JSON array")?;
+                for membership in memberships_arr {
+                    let membership_obj = membership
+                        .as_object_mut()
+                        .context("membership rule must be a JSON object")?;
+                    if let Some(oauth_clients) = membership_obj.get_mut("oauth_clients") {
+                        let oauth_clients_arr = oauth_clients
+                            .as_array_mut()
+                            .context("`oauth_clients` in membership must be a JSON array")?;
+                        oauth_clients_arr.retain(|client_id_val| {
+                            if let Some(id_str) = client_id_val.as_str() {
+                                !removed_client_ids.contains(id_str)
+                            } else {
+                                true
+                            }
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(clients) = cp_obj.get("oauth_clients") {
+        if let Some(clients_arr) = clients.as_array() {
+            for client in clients_arr {
+                let id = client
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("<unknown>");
+                let grants = client.get("grant_types").and_then(Value::as_array);
+                if grants.is_none_or(|g| g.is_empty()) {
+                    bail!("OAuth client `{id}` has empty grant_types after adaptation");
+                }
+            }
+        }
+    }
+
+    if let Some(work_contexts) = cp_obj.get("work_contexts") {
+        if let Some(work_contexts_arr) = work_contexts.as_array() {
+            for wc in work_contexts_arr {
+                if let Some(memberships) = wc.get("memberships").and_then(Value::as_array) {
+                    for m in memberships {
+                        if let Some(clients) = m.get("oauth_clients").and_then(Value::as_array) {
+                            for c in clients {
+                                if let Some(cid) = c.as_str() {
+                                    if removed_client_ids.contains(cid) {
+                                        bail!(
+                                            "Work context membership retained reference to removed client `{cid}`"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn write_keycloak_control_plane(
     base: &Path,
     output: &Path,
@@ -208,6 +376,8 @@ fn write_keycloak_control_plane(
     discovery: &Value,
 ) -> Result<()> {
     let mut control_plane: Value = serde_json::from_str(&fs::read_to_string(base)?)?;
+    remove_enterprise_managed_authorization(&mut control_plane)?;
+
     let identity_provider = control_plane
         .get_mut("identity_providers")
         .and_then(Value::as_array_mut)
@@ -241,29 +411,7 @@ fn write_keycloak_control_plane(
         "realm": KEYCLOAK_REALM,
         "purpose": "provider_independent_identity_integration"
     });
-    identity_provider
-        .as_object_mut()
-        .context("identity provider was not an object")?
-        .remove("enterprise_managed_authorization_endpoint");
 
-    for profile in control_plane
-        .get_mut("profiles")
-        .and_then(Value::as_array_mut)
-        .context("control plane has no profiles array")?
-    {
-        if let Some(auth_modes) = profile.get_mut("auth_modes").and_then(Value::as_array_mut) {
-            auth_modes.retain(|mode| mode != "enterprise_managed_authorization");
-        }
-    }
-    for client in control_plane
-        .get_mut("oauth_clients")
-        .and_then(Value::as_array_mut)
-        .context("control plane has no oauth_clients array")?
-    {
-        if let Some(grant_types) = client.get_mut("grant_types").and_then(Value::as_array_mut) {
-            grant_types.retain(|grant| grant != "enterprise_managed_authorization");
-        }
-    }
     let oidc_client = control_plane
         .get_mut("oidc_clients")
         .and_then(Value::as_array_mut)
@@ -517,4 +665,332 @@ fn assert_keycloak_gateway_identity(access_token: &str) -> Result<()> {
         bail!("gateway token did not retain the Keycloak operator role: {payload}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn removes_enterprise_only_client_and_work_context_references() -> Result<()> {
+        let mut control_plane = serde_json::json!({
+            "identity_providers": [
+                {
+                    "id": "enterprise",
+                    "issuer": "https://idp.example.com",
+                    "enterprise_managed_authorization_endpoint": "https://idp.example.com/oauth2/id-jag"
+                }
+            ],
+            "profiles": [
+                {
+                    "id": "operator",
+                    "auth_modes": [
+                        "enterprise_managed_authorization",
+                        "oidc_authorization_code_pkce"
+                    ]
+                }
+            ],
+            "work_contexts": [
+                {
+                    "id": "operations",
+                    "memberships": [
+                        {
+                            "level": "contributor",
+                            "oauth_clients": [
+                                "operator-delegated",
+                                "operator-local-public"
+                            ]
+                        }
+                    ]
+                }
+            ],
+            "oauth_clients": [
+                {
+                    "id": "operator-delegated",
+                    "grant_types": [
+                        "enterprise_managed_authorization"
+                    ]
+                },
+                {
+                    "id": "operator-local-public",
+                    "grant_types": [
+                        "authorization_code_pkce",
+                        "refresh_token"
+                    ]
+                }
+            ]
+        });
+
+        remove_enterprise_managed_authorization(&mut control_plane)?;
+
+        // IdP endpoint removed
+        assert!(
+            control_plane["identity_providers"][0]
+                .get("enterprise_managed_authorization_endpoint")
+                .is_none()
+        );
+
+        // Profile auth_mode removed
+        let auth_modes = control_plane["profiles"][0]["auth_modes"]
+            .as_array()
+            .unwrap();
+        assert_eq!(
+            auth_modes,
+            &vec![serde_json::json!("oidc_authorization_code_pkce")]
+        );
+
+        // Exclusive enterprise client removed
+        let clients = control_plane["oauth_clients"].as_array().unwrap();
+        assert_eq!(clients.len(), 1);
+        assert_eq!(clients[0]["id"], "operator-local-public");
+
+        // Work context reference removed while ordinary client is preserved
+        let wc_clients = control_plane["work_contexts"][0]["memberships"][0]["oauth_clients"]
+            .as_array()
+            .unwrap();
+        assert_eq!(
+            wc_clients,
+            &vec![serde_json::json!("operator-local-public")]
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn preserves_mixed_grant_client_without_enterprise_grant() -> Result<()> {
+        let mut control_plane = serde_json::json!({
+            "identity_providers": [],
+            "profiles": [],
+            "work_contexts": [
+                {
+                    "id": "operations",
+                    "memberships": [
+                        {
+                            "level": "contributor",
+                            "oauth_clients": [
+                                "mixed-client"
+                            ]
+                        }
+                    ]
+                }
+            ],
+            "oauth_clients": [
+                {
+                    "id": "mixed-client",
+                    "grant_types": [
+                        "authorization_code_pkce",
+                        "enterprise_managed_authorization",
+                        "refresh_token"
+                    ]
+                }
+            ]
+        });
+
+        remove_enterprise_managed_authorization(&mut control_plane)?;
+
+        let clients = control_plane["oauth_clients"].as_array().unwrap();
+        assert_eq!(clients.len(), 1);
+        assert_eq!(clients[0]["id"], "mixed-client");
+        let grants = clients[0]["grant_types"].as_array().unwrap();
+        assert_eq!(
+            grants,
+            &vec![
+                serde_json::json!("authorization_code_pkce"),
+                serde_json::json!("refresh_token")
+            ]
+        );
+
+        // Work context reference preserved
+        let wc_clients = control_plane["work_contexts"][0]["memberships"][0]["oauth_clients"]
+            .as_array()
+            .unwrap();
+        assert_eq!(wc_clients, &vec![serde_json::json!("mixed-client")]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn transformation_is_idempotent() -> Result<()> {
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let smoke_cfg = repository.join("configs/gateway.smoke.json");
+        let mut control_plane: Value = serde_json::from_str(&fs::read_to_string(&smoke_cfg)?)?;
+
+        remove_enterprise_managed_authorization(&mut control_plane)?;
+        let first_pass = control_plane.clone();
+
+        remove_enterprise_managed_authorization(&mut control_plane)?;
+        assert_eq!(control_plane, first_pass);
+
+        // Ensure every remaining client has grants
+        for client in control_plane["oauth_clients"].as_array().unwrap() {
+            let grants = client["grant_types"].as_array().unwrap();
+            assert!(
+                !grants.is_empty(),
+                "client {:?} has empty grants",
+                client["id"]
+            );
+        }
+
+        Ok(())
+    }
+
+    const REQUIRED_TEST_SANS: &[&str] = &["localhost", "127.0.0.1", "k3d-veoveo-keycloak"];
+
+    fn required_test_sans() -> Vec<String> {
+        REQUIRED_TEST_SANS
+            .iter()
+            .map(|san| san.to_string())
+            .collect()
+    }
+
+    fn general_name_value(name: &x509_parser::extensions::GeneralName<'_>) -> Option<String> {
+        use x509_parser::extensions::GeneralName;
+        match name {
+            GeneralName::DNSName(value) => Some((*value).to_owned()),
+            GeneralName::IPAddress(bytes) => match bytes.len() {
+                4 => Some(
+                    std::net::Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3]).to_string(),
+                ),
+                16 => <[u8; 16]>::try_from(*bytes)
+                    .ok()
+                    .map(std::net::Ipv6Addr::from)
+                    .map(|address| address.to_string()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn generates_ca_and_server_material_in_a_tempdir() -> Result<()> {
+        let workspace = tempfile::tempdir()?;
+        let ca_cert_path = workspace.path().join("ca.pem");
+        let server_cert_path = workspace.path().join("tls.crt");
+        let server_key_path = workspace.path().join("tls.key");
+
+        generate_keycloak_tls_material(
+            &ca_cert_path,
+            &server_cert_path,
+            &server_key_path,
+            required_test_sans(),
+        )?;
+
+        let ca_pem = x509_parser::pem::Pem::read(std::io::Cursor::new(fs::read(&ca_cert_path)?))
+            .map_err(|error| anyhow!("reading generated CA PEM: {error}"))?
+            .0;
+        let ca_cert = ca_pem
+            .parse_x509()
+            .map_err(|error| anyhow!("parsing generated CA certificate: {error}"))?;
+        assert!(
+            ca_cert.is_ca(),
+            "generated CA certificate must set basicConstraints CA:true"
+        );
+
+        let server_pem =
+            x509_parser::pem::Pem::read(std::io::Cursor::new(fs::read(&server_cert_path)?))
+                .map_err(|error| anyhow!("reading generated server certificate PEM: {error}"))?
+                .0;
+        let server_cert = server_pem
+            .parse_x509()
+            .map_err(|error| anyhow!("parsing generated server certificate: {error}"))?;
+        assert!(
+            !server_cert.is_ca(),
+            "generated server certificate must not be a CA"
+        );
+        assert!(!fs::read_to_string(&server_key_path)?.is_empty());
+
+        Ok(())
+    }
+
+    #[test]
+    fn server_certificate_includes_required_subject_alternative_names() -> Result<()> {
+        let workspace = tempfile::tempdir()?;
+        let ca_cert_path = workspace.path().join("ca.pem");
+        let server_cert_path = workspace.path().join("tls.crt");
+        let server_key_path = workspace.path().join("tls.key");
+
+        generate_keycloak_tls_material(
+            &ca_cert_path,
+            &server_cert_path,
+            &server_key_path,
+            required_test_sans(),
+        )?;
+
+        let server_pem =
+            x509_parser::pem::Pem::read(std::io::Cursor::new(fs::read(&server_cert_path)?))
+                .map_err(|error| anyhow!("reading generated server certificate PEM: {error}"))?
+                .0;
+        let server_cert = server_pem
+            .parse_x509()
+            .map_err(|error| anyhow!("parsing generated server certificate: {error}"))?;
+        let observed = server_cert
+            .subject_alternative_name()
+            .context("reading generated server certificate SAN extension")?
+            .context("generated server certificate omitted a Subject Alternative Name extension")?
+            .value
+            .general_names
+            .iter()
+            .filter_map(general_name_value)
+            .collect::<std::collections::BTreeSet<_>>();
+        let expected = required_test_sans().into_iter().collect();
+        assert_eq!(observed, expected);
+
+        Ok(())
+    }
+
+    #[test]
+    fn loads_generated_ca_via_reqwest_and_rustls() -> Result<()> {
+        let workspace = tempfile::tempdir()?;
+        let ca_cert_path = workspace.path().join("ca.pem");
+        let server_cert_path = workspace.path().join("tls.crt");
+        let server_key_path = workspace.path().join("tls.key");
+
+        generate_keycloak_tls_material(
+            &ca_cert_path,
+            &server_cert_path,
+            &server_key_path,
+            required_test_sans(),
+        )?;
+
+        let ca_bytes = fs::read(&ca_cert_path)?;
+        reqwest::Certificate::from_pem(&ca_bytes)
+            .context("loading generated CA into a reqwest trust root")?;
+
+        let ca_der = x509_parser::pem::Pem::read(std::io::Cursor::new(ca_bytes))
+            .map_err(|error| anyhow!("reading generated CA PEM: {error}"))?
+            .0
+            .contents;
+        let mut roots = rustls::RootCertStore::empty();
+        roots
+            .add(rustls::pki_types::CertificateDer::from(ca_der))
+            .map_err(|error| anyhow!("loading generated CA into a rustls trust store: {error}"))?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn does_not_write_to_versioned_repository_paths() -> Result<()> {
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let watched = [
+            repository.join("showcase/sumo/deploy/ca.pem"),
+            repository.join("configs/keycloak/tls.crt"),
+            repository.join("configs/keycloak/tls.key"),
+        ];
+        let before = watched.iter().map(|path| path.exists()).collect::<Vec<_>>();
+
+        let workspace = tempfile::tempdir()?;
+        generate_keycloak_tls_material(
+            &workspace.path().join("ca.pem"),
+            &workspace.path().join("tls.crt"),
+            &workspace.path().join("tls.key"),
+            required_test_sans(),
+        )?;
+
+        let after = watched.iter().map(|path| path.exists()).collect::<Vec<_>>();
+        assert_eq!(
+            before, after,
+            "generating Keycloak TLS material must not touch versioned repository paths"
+        );
+        Ok(())
+    }
 }
