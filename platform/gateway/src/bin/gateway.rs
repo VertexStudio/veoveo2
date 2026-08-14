@@ -214,6 +214,9 @@ enum Command {
         /// Public base URL for metadata and authorization challenges.
         #[arg(long)]
         public_base_url: String,
+        /// JSON control plane this replica must observe as active before serving traffic.
+        #[arg(long)]
+        control_plane: PathBuf,
         /// Private artifact service base URL used by the authorized download proxy.
         #[arg(
             long,
@@ -460,6 +463,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Serve {
             port,
             public_base_url,
+            control_plane,
             artifact_service_url,
             store,
             internal_signing_key_der_b64,
@@ -482,6 +486,7 @@ async fn main() -> anyhow::Result<()> {
             server::serve(server::ServeConfig {
                 port,
                 public_base_url,
+                control_plane,
                 artifact_service_url,
                 control_store,
                 internal_signing_key_der_b64: internal_signing_key_der_b64.0,
@@ -575,6 +580,8 @@ mod tests {
             "serve",
             "--public-base-url",
             "https://veoveo.example",
+            "--control-plane",
+            "configs/gateway.smoke.json",
             "--internal-signing-key-der-b64",
             "internal-signing-secret",
             "--refresh-delivery-key-b64",

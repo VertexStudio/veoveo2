@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, net::SocketAddr, sync::Arc};
+use std::{collections::BTreeMap, net::SocketAddr, path::PathBuf, sync::Arc};
 
 use anyhow::Context;
 use axum::{
@@ -56,6 +56,7 @@ use super::{
 pub(super) struct ServeConfig {
     pub(super) port: u16,
     pub(super) public_base_url: String,
+    pub(super) control_plane: PathBuf,
     pub(super) artifact_service_url: String,
     pub(super) control_store: GatewayControlStore,
     pub(super) internal_signing_key_der_b64: SecretString,
@@ -71,6 +72,7 @@ pub(super) async fn serve(config: ServeConfig) -> anyhow::Result<()> {
     let ServeConfig {
         port,
         public_base_url,
+        control_plane,
         artifact_service_url,
         control_store,
         internal_signing_key_der_b64,
@@ -87,7 +89,14 @@ pub(super) async fn serve(config: ServeConfig) -> anyhow::Result<()> {
     run_gateway_retention_gc(&gateway_state, retention).await?;
     spawn_gateway_retention_gc_loop(gateway_state.clone(), retention);
     spawn_refresh_delivery_gc_loop(gateway_state.clone());
-    let initial_catalog = load_initial_catalog(&control_store).await?;
+    let expected_catalog = GatewayCatalog::load_json(&control_plane).with_context(|| {
+        format!(
+            "failed to load expected control plane {}",
+            control_plane.display()
+        )
+    })?;
+    let expected_sha256 = super::control_plane_sha256(expected_catalog.control_plane())?;
+    let initial_catalog = load_initial_catalog(&control_store, &expected_sha256).await?;
     let catalog = GatewayCatalogHandle::new(initial_catalog.clone());
     let internal_signing_key_der = BASE64_STANDARD
         .decode(internal_signing_key_der_b64.expose_secret().trim())
@@ -324,10 +333,13 @@ pub(super) async fn serve(config: ServeConfig) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn load_initial_catalog(store: &GatewayControlStore) -> anyhow::Result<Arc<GatewayCatalog>> {
-    let revision = store.load_active_revision().await?.context(
-        "SurrealDB platform store has no active gateway control-plane revision; run installation-bootstrap first",
-    )?;
+async fn load_initial_catalog(
+    store: &GatewayControlStore,
+    expected_sha256: &str,
+) -> anyhow::Result<Arc<GatewayCatalog>> {
+    let revision = store
+        .load_active_revision_matching_sha256(expected_sha256)
+        .await?;
     let catalog = Arc::new(GatewayCatalog::from_control_plane(revision.control_plane)?);
     tracing::info!(
         revision_id = %revision.revision_id,

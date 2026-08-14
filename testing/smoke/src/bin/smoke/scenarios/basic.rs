@@ -436,6 +436,8 @@ pub(crate) async fn helm_config() -> Result<()> {
         &bioma,
         &format!("checksum/control-plane: \"{control_plane_revision}\""),
     )?;
+    contains(&bioma, "- --control-plane")?;
+    contains(&bioma, "- /etc/veoveo/gateway/gateway.json")?;
     contains(&bioma, "veoveo.ai/bootstrap-revision:")?;
     not_contains(&bioma, "veoveo.ai/bootstrap-revision: \"bootstrap-1\"")?;
     for forbidden in ["name: otel-collector", "secretName: bioma-ingress-tls"] {

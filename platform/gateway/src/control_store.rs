@@ -66,6 +66,23 @@ impl GatewayControlStore {
             .context("active gateway control-plane revision is invalid")
     }
 
+    pub async fn load_active_revision_matching_sha256(
+        &self,
+        expected_sha256: &str,
+    ) -> Result<GatewayControlPlaneRevision> {
+        let revision = self.load_active_revision().await?.context(
+            "SurrealDB platform store has no active gateway control-plane revision; run installation-bootstrap first",
+        )?;
+        anyhow::ensure!(
+            revision.sha256 == expected_sha256,
+            "active gateway control-plane revision {} has SHA-256 {}, but this replica requires {}; installation-bootstrap has not activated the mounted control plane",
+            revision.revision_id,
+            revision.sha256,
+            expected_sha256
+        );
+        Ok(revision)
+    }
+
     pub async fn load_active_revision_head(
         &self,
     ) -> Result<Option<GatewayControlPlaneRevisionHead>> {

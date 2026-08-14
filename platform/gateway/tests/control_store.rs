@@ -146,6 +146,64 @@ async fn publishes_immutable_revisions_and_moves_active_pointer_atomically() {
     );
 }
 
+#[tokio::test]
+async fn replicas_reject_a_stale_revision_and_accept_the_declared_revision_concurrently() {
+    if std::env::var("VEOVEO_SURREAL_INTEGRATION").as_deref() != Ok("1") {
+        return;
+    }
+
+    let endpoint = std::env::var("VEOVEO_SURREAL_ENDPOINT")
+        .unwrap_or_else(|_| "ws://127.0.0.1:8000".to_owned());
+    let namespace = std::env::var("VEOVEO_SURREAL_NAMESPACE")
+        .unwrap_or_else(|_| "veoveo_integration".to_owned());
+    let database_prefix =
+        std::env::var("VEOVEO_SURREAL_DATABASE").unwrap_or_else(|_| "platform_test".to_owned());
+    let username = std::env::var("VEOVEO_SURREAL_USERNAME").unwrap_or_else(|_| "root".to_owned());
+    let password = std::env::var("VEOVEO_SURREAL_PASSWORD").unwrap_or_else(|_| "root".to_owned());
+    let database = format!("{database_prefix}_{}", Uuid::new_v4().simple());
+    let config = StoreConfig::builder(
+        endpoint,
+        namespace,
+        database,
+        StoreCredentials::root(username, password),
+    )
+    .migrate_on_connect(true)
+    .build()
+    .unwrap();
+    let store = GatewayControlStore::connect(config).await.unwrap();
+    let previous = revision("gcp-previous", "a".repeat(64), empty_control_plane());
+    let declared = revision("gcp-declared", "b".repeat(64), empty_control_plane());
+    store.record_revision(&previous).await.unwrap();
+
+    let stale_reads = (0..8)
+        .map(|_| {
+            let store = store.clone();
+            let expected = declared.sha256.clone();
+            tokio::spawn(async move { store.load_active_revision_matching_sha256(&expected).await })
+        })
+        .collect::<Vec<_>>();
+    for read in stale_reads {
+        assert!(
+            read.await.unwrap().is_err(),
+            "a replica accepted the previous active revision"
+        );
+    }
+
+    store.record_revision(&declared).await.unwrap();
+    let converged_reads = (0..8)
+        .map(|_| {
+            let store = store.clone();
+            let expected = declared.sha256.clone();
+            tokio::spawn(async move { store.load_active_revision_matching_sha256(&expected).await })
+        })
+        .collect::<Vec<_>>();
+    for read in converged_reads {
+        let loaded = read.await.unwrap().unwrap();
+        assert_eq!(loaded.revision_id, declared.revision_id);
+        assert_eq!(loaded.sha256, declared.sha256);
+    }
+}
+
 fn revision(
     id: &str,
     sha256: String,

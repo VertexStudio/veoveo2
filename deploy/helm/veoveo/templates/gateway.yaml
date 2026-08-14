@@ -64,6 +64,8 @@ spec:
             - "8788"
             - --public-base-url
             - {{ .Values.global.publicBaseUrl | quote }}
+            - --control-plane
+            - /etc/veoveo/gateway/{{ .Values.gateway.controlPlaneKey }}
             - --artifact-service-url
             - http://artifact-service:8790
           env:
