@@ -329,35 +329,35 @@ pub(crate) fn remove_enterprise_managed_authorization(control_plane: &mut Value)
         }
     }
 
-    if let Some(clients) = cp_obj.get("oauth_clients") {
-        if let Some(clients_arr) = clients.as_array() {
-            for client in clients_arr {
-                let id = client
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .unwrap_or("<unknown>");
-                let grants = client.get("grant_types").and_then(Value::as_array);
-                if grants.is_none_or(|g| g.is_empty()) {
-                    bail!("OAuth client `{id}` has empty grant_types after adaptation");
-                }
+    if let Some(clients) = cp_obj.get("oauth_clients")
+        && let Some(clients_arr) = clients.as_array()
+    {
+        for client in clients_arr {
+            let id = client
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("<unknown>");
+            let grants = client.get("grant_types").and_then(Value::as_array);
+            if grants.is_none_or(|g| g.is_empty()) {
+                bail!("OAuth client `{id}` has empty grant_types after adaptation");
             }
         }
     }
 
-    if let Some(work_contexts) = cp_obj.get("work_contexts") {
-        if let Some(work_contexts_arr) = work_contexts.as_array() {
-            for wc in work_contexts_arr {
-                if let Some(memberships) = wc.get("memberships").and_then(Value::as_array) {
-                    for m in memberships {
-                        if let Some(clients) = m.get("oauth_clients").and_then(Value::as_array) {
-                            for c in clients {
-                                if let Some(cid) = c.as_str() {
-                                    if removed_client_ids.contains(cid) {
-                                        bail!(
-                                            "Work context membership retained reference to removed client `{cid}`"
-                                        );
-                                    }
-                                }
+    if let Some(work_contexts) = cp_obj.get("work_contexts")
+        && let Some(work_contexts_arr) = work_contexts.as_array()
+    {
+        for wc in work_contexts_arr {
+            if let Some(memberships) = wc.get("memberships").and_then(Value::as_array) {
+                for m in memberships {
+                    if let Some(clients) = m.get("oauth_clients").and_then(Value::as_array) {
+                        for c in clients {
+                            if let Some(cid) = c.as_str()
+                                && removed_client_ids.contains(cid)
+                            {
+                                bail!(
+                                    "Work context membership retained reference to removed client `{cid}`"
+                                );
                             }
                         }
                     }

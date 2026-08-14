@@ -123,6 +123,7 @@ Hub, administration, and GPU policy.
 | `deploy/helm/veoveo/` | Kubernetes installation chart, chart-owned first-party service definitions, and typed component/server presets |
 | `showcase/uav-sim/deploy/helm/` | authoritative GPU simulator, UAV MCP server, live-view signaling/media ingress, render-product capacity, and per-viewer lease configuration |
 | `testing/smoke/src/bin/smoke/deployment.rs` | profile validation and orchestration, immutable gateway activation, and ordered Helm release inputs |
+| `testing/smoke/src/bin/smoke/deployment/keycloak/` | local-only Keycloak container reconciliation, cross-process lifecycle locking, generated TLS state, and focused tests |
 | `testing/smoke/src/bin/smoke/deployment/gpu.rs` | managed NVIDIA DRA orchestration, ResourceSlice inventory, persistent-claim preservation, and workload placement proof |
 | `testing/smoke/src/bin/smoke/deployment/gpu/helm.rs` | Helm v4 release metadata, exact allocator artifact and render verification, and atomic installation |
 | `testing/smoke/src/bin/smoke/deployment/gpu/admission.rs` | kubelet-plugin selector, DaemonSet readiness, node taint, and pod scheduling diagnostics |
