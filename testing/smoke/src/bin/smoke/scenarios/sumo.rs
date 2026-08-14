@@ -10,7 +10,12 @@ use bytes::BytesMut;
 use futures::StreamExt as _;
 use re_grpc_server::{MemoryLimit, ServerOptions, shutdown};
 use re_log_encoding::Decoder;
-use re_log_types::LogMsg;
+use re_log_types::{EntryId, LogMsg};
+use re_protos::cloud::v1alpha1::{
+    FindEntriesRequest, FindEntriesResponse, GetRrdManifestRequest, GetRrdManifestResponse,
+    GetSegmentTableSchemaRequest, GetSegmentTableSchemaResponse, ReadDatasetEntryRequest,
+    ReadDatasetEntryResponse, WhoAmIRequest, WhoAmIResponse,
+};
 use serde::Deserialize;
 use veoveo_recording_hub::{
     DatasetName, DatasetRoute, SegmentReadScope, Spooler, SpoolerConfig, query_tree, run_blocking,
@@ -27,20 +32,31 @@ const LIVE_RRD_CONTENT_TYPE: &str =
     "application/vnd.veoveo.rerun.rrd-stream; framing=be32; version=2";
 const LIVE_RRD_START_HEADER: &str = "x-veoveo-rerun-live-start";
 const MAX_LIVE_RRD_FRAME_BYTES: usize = 64 * 1024 * 1024;
+const REDAP_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_RRD_MANIFEST_MESSAGES: usize = 256;
+const MAX_REDAP_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
+const GRPC_WEB_CONTENT_TYPE: &str = "application/grpc-web+proto";
 
 #[derive(Debug, Deserialize)]
 struct SumoPlaybackManifest {
     schema: String,
     recording_id: String,
     state: String,
+    access: SumoPlaybackAccess,
     archive: Option<SumoPlaybackArchive>,
     live: Option<SumoPlaybackLive>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SumoPlaybackAccess {
+    redap_token: String,
 }
 
 #[derive(Debug, Deserialize)]
 struct SumoPlaybackArchive {
     uri: String,
     dataset_id: String,
+    segment_id: String,
     byte_len: u64,
     layer_count: usize,
 }
@@ -523,6 +539,7 @@ async fn verify_console_keycloak_login(console_base_url: &str) -> Result<()> {
         !archive.dataset_id.is_empty() && archive.byte_len > 0 && archive.layer_count > 0,
         "Console SUMO History archive is empty or incomplete: {archive:?}"
     );
+    verify_history_redap(&archive, &manifest.access.redap_token).await?;
     let live = manifest
         .live
         .context("Console SUMO playback manifest omitted Live segment")?;
@@ -564,6 +581,277 @@ async fn verify_console_keycloak_login(console_base_url: &str) -> Result<()> {
         "Console login, SUMO History archive, and Live RRD stream verified ok via local Keycloak at {console_base_url}"
     );
     Ok(())
+}
+
+async fn verify_history_redap(archive: &SumoPlaybackArchive, token: &str) -> Result<()> {
+    ensure!(
+        !token.is_empty(),
+        "Console SUMO playback manifest omitted its Redap token"
+    );
+    let dataset_id: EntryId = archive
+        .dataset_id
+        .parse()
+        .context("Console SUMO History archive used an invalid dataset ID")?;
+    let endpoint = redap_endpoint(&archive.uri, &archive.dataset_id, &archive.segment_id)?;
+    let client = reqwest::Client::builder().timeout(REDAP_TIMEOUT).build()?;
+
+    let identity: WhoAmIResponse =
+        grpc_web_unary(&client, &endpoint, "WhoAmI", &WhoAmIRequest {}, token, None).await?;
+    ensure!(
+        identity.can_read && !identity.can_write,
+        "Console SUMO History Redap granted unexpected access: read={}, write={}",
+        identity.can_read,
+        identity.can_write
+    );
+
+    let entries: FindEntriesResponse = grpc_web_unary(
+        &client,
+        &endpoint,
+        "FindEntries",
+        &FindEntriesRequest::default(),
+        token,
+        None,
+    )
+    .await?;
+    let expected_proto_id = dataset_id.into();
+    ensure!(
+        entries.entries.len() == 1 && entries.entries[0].id.as_ref() == Some(&expected_proto_id),
+        "Console SUMO History Redap catalog did not resolve exactly dataset {}",
+        archive.dataset_id
+    );
+
+    let dataset: ReadDatasetEntryResponse = grpc_web_unary(
+        &client,
+        &endpoint,
+        "ReadDatasetEntry",
+        &ReadDatasetEntryRequest {},
+        token,
+        Some(dataset_id),
+    )
+    .await?;
+    let dataset = dataset
+        .dataset
+        .context("Console SUMO History Redap omitted the dataset entry")?;
+    ensure!(
+        dataset
+            .details
+            .as_ref()
+            .and_then(|details| details.id.as_ref())
+            == Some(&expected_proto_id),
+        "Console SUMO History Redap returned another dataset"
+    );
+
+    let schema: GetSegmentTableSchemaResponse = grpc_web_unary(
+        &client,
+        &endpoint,
+        "GetSegmentTableSchema",
+        &GetSegmentTableSchemaRequest {},
+        token,
+        Some(dataset_id),
+    )
+    .await?;
+    let schema = schema
+        .schema
+        .and_then(|schema| schema.arrow_schema)
+        .context("Console SUMO History Redap omitted the segment table schema")?;
+    ensure!(
+        !schema.is_empty(),
+        "Console SUMO History Redap returned an empty segment table schema"
+    );
+
+    let manifests: Vec<GetRrdManifestResponse> = grpc_web_call(
+        &client,
+        &endpoint,
+        "GetRrdManifest",
+        &GetRrdManifestRequest {
+            segment_id: Some(archive.segment_id.clone().into()),
+        },
+        token,
+        Some(dataset_id),
+    )
+    .await?;
+    ensure!(
+        !manifests.is_empty() && manifests.len() <= MAX_RRD_MANIFEST_MESSAGES,
+        "Console SUMO History Redap returned an invalid RRD manifest count: {}",
+        manifests.len()
+    );
+    for response in manifests {
+        let manifest = response
+            .rrd_manifest
+            .context("Console SUMO History Redap returned an empty RRD manifest message")?;
+        ensure!(
+            manifest.store_id.is_some()
+                && manifest.sorbet_schema.is_some()
+                && manifest.data.is_some(),
+            "Console SUMO History Redap returned an incomplete RRD manifest"
+        );
+    }
+    Ok(())
+}
+
+fn redap_endpoint(
+    uri: &str,
+    expected_dataset_id: &str,
+    expected_segment_id: &str,
+) -> Result<String> {
+    let dataset_uri: re_uri::DatasetSegmentUri = uri
+        .parse()
+        .context("parsing Console SUMO History Redap URI")?;
+    ensure!(
+        dataset_uri.dataset_id.to_string() == expected_dataset_id,
+        "Console SUMO History Redap URI targeted another dataset: {uri}"
+    );
+    ensure!(
+        dataset_uri.segment_id.as_ref() == expected_segment_id,
+        "Console SUMO History Redap URI targeted another segment: {uri}"
+    );
+    Ok(dataset_uri.origin.as_url())
+}
+
+async fn grpc_web_unary<Q, S>(
+    client: &reqwest::Client,
+    endpoint: &str,
+    method: &str,
+    request: &Q,
+    token: &str,
+    entry_id: Option<EntryId>,
+) -> Result<S>
+where
+    Q: prost::Message,
+    S: prost::Message + Default,
+{
+    let mut responses = grpc_web_call(client, endpoint, method, request, token, entry_id).await?;
+    ensure!(
+        responses.len() == 1,
+        "Console SUMO History Redap {method} returned {} messages, expected one",
+        responses.len()
+    );
+    Ok(responses.pop().expect("one response was checked"))
+}
+
+async fn grpc_web_call<Q, S>(
+    client: &reqwest::Client,
+    endpoint: &str,
+    method: &str,
+    request: &Q,
+    token: &str,
+    entry_id: Option<EntryId>,
+) -> Result<Vec<S>>
+where
+    Q: prost::Message,
+    S: prost::Message + Default,
+{
+    let encoded_len = request.encoded_len();
+    let encoded_len_u32 =
+        u32::try_from(encoded_len).context("Redap request exceeds gRPC framing")?;
+    let mut body = Vec::with_capacity(5 + encoded_len);
+    body.push(0);
+    body.extend_from_slice(&encoded_len_u32.to_be_bytes());
+    request
+        .encode(&mut body)
+        .context("encoding Console SUMO History Redap request")?;
+
+    let mut builder = client
+        .post(format!(
+            "{endpoint}/rerun.cloud.v1alpha1.RerunCloudService/{method}"
+        ))
+        .header(reqwest::header::CONTENT_TYPE, GRPC_WEB_CONTENT_TYPE)
+        .header(reqwest::header::ACCEPT, GRPC_WEB_CONTENT_TYPE)
+        .bearer_auth(token)
+        .body(body);
+    if let Some(entry_id) = entry_id {
+        builder = builder.header("x-rerun-entry-id", entry_id.to_string());
+    }
+    let response = builder
+        .send()
+        .await
+        .with_context(|| format!("calling Console SUMO History Redap {method}"))?;
+    ensure!(
+        response.status() == StatusCode::OK,
+        "Console SUMO History Redap {method} returned HTTP {}",
+        response.status()
+    );
+    ensure!(
+        response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("application/grpc-web")),
+        "Console SUMO History Redap {method} returned unexpected content type {:?}",
+        response.headers().get(CONTENT_TYPE)
+    );
+
+    let mut stream = response.bytes_stream();
+    let mut framed = BytesMut::new();
+    while let Some(chunk) = stream.next().await {
+        framed.extend_from_slice(
+            &chunk.with_context(|| format!("reading Console SUMO History Redap {method}"))?,
+        );
+        ensure!(
+            framed.len() <= MAX_REDAP_RESPONSE_BYTES,
+            "Console SUMO History Redap {method} exceeded {MAX_REDAP_RESPONSE_BYTES} bytes"
+        );
+    }
+    decode_grpc_web_frames(&framed, method)
+}
+
+fn decode_grpc_web_frames<S>(framed: &[u8], method: &str) -> Result<Vec<S>>
+where
+    S: prost::Message + Default,
+{
+    let mut offset = 0_usize;
+    let mut responses = Vec::new();
+    let mut saw_success_trailers = false;
+    while offset < framed.len() {
+        ensure!(
+            framed.len() - offset >= 5,
+            "Console SUMO History Redap {method} ended inside a gRPC-Web frame header"
+        );
+        let flags = framed[offset];
+        let frame_len = u32::from_be_bytes(
+            framed[offset + 1..offset + 5]
+                .try_into()
+                .expect("four-byte gRPC-Web length"),
+        ) as usize;
+        offset += 5;
+        ensure!(
+            frame_len <= framed.len() - offset,
+            "Console SUMO History Redap {method} ended inside a gRPC-Web frame"
+        );
+        let payload = &framed[offset..offset + frame_len];
+        offset += frame_len;
+        if flags == 0 {
+            responses.push(
+                S::decode(payload)
+                    .with_context(|| format!("decoding Console SUMO History Redap {method}"))?,
+            );
+            ensure!(
+                responses.len() <= MAX_RRD_MANIFEST_MESSAGES,
+                "Console SUMO History Redap {method} exceeded the bounded message count"
+            );
+        } else if flags == 0x80 {
+            let trailers = std::str::from_utf8(payload).with_context(|| {
+                format!("decoding Console SUMO History Redap {method} trailers")
+            })?;
+            ensure!(
+                trailers.lines().any(|line| {
+                    line.split_once(':').is_some_and(|(name, value)| {
+                        name.eq_ignore_ascii_case("grpc-status") && value.trim() == "0"
+                    })
+                }),
+                "Console SUMO History Redap {method} failed: {}",
+                trailers.trim()
+            );
+            saw_success_trailers = true;
+        } else {
+            bail!("Console SUMO History Redap {method} used unsupported frame flags {flags:#04x}");
+        }
+    }
+    ensure!(
+        saw_success_trailers || !responses.is_empty(),
+        "Console SUMO History Redap {method} omitted both response data and success trailers"
+    );
+    Ok(responses)
 }
 
 async fn read_one_live_rrd_frame(response: reqwest::Response) -> Result<Vec<LogMsg>> {
@@ -629,4 +917,56 @@ fn run_conformance<const N: usize>(
         .map(OsString::from)
         .collect::<Vec<_>>();
     run_checked(conformance, arguments, environment)
+}
+
+#[cfg(test)]
+mod redap_history_tests {
+    use super::*;
+    use prost::Message as _;
+
+    const SEGMENT_ID: &str = "sumo-live";
+
+    #[test]
+    fn redap_uri_requires_exact_dataset_and_segment() {
+        let dataset_id = EntryId::new().to_string();
+        let uri =
+            format!("rerun+http://localhost:8780/dataset/{dataset_id}?segment_id={SEGMENT_ID}");
+        assert_eq!(
+            redap_endpoint(&uri, &dataset_id, SEGMENT_ID).unwrap(),
+            "http://localhost:8780"
+        );
+        assert!(redap_endpoint(&uri, &EntryId::new().to_string(), SEGMENT_ID).is_err());
+        assert!(redap_endpoint(&uri, &dataset_id, "another-segment").is_err());
+    }
+
+    #[test]
+    fn grpc_web_decoder_accepts_data_and_compact_success_trailers() {
+        let response = WhoAmIResponse {
+            user_id: Some("alice".to_owned()),
+            can_read: true,
+            can_write: false,
+        };
+        let mut framed = grpc_web_frame(0, &response.encode_to_vec());
+        framed.extend(grpc_web_frame(0x80, b"grpc-status:0\r\n"));
+        let decoded: Vec<WhoAmIResponse> = decode_grpc_web_frames(&framed, "WhoAmI").unwrap();
+        assert_eq!(decoded, vec![response]);
+    }
+
+    #[test]
+    fn grpc_web_decoder_rejects_error_and_truncated_frames() {
+        let failure = grpc_web_frame(0x80, b"grpc-status:7\r\ngrpc-message:denied\r\n");
+        assert!(decode_grpc_web_frames::<WhoAmIResponse>(&failure, "WhoAmI").is_err());
+
+        let mut truncated = grpc_web_frame(0, &WhoAmIResponse::default().encode_to_vec());
+        truncated.pop();
+        assert!(decode_grpc_web_frames::<WhoAmIResponse>(&truncated, "WhoAmI").is_err());
+    }
+
+    fn grpc_web_frame(flags: u8, payload: &[u8]) -> Vec<u8> {
+        let mut frame = Vec::with_capacity(5 + payload.len());
+        frame.push(flags);
+        frame.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        frame.extend_from_slice(payload);
+        frame
+    }
 }
