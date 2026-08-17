@@ -3,7 +3,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, ensure};
 use bytes::BytesMut;
@@ -33,6 +33,8 @@ const LIVE_RRD_CONTENT_TYPE: &str =
 const LIVE_RRD_START_HEADER: &str = "x-veoveo-rerun-live-start";
 const MAX_LIVE_RRD_FRAME_BYTES: usize = 64 * 1024 * 1024;
 const REDAP_TIMEOUT: Duration = Duration::from_secs(30);
+const HISTORY_ARCHIVE_TIMEOUT: Duration = Duration::from_secs(90);
+const HISTORY_ARCHIVE_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const MAX_RRD_MANIFEST_MESSAGES: usize = 256;
 const MAX_REDAP_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 const GRPC_WEB_CONTENT_TYPE: &str = "application/grpc-web+proto";
@@ -52,7 +54,7 @@ struct SumoPlaybackAccess {
     redap_token: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct SumoPlaybackArchive {
     uri: String,
     dataset_id: String,
@@ -496,10 +498,35 @@ async fn verify_console_keycloak_login(console_base_url: &str) -> Result<()> {
         })
         .context("Console snapshot omitted the live SUMO recording")?;
 
+    let playback_url = format!("{console_base_url}/console/api/recordings/{recording_id}/playback");
+    let manifest = fetch_playback_manifest(&client, &playback_url, recording_id).await?;
+    verify_live_rrd_stream(&client, console_base_url, recording_id, &manifest.live).await?;
+
+    let (archive, redap_token) =
+        wait_for_history_archive(&client, &playback_url, recording_id, manifest).await?;
+    ensure!(
+        archive.uri.starts_with("rerun+http"),
+        "Console SUMO History archive used an invalid Redap URI: {}",
+        archive.uri
+    );
+    ensure!(
+        !archive.dataset_id.is_empty() && archive.byte_len > 0 && archive.layer_count > 0,
+        "Console SUMO History archive is empty or incomplete: {archive:?}"
+    );
+    verify_history_redap(&archive, &redap_token).await?;
+    println!(
+        "Console login, SUMO History archive, and Live RRD stream verified ok via local Keycloak at {console_base_url}"
+    );
+    Ok(())
+}
+
+async fn fetch_playback_manifest(
+    client: &reqwest::Client,
+    playback_url: &str,
+    recording_id: &str,
+) -> Result<SumoPlaybackManifest> {
     let response = client
-        .get(format!(
-            "{console_base_url}/console/api/recordings/{recording_id}/playback"
-        ))
+        .get(playback_url)
         .send()
         .await
         .context("loading live SUMO playback manifest")?;
@@ -512,6 +539,11 @@ async fn verify_console_keycloak_login(console_base_url: &str) -> Result<()> {
         .json()
         .await
         .context("decoding live SUMO playback manifest")?;
+    validate_playback_manifest(&manifest, recording_id)?;
+    Ok(manifest)
+}
+
+fn validate_playback_manifest(manifest: &SumoPlaybackManifest, recording_id: &str) -> Result<()> {
     ensure!(
         manifest.schema == PLAYBACK_MANIFEST_SCHEMA,
         "Console SUMO playback manifest used unsupported schema {}",
@@ -527,27 +559,126 @@ async fn verify_console_keycloak_login(console_base_url: &str) -> Result<()> {
         "Console SUMO recording is not live: {}",
         manifest.state
     );
-    let archive = manifest
-        .archive
-        .context("Console SUMO playback manifest omitted History archive")?;
-    ensure!(
-        archive.uri.starts_with("rerun+http"),
-        "Console SUMO History archive used an invalid Redap URI: {}",
-        archive.uri
-    );
-    ensure!(
-        !archive.dataset_id.is_empty() && archive.byte_len > 0 && archive.layer_count > 0,
-        "Console SUMO History archive is empty or incomplete: {archive:?}"
-    );
-    verify_history_redap(&archive, &manifest.access.redap_token).await?;
     let live = manifest
         .live
+        .as_ref()
         .context("Console SUMO playback manifest omitted Live segment")?;
     ensure!(
         live.transport == "rerun_rrd_channel_v2" && live.current_byte_len > 0,
         "Console SUMO Live segment is empty or unsupported: {live:?}"
     );
+    Ok(())
+}
 
+async fn wait_for_history_archive(
+    client: &reqwest::Client,
+    playback_url: &str,
+    recording_id: &str,
+    mut manifest: SumoPlaybackManifest,
+) -> Result<(SumoPlaybackArchive, String)> {
+    let started = Instant::now();
+    let mut last_summary =
+        match evaluate_history_manifest(&manifest, recording_id, started.elapsed())? {
+            HistoryArchiveDecision::Pending { summary } => summary,
+            HistoryArchiveDecision::Ready {
+                archive,
+                redap_token,
+            } => return Ok((archive.clone(), redap_token.to_owned())),
+        };
+    loop {
+        let remaining = HISTORY_ARCHIVE_TIMEOUT.saturating_sub(started.elapsed());
+        ensure!(
+            !remaining.is_zero(),
+            "Console SUMO History archive did not appear for recording {recording_id} within {:?}; last manifest: {last_summary}",
+            HISTORY_ARCHIVE_TIMEOUT
+        );
+        let next_manifest = tokio::time::timeout(remaining, async {
+            tokio::time::sleep(HISTORY_ARCHIVE_POLL_INTERVAL.min(remaining)).await;
+            fetch_playback_manifest(client, playback_url, recording_id).await
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!(
+            "Console SUMO History archive did not appear for recording {recording_id} within {:?}; last manifest: {last_summary}",
+            HISTORY_ARCHIVE_TIMEOUT
+        ))??;
+        manifest = next_manifest;
+        match evaluate_history_manifest(&manifest, recording_id, started.elapsed())? {
+            HistoryArchiveDecision::Ready {
+                archive,
+                redap_token,
+            } => return Ok((archive.clone(), redap_token.to_owned())),
+            HistoryArchiveDecision::Pending { summary } => last_summary = summary,
+        }
+    }
+}
+
+#[derive(Debug)]
+enum HistoryArchiveDecision<'a> {
+    Pending {
+        summary: String,
+    },
+    Ready {
+        archive: &'a SumoPlaybackArchive,
+        redap_token: &'a str,
+    },
+}
+
+fn evaluate_history_manifest<'a>(
+    manifest: &'a SumoPlaybackManifest,
+    recording_id: &str,
+    elapsed: Duration,
+) -> Result<HistoryArchiveDecision<'a>> {
+    validate_playback_manifest(manifest, recording_id)?;
+    if elapsed >= HISTORY_ARCHIVE_TIMEOUT {
+        let summary = playback_summary(manifest);
+        anyhow::bail!(
+            "Console SUMO History archive did not appear for recording {recording_id} within {:?}; last manifest: {summary}",
+            HISTORY_ARCHIVE_TIMEOUT
+        );
+    }
+    if let Some(archive) = manifest.archive.as_ref() {
+        return Ok(HistoryArchiveDecision::Ready {
+            archive,
+            redap_token: &manifest.access.redap_token,
+        });
+    }
+    let summary = playback_summary(manifest);
+    Ok(HistoryArchiveDecision::Pending { summary })
+}
+
+fn playback_summary(manifest: &SumoPlaybackManifest) -> String {
+    format!(
+        "state={}, archive={}, live_bytes={}, live_transport={}",
+        manifest.state,
+        if manifest.archive.is_some() {
+            "present"
+        } else {
+            "pending"
+        },
+        manifest
+            .live
+            .as_ref()
+            .map_or(0, |live| live.current_byte_len),
+        manifest
+            .live
+            .as_ref()
+            .map_or("missing", |live| live.transport.as_str())
+    )
+}
+
+async fn verify_live_rrd_stream(
+    client: &reqwest::Client,
+    console_base_url: &str,
+    recording_id: &str,
+    live: &Option<SumoPlaybackLive>,
+) -> Result<()> {
+    let live = live
+        .as_ref()
+        .context("Console SUMO playback manifest omitted Live segment")?;
+    ensure!(
+        live.transport == "rerun_rrd_channel_v2" && live.current_byte_len > 0,
+        "Console SUMO Live segment is empty or unsupported: {live:?}"
+    );
     let response = client
         .get(format!(
             "{console_base_url}/console/api/recordings/{recording_id}/live/rrd-stream"
@@ -575,10 +706,6 @@ async fn verify_console_keycloak_login(console_base_url: &str) -> Result<()> {
     ensure!(
         !messages.is_empty(),
         "Console SUMO Live RRD stream produced an empty frame"
-    );
-
-    println!(
-        "Console login, SUMO History archive, and Live RRD stream verified ok via local Keycloak at {console_base_url}"
     );
     Ok(())
 }
@@ -925,6 +1052,94 @@ mod redap_history_tests {
     use prost::Message as _;
 
     const SEGMENT_ID: &str = "sumo-live";
+    const RECORDING_ID: &str = "sumo-live-1";
+
+    fn manifest(archive: Option<SumoPlaybackArchive>) -> SumoPlaybackManifest {
+        SumoPlaybackManifest {
+            schema: PLAYBACK_MANIFEST_SCHEMA.to_owned(),
+            recording_id: RECORDING_ID.to_owned(),
+            state: "live".to_owned(),
+            access: SumoPlaybackAccess {
+                redap_token: "token".to_owned(),
+            },
+            archive,
+            live: Some(SumoPlaybackLive {
+                current_byte_len: 1,
+                transport: "rerun_rrd_channel_v2".to_owned(),
+            }),
+        }
+    }
+
+    fn archive() -> SumoPlaybackArchive {
+        SumoPlaybackArchive {
+            uri: "rerun+http://localhost:8780/dataset/id?segment_id=sumo-live".to_owned(),
+            dataset_id: "id".to_owned(),
+            segment_id: SEGMENT_ID.to_owned(),
+            byte_len: 1,
+            layer_count: 1,
+        }
+    }
+
+    #[test]
+    fn playback_state_allows_pending_history_then_accepts_archive() {
+        let pending = manifest(None);
+        let decision =
+            evaluate_history_manifest(&pending, RECORDING_ID, Duration::from_secs(1)).unwrap();
+        assert!(matches!(
+            decision,
+            HistoryArchiveDecision::Pending { summary } if summary.contains("archive=pending")
+        ));
+
+        let ready = manifest(Some(archive()));
+        let decision =
+            evaluate_history_manifest(&ready, RECORDING_ID, Duration::from_secs(1)).unwrap();
+        match decision {
+            HistoryArchiveDecision::Ready {
+                archive,
+                redap_token,
+            } => {
+                assert_eq!(archive.segment_id, SEGMENT_ID);
+                assert_eq!(redap_token, "token");
+            }
+            HistoryArchiveDecision::Pending { .. } => panic!("archive remained pending"),
+        }
+    }
+
+    #[test]
+    fn pending_history_times_out_with_context_and_without_secret() {
+        let pending = manifest(None);
+        let error =
+            evaluate_history_manifest(&pending, RECORDING_ID, HISTORY_ARCHIVE_TIMEOUT).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains(RECORDING_ID));
+        assert!(message.contains("90s"));
+        assert!(message.contains("archive=pending"));
+        assert!(!message.contains("token"));
+    }
+
+    #[test]
+    fn archive_published_at_deadline_is_not_accepted_late() {
+        let ready = manifest(Some(archive()));
+        let error =
+            evaluate_history_manifest(&ready, RECORDING_ID, HISTORY_ARCHIVE_TIMEOUT).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains(RECORDING_ID));
+        assert!(message.contains("archive=present"));
+    }
+
+    #[test]
+    fn invalid_manifest_fails_before_pending_decision() {
+        let mut invalid = manifest(None);
+        invalid.schema = "wrong".to_owned();
+        let error = evaluate_history_manifest(&invalid, RECORDING_ID, Duration::ZERO).unwrap_err();
+        assert!(error.to_string().contains("unsupported schema"));
+
+        let mut invalid_live = manifest(None);
+        invalid_live.live = None;
+        let error =
+            evaluate_history_manifest(&invalid_live, RECORDING_ID, Duration::ZERO).unwrap_err();
+        assert!(error.to_string().contains("omitted Live segment"));
+    }
 
     #[test]
     fn redap_uri_requires_exact_dataset_and_segment() {
