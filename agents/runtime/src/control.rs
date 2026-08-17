@@ -1,17 +1,24 @@
 //! Authenticated external control over one registered agent's durable inbox.
 //!
 //! The gateway supplies actor and Work Context authority. This module resolves
-//! the target inside that exact tenant/context/profile tuple, then commits the
-//! wake and outbox edge atomically. It never acquires the scheduler lease.
+//! the tenant-unique public agent key inside that exact tenant/context tuple,
+//! then commits the wake and outbox edge atomically. The agent's stored MCP
+//! profile governs its own tool session and is not a human-control selector.
+//! This module never acquires the scheduler lease.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use surrealdb::types::{RecordId, SurrealValue};
 use uuid::Uuid;
+use veoveo_mcp_contract::{
+    AgentConversationEntry, AgentConversationEntryState, AgentConversationRole,
+    AgentConversationView,
+};
 use veoveo_platform_store::{
-    AgentInputRequestId, AgentInputRequestRecord, AgentInputRequestState, AgentRecord, AgentState,
-    OpenObject, OutboxDraft, PlatformStore, StoreAuthLevel, WakeId, WakeKind, WakeRecord,
-    WakeState, deterministic_tenant_id, deterministic_work_context_id,
+    AgentEpisodeRecord, AgentEpisodeState, AgentInputRequestId, AgentInputRequestRecord,
+    AgentInputRequestState, AgentRecord, AgentState, OpenObject, OutboxDraft, PlatformStore,
+    StoreAuthLevel, WakeId, WakeKind, WakeRecord, WakeState, deterministic_tenant_id,
+    deterministic_work_context_id,
 };
 
 use crate::{AgentRuntimeError, InputRequestAnswer, Result, object, uuid_from_record};
@@ -29,7 +36,6 @@ pub struct AgentControl {
 pub struct AgentControlTarget {
     pub tenant_key: String,
     pub work_context_key: String,
-    pub profile: String,
     pub agent_key: String,
 }
 
@@ -173,6 +179,94 @@ impl AgentControl {
             .collect()
     }
 
+    pub async fn conversation(&self, target: &AgentControlTarget) -> Result<AgentConversationView> {
+        let agent = self.resolve_target(target).await?;
+        let mut wake_response = self
+            .store
+            .client()
+            .query("SELECT * FROM wake WHERE agent = $agent AND tenant = $tenant AND kind = 'operator_message' ORDER BY created_at DESC LIMIT 256;")
+            .bind(("agent", agent.id.clone()))
+            .bind(("tenant", agent.tenant.clone()))
+            .await?
+            .check()?;
+        let wakes: Vec<WakeRecord> = wake_response.take(0)?;
+
+        let mut episode_response = self
+            .store
+            .client()
+            .query("SELECT * FROM agent_episode WHERE agent = $agent AND tenant = $tenant ORDER BY started_at DESC LIMIT 256;")
+            .bind(("agent", agent.id.clone()))
+            .bind(("tenant", agent.tenant.clone()))
+            .await?
+            .check()?;
+        let episodes: Vec<AgentEpisodeRecord> = episode_response.take(0)?;
+
+        let mut requests_by_episode = std::collections::BTreeMap::<Uuid, Vec<Uuid>>::new();
+        let mut entries = Vec::with_capacity(wakes.len() + episodes.len());
+        for wake in wakes {
+            let wake_id = uuid_from_record(&wake.id, "wake.id")?;
+            let request_id = payload_uuid(&wake.payload, "request_id")?;
+            let actor_id = payload_string(&wake.payload, "actor_id")?;
+            let content = payload_string(&wake.payload, "text")?;
+            if let Some(episode) = wake.acked_by_episode.as_ref() {
+                requests_by_episode
+                    .entry(uuid_from_record(episode, "wake.acked_by_episode")?)
+                    .or_default()
+                    .push(request_id);
+            }
+            entries.push(AgentConversationEntry {
+                entry_id: format!("wake:{wake_id}"),
+                role: AgentConversationRole::Operator,
+                actor_id,
+                content,
+                state: wake_conversation_state(wake.state),
+                occurred_at: wake.created_at,
+                request_id: Some(request_id),
+                wake_id: Some(wake_id),
+                episode_id: wake
+                    .acked_by_episode
+                    .as_ref()
+                    .map(|record| uuid_from_record(record, "wake.acked_by_episode"))
+                    .transpose()?,
+                in_reply_to_request_ids: Vec::new(),
+            });
+        }
+        for episode in episodes {
+            let episode_id = uuid_from_record(&episode.id, "agent_episode.id")?;
+            let content = episode
+                .final_output
+                .or(episode.error)
+                .or(episode.summary)
+                .unwrap_or_default();
+            if content.is_empty() && episode.state != AgentEpisodeState::Running {
+                continue;
+            }
+            entries.push(AgentConversationEntry {
+                entry_id: format!("episode:{episode_id}"),
+                role: AgentConversationRole::Agent,
+                actor_id: agent.agent_key.clone(),
+                content,
+                state: episode_conversation_state(episode.state),
+                occurred_at: episode.finished_at.unwrap_or(episode.started_at),
+                request_id: None,
+                wake_id: None,
+                episode_id: Some(episode_id),
+                in_reply_to_request_ids: requests_by_episode
+                    .remove(&episode_id)
+                    .unwrap_or_default(),
+            });
+        }
+        entries.sort_by(|left, right| {
+            left.occurred_at
+                .cmp(&right.occurred_at)
+                .then_with(|| left.entry_id.cmp(&right.entry_id))
+        });
+        Ok(AgentConversationView {
+            agent_id: agent.agent_key,
+            entries,
+        })
+    }
+
     pub async fn decide_input_request(
         &self,
         target: &AgentControlTarget,
@@ -307,24 +401,22 @@ impl AgentControl {
     }
 
     async fn resolve_target(&self, target: &AgentControlTarget) -> Result<AgentRecord> {
-        if target.agent_key.trim().is_empty() || target.profile.trim().is_empty() {
+        if target.agent_key.trim().is_empty() {
             return Err(AgentRuntimeError::InvalidField {
                 field: "agent control target",
-                reason: "agent_key and profile must not be empty".to_owned(),
+                reason: "agent_key must not be empty".to_owned(),
             });
         }
         let tenant = deterministic_tenant_id(&target.tenant_key)?.record_id();
         let work_context =
             deterministic_work_context_id(&target.tenant_key, &target.work_context_key)?
                 .record_id();
-        let profile = RecordId::new("profile", target.profile.clone());
         let mut response = self
             .store
             .client()
-            .query("SELECT * FROM agent WHERE tenant = $tenant AND work_context = $work_context AND profile = $profile AND agent_key = $agent_key LIMIT 2;")
+            .query("SELECT * FROM agent WHERE tenant = $tenant AND work_context = $work_context AND agent_key = $agent_key LIMIT 2;")
             .bind(("tenant", tenant))
             .bind(("work_context", work_context))
-            .bind(("profile", profile))
             .bind(("agent_key", target.agent_key.clone()))
             .await?
             .check()?;
@@ -396,6 +488,49 @@ impl AgentControl {
             .await?
             .check()?;
         Ok(response.take(0)?)
+    }
+}
+
+fn payload_string(payload: &OpenObject, field: &'static str) -> Result<String> {
+    payload
+        .as_map()
+        .get(field)
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| AgentRuntimeError::InvalidField {
+            field,
+            reason: "durable operator wake field is missing or invalid".to_owned(),
+        })
+}
+
+fn payload_uuid(payload: &OpenObject, field: &'static str) -> Result<Uuid> {
+    Uuid::parse_str(&payload_string(payload, field)?).map_err(|error| {
+        AgentRuntimeError::InvalidField {
+            field,
+            reason: error.to_string(),
+        }
+    })
+}
+
+const fn wake_conversation_state(state: WakeState) -> AgentConversationEntryState {
+    match state {
+        WakeState::Pending | WakeState::Claimed | WakeState::Coalesced => {
+            AgentConversationEntryState::Accepted
+        }
+        WakeState::Acked => AgentConversationEntryState::Completed,
+        WakeState::Failed => AgentConversationEntryState::Failed,
+    }
+}
+
+const fn episode_conversation_state(state: AgentEpisodeState) -> AgentConversationEntryState {
+    match state {
+        AgentEpisodeState::Running => AgentConversationEntryState::Running,
+        AgentEpisodeState::Completed => AgentConversationEntryState::Completed,
+        AgentEpisodeState::BudgetTerminated => AgentConversationEntryState::BudgetTerminated,
+        AgentEpisodeState::Failed | AgentEpisodeState::Crashed => {
+            AgentConversationEntryState::Failed
+        }
     }
 }
 

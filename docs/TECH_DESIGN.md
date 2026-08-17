@@ -190,7 +190,7 @@ to the frame.
 
 ## Durable Platform Store
 
-SurrealDB `3.2.1` is the only platform coordination store. The canonical release uses
+SurrealDB `3.2.3` is the only platform coordination store. The canonical release uses
 one RocksDB-backed node. Installation bootstrap connects at root scope, applies ordered
 migrations, creates or rotates the database runtime user, and publishes the initial
 gateway control revision. Long-running services connect at database scope and never run
@@ -499,16 +499,21 @@ Agent manifests separate the Gateway's canonical public origin from its physical
 HTTP transport origin. OAuth audience and protected-resource identity use the
 canonical origin, while an in-cluster agent may connect through a private service
 address. Both values are required bare HTTP(S) origins. The kernel preserves the
-canonical HTTP authority across the private transport. A manifest may also declare a
-bounded set of absolute MCP resource URIs that wake the agent on change. During token
+canonical HTTP authority across the private transport. Every manifest string supports
+fail-closed `${VAR}` deployment substitution before typed decoding and validation. One
+reviewed manifest can therefore instantiate isolated identities without generating
+installation-specific copies. A manifest may also declare a bounded set of absolute MCP
+resource URIs that wake the agent on change. During token
 rotation, the kernel connects the replacement session and restores the complete
 subscription set before publishing its connection epoch; a failed subscription leaves
 the prior authenticated session active.
 
 Authenticated human control stays available through the gateway and Console BFF; the
 agent pod is never an ingress service. An operator message is committed as a
-UUIDv7-idempotent durable wake inside the caller's exact tenant, Work Context, profile,
-and agent tuple, so it may arrive while an episode or detached task is running.
+UUIDv7-idempotent durable wake inside the caller's exact tenant, Work Context, and
+tenant-unique public agent key, so it may arrive while an episode or detached task is
+running. The agent record's profile governs its own MCP tool session; the human caller's
+administrative profile never replaces it during target resolution.
 Console snapshots and change events identify that target by its tenant-scoped symbolic
 `agent_key`, which is the same identifier accepted by every control route; internal
 SurrealDB record keys never become public control identities. The snapshot also carries

@@ -22,6 +22,53 @@ publishes their NVIDIA NVENC products to the governed live-view App.
 | OGC 3D Tiles | Cesium Omniverse `0.29.0` and its pinned Cesium Native revision stream photorealistic terrain and buildings. A repository-owned internal event extension reports redacted load lifecycle state. |
 | WGS 84, ECEF, ENU, NED, and FLU | Explicit Frames-governed world, physics, entity, sensor, and operator-camera mappings. |
 
+## What Can This Do?
+
+Address one vehicle's pilot as a durable agent and give it a destination in ordinary
+language:
+
+> Fly uav-1 to Times Square now. Read your active UAV control grant, ask Map MCP to
+> resolve and route this named location from current telemetry, then use UAV MCP to admit
+> and execute the mission only for your bound vehicle. Report the terminal result.
+
+<p align="center">
+  <a href="assets/uav-e2e-001-flight-timelapse.mp4">
+    <img src="assets/uav-e2e-001-flight-timelapse.gif" width="640" alt="Recorded downward camera view from uav-1 crossing New York during its mission from the Statue of Liberty area to Times Square">
+  </a>
+</p>
+
+*This 26.2-second replay uses the actual 640×480 leader camera sampled at 2 fps and
+accelerated 30×. Open the [H.264 MP4](assets/uav-e2e-001-flight-timelapse.mp4) for
+the full-quality recording.*
+
+The pilot does not invent coordinates or acquire authority from the prompt. It reads its
+active vehicle-control grant, asks Map MCP to resolve the place and build the route, then
+hands that governed route to UAV Simulation MCP. The UAV server checks the authenticated
+pilot, exact vehicle, mobility profile, and world revision before it acquires an exclusive
+command lease and sends the mission to the PX4-backed runtime.
+
+The first deployed run flew `uav-1` 9.227 km from the Statue of Liberty area to Times
+Square. It completed all four admitted waypoints in 13 minutes 10 seconds, arrived at
+40.7580° N, 73.9855° W, and released its command lease. The task survived an MCP
+credential rotation without replaying mission execution. The signed-in Console and the
+headless conversation projection returned the same durable terminal result.
+
+The leader camera recorded the flight throughout a database outage. Its durable
+forwarder retained the pending batches, and Recording Hub materialized the complete
+mission interval after service recovery. The replay above contains 1,538 archived camera
+samples selected from the mission's exact 4,930.8-5,720.8 second simulation interval.
+
+[![The signed-in Console showing uav-1-pilot's completed Times Square mission](assets/uav-e2e-001-console-complete.png)](assets/uav-e2e-001-console-complete.png)
+
+*The actual signed-in Console result from the first accepted run. Open the image to inspect
+the pilot identity, terminal position, PX4 state, collision count, recording reference,
+and durable wake receipt.*
+
+The repeatable evidence contract is
+[`UAV-E2E-001: Per-Agent Named-Location Mission E2E`](ACCEPTANCE.md#uav-e2e-001-per-agent-named-location-mission-e2e).
+It names the prerequisites, expected MCP sequence, binding proof, timing model,
+headless requests, pass criteria, and evidence record for another run.
+
 ## Ownership
 
 | Path | Responsibility |
@@ -29,11 +76,34 @@ publishes their NVIDIA NVENC products to the governed live-view App.
 | `../../platform/runtimes/simulation/` | Canonical Isaac, Isaac Lab, Warp, Newton, CUDA, and RTX lineage. |
 | `runtime/` | Cesium, Pegasus, PX4, fleet physics, domain sensors, authoritative operator cameras, Hydra/NVENC products, recording, and the cluster-private adapter. |
 | `../../servers/uav-sim-mcp/` | Domain tools, resources, tasks, subscriptions, camera/product projection, viewer leases, signaling, audit, and the live App. |
-| `deploy/helm/` | Independent GPU runtime and MCP Deployments, recording forwarder, stable media ports, cache, and NetworkPolicy. |
+| `agents/` | Reviewed showcase packaging for isolated generic pilot agents. |
+| `map/` | Map-owned named places and operational air-network fixture used by the showcase. |
+| `deploy/helm/` | Independent GPU runtime and MCP Deployments, isolated agent Deployments, recording forwarder, stable media ports, cache, and NetworkPolicy. |
 | `scenarios/` | Installation-independent Frames trees and acceptance parameters. |
 
 There is one stage, one Cesium world, one runtime cache, and one GPU allocation. No
 visualization process mirrors entity poses or rebuilds the scene.
+
+## Pilot Agents And Vehicle Binding
+
+The reference installation runs four generic agent-kernel processes. Each process has a
+distinct OAuth client, private signing key, persistent data volume, and reviewed manifest.
+The manifest requests one vehicle id, but that value carries no authority. UAV Simulation
+MCP binds the authenticated principal to one session and vehicle with an explicit control
+grant, admits only Map-owned route handoffs against the grant's mobility profile and the
+session's Frames revision, and holds an exclusive vehicle command lease during execution.
+
+The live UAV App reads its exact agent choices from Apps resource metadata and submits
+operator text through the Console's generic authenticated message bridge. The iframe
+receives no agent credential. Headless users use the same actor-attributed agent message
+API, while each pilot wakes from its own durable queue and talks to Map, Time, and UAV
+Simulation MCP through the generic `agent` gateway profile.
+
+Coordination remains an optional composition outside vehicle authority. A human or
+headless client may submit related instructions to several exact pilot targets through
+the generic agent message API. Each message enters a separate actor-attributed
+conversation, and each pilot still needs its own grant, Map admission, and command lease.
+The reference installation does not deploy a privileged fleet coordinator.
 
 ## Canonical Runtime
 
@@ -231,6 +301,10 @@ per active viewer, RTX/NVENC/WebRTC playback, simultaneous same-camera viewer is
 one-App multi-camera grid isolation, sensor separation, simulation real-time factor,
 source-to-render latency, and browser motion-to-photon latency. Stream, Recording, and
 mission acceptance remain independent consumer checkpoints.
+
+Named-location mission acceptance follows
+[`UAV-E2E-001`](ACCEPTANCE.md#uav-e2e-001-per-agent-named-location-mission-e2e).
+That functional test remains independent of the live-view performance commands below.
 
 ```sh
 cargo xtask smoke uav-showcase-up \

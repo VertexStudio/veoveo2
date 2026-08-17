@@ -108,7 +108,7 @@ mod tests {
         assert_eq!(uav["resource_projection"], "server_owned");
         assert_eq!(
             uav["referenced_resource_schemes"],
-            serde_json::json!(["frames", "recording"])
+            serde_json::json!(["frames", "map", "recording"])
         );
     }
 
@@ -149,6 +149,16 @@ mod tests {
                 &profile.required_scopes,
             ),
             "Bearer resource_metadata=\"https://veoveo.bioma.ai/.well-known/oauth-protected-resource/mcp/operator\", scope=\"operator:use uav-sim:stream view:read view:write view:capture map:dataset:read time:read\""
+        );
+        let metadata = catalog
+            .protected_resource_metadata(&profile_id)
+            .expect("operator protected-resource metadata");
+        assert!(
+            metadata
+                .scopes_supported
+                .iter()
+                .any(|scope| scope == "uav-sim:read"),
+            "operator protected-resource metadata omits UAV domain read authority"
         );
     }
 

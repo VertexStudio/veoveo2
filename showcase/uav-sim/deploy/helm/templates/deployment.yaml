@@ -1,4 +1,8 @@
 {{- include "uav-sim.validateLiveView" . -}}
+{{- $agentMessageTargets := list -}}
+{{- range .Values.agents.pilots -}}
+{{- $agentMessageTargets = append $agentMessageTargets .agentId -}}
+{{- end -}}
 {{- if .Values.interactive.enabled }}
 apiVersion: apps/v1
 kind: Deployment
@@ -16,6 +20,8 @@ spec:
       {{- include "uav-sim.runtimeSelectorLabels" . | nindent 6 }}
   template:
     metadata:
+      annotations:
+        veoveo.ai/chart-revision: {{ .Chart.Version | quote }}
       labels:
         {{- include "uav-sim.runtimeSelectorLabels" . | nindent 8 }}
         veoveo.ai/simulator-hosted-live-view: "true"
@@ -119,6 +125,8 @@ spec:
       {{- include "uav-sim.mcpSelectorLabels" . | nindent 6 }}
   template:
     metadata:
+      annotations:
+        veoveo.ai/chart-revision: {{ .Chart.Version | quote }}
       labels:
         {{- include "uav-sim.mcpSelectorLabels" . | nindent 8 }}
         veoveo.ai/mcp-server: "true"
@@ -169,6 +177,10 @@ spec:
             - {name: UAV_SIM_LIVE_VIEW_LEASE_SECONDS, value: {{ .Values.liveView.leaseSeconds | quote }}}
             - {name: UAV_SIM_LIVE_VIEW_MAXIMUM_FRAME_AGE_MS, value: {{ .Values.liveView.maximumFrameAgeMs | quote }}}
             - {name: UAV_SIM_LIVE_VIEW_MAXIMUM_VIEWERS, value: {{ .Values.liveView.viewerSlots | quote }}}
+            {{- if .Values.agents.enabled }}
+            - name: UAV_SIM_AGENT_MESSAGE_TARGETS
+              value: {{ join "," $agentMessageTargets | quote }}
+            {{- end }}
             - {name: UAV_SIM_ADAPTER_OPERATION_TIMEOUT_SECONDS, value: "3600"}
             - {name: UAV_SIM_RECORDING_TENANT_KEY, value: {{ .Values.platform.recordingTenantKey | quote }}}
             - {name: VEOVEO_SURREAL_ENDPOINT, value: {{ printf "ws://%s:8000" .Values.platform.surrealService | quote }}}

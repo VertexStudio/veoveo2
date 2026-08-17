@@ -37,16 +37,25 @@ pub(crate) async fn login(
     State(state): State<AppState>,
     Query(query): Query<LoginQuery>,
 ) -> Response {
-    match begin_login(&state, query.return_to.as_deref()) {
+    let return_path = ConsoleReturnPath::from_untrusted(query.return_to.as_deref());
+    if let Some(failure) = authorization_configuration_failure(&state).await {
+        return callback_error(&state, failure.status(), failure, Some(&return_path));
+    }
+    match begin_login(&state, return_path.clone()) {
         Ok(response) => response,
         Err(error) => {
             tracing::error!(%error, "failed to begin console login");
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            callback_error(
+                &state,
+                CallbackFailure::Internal.status(),
+                CallbackFailure::Internal,
+                Some(&return_path),
+            )
         }
     }
 }
 
-fn begin_login(state: &AppState, return_to: Option<&str>) -> anyhow::Result<Response> {
+fn begin_login(state: &AppState, return_path: ConsoleReturnPath) -> anyhow::Result<Response> {
     let oauth_state = random_value()?;
     let code_verifier = random_value()?;
     let code_challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(code_verifier.as_bytes()));
@@ -54,7 +63,7 @@ fn begin_login(state: &AppState, return_to: Option<&str>) -> anyhow::Result<Resp
         state: oauth_state.clone(),
         code_verifier,
         expires_at: Utc::now().timestamp() + 600,
-        return_path: ConsoleReturnPath::from_untrusted(return_to),
+        return_path,
     };
     let encrypted = state.sessions.seal(&pending, AUTHORIZATION_AAD)?;
     let mut authorize = state.config.authorize_url();
@@ -74,6 +83,63 @@ fn begin_login(state: &AppState, return_to: Option<&str>) -> anyhow::Result<Resp
 }
 
 #[derive(Debug, Deserialize)]
+struct ProtectedResourceMetadata {
+    resource: String,
+    scopes_supported: BTreeSet<ScopeName>,
+}
+
+async fn authorization_configuration_failure(state: &AppState) -> Option<CallbackFailure> {
+    let response = match state
+        .http
+        .get(state.config.protected_resource_metadata_url())
+        .header(HOST, state.config.gateway_host())
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => {
+            tracing::error!(%error, "failed to read Console protected-resource metadata");
+            return Some(CallbackFailure::ProviderUnavailable);
+        }
+    };
+    if !response.status().is_success() {
+        tracing::error!(
+            status = %response.status(),
+            "gateway rejected Console protected-resource metadata discovery"
+        );
+        return Some(CallbackFailure::ProviderUnavailable);
+    }
+    let metadata = match response.json::<ProtectedResourceMetadata>().await {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            tracing::error!(%error, "gateway returned invalid protected-resource metadata");
+            return Some(CallbackFailure::ProviderUnavailable);
+        }
+    };
+    if authorization_configuration_matches(
+        state.config.oauth_resource().as_str(),
+        state.config.oauth_scopes(),
+        &metadata,
+    ) {
+        None
+    } else {
+        tracing::error!(
+            resource = %metadata.resource,
+            "Console OAuth configuration does not match the active protected resource"
+        );
+        Some(CallbackFailure::AuthorizationChanged)
+    }
+}
+
+fn authorization_configuration_matches(
+    resource: &str,
+    required_scopes: &BTreeSet<ScopeName>,
+    metadata: &ProtectedResourceMetadata,
+) -> bool {
+    metadata.resource == resource && required_scopes.is_subset(&metadata.scopes_supported)
+}
+
+#[derive(Debug, Deserialize)]
 pub(crate) struct CallbackQuery {
     code: Option<String>,
     state: Option<String>,
@@ -87,17 +153,13 @@ pub(crate) async fn callback(
 ) -> Response {
     let pending = read_authorization(&headers, &state.sessions);
     if let Some(error) = query.error.as_deref() {
+        let failure = CallbackFailure::from_oauth_error(error);
         let return_path = valid_callback_return_path(
             pending.as_ref(),
             query.state.as_deref(),
             Utc::now().timestamp(),
         );
-        return callback_error(
-            &state,
-            StatusCode::UNAUTHORIZED,
-            CallbackFailure::from_oauth_error(error),
-            return_path,
-        );
+        return callback_error(&state, failure.status(), failure, return_path);
     }
     let Some(pending) = pending else {
         return callback_error(
@@ -318,6 +380,7 @@ pub(crate) async fn logout(State(state): State<AppState>, request_headers: Heade
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CallbackFailure {
     AccessDenied,
+    AuthorizationChanged,
     ProviderUnavailable,
     SessionExpired,
     InvalidResponse,
@@ -329,14 +392,27 @@ impl CallbackFailure {
     fn from_oauth_error(error: &str) -> Self {
         match error {
             "access_denied" => Self::AccessDenied,
+            "invalid_scope" => Self::AuthorizationChanged,
             "server_error" | "temporarily_unavailable" => Self::ProviderUnavailable,
             _ => Self::InvalidResponse,
+        }
+    }
+
+    const fn status(self) -> StatusCode {
+        match self {
+            Self::AccessDenied | Self::AuthenticationFailed => StatusCode::UNAUTHORIZED,
+            Self::AuthorizationChanged | Self::ProviderUnavailable => {
+                StatusCode::SERVICE_UNAVAILABLE
+            }
+            Self::SessionExpired | Self::InvalidResponse => StatusCode::BAD_REQUEST,
+            Self::Internal => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 
     const fn code(self) -> &'static str {
         match self {
             Self::AccessDenied => "access_denied",
+            Self::AuthorizationChanged => "authorization_changed",
             Self::ProviderUnavailable => "provider_unavailable",
             Self::SessionExpired => "session_expired",
             Self::InvalidResponse => "invalid_response",
@@ -348,6 +424,7 @@ impl CallbackFailure {
     const fn title(self) -> &'static str {
         match self {
             Self::AccessDenied => "Sign-in was cancelled",
+            Self::AuthorizationChanged => "Console authorization changed",
             Self::ProviderUnavailable => "Sign-in service unavailable",
             Self::SessionExpired => "Sign-in session expired",
             Self::InvalidResponse => "Sign-in response was invalid",
@@ -359,6 +436,9 @@ impl CallbackFailure {
     const fn message(self) -> &'static str {
         match self {
             Self::AccessDenied => "No Console session was created. Retry when you are ready.",
+            Self::AuthorizationChanged => {
+                "The Console and the active authorization policy do not agree. This is an installation configuration problem, not an issue with your account. Retry after the installation operator resolves it."
+            }
             Self::ProviderUnavailable => {
                 "The identity service could not complete this request. Retry sign-in."
             }
@@ -632,6 +712,10 @@ mod tests {
             CallbackFailure::AccessDenied
         );
         assert_eq!(
+            CallbackFailure::from_oauth_error("invalid_scope"),
+            CallbackFailure::AuthorizationChanged
+        );
+        assert_eq!(
             CallbackFailure::from_oauth_error("server_error"),
             CallbackFailure::ProviderUnavailable
         );
@@ -711,6 +795,60 @@ mod tests {
         assert!(body.contains("share reference"));
         assert!(!body.contains("identity provider token exchange failed"));
         assert!(!body.contains("provider-private-detail"));
+    }
+
+    #[tokio::test]
+    async fn authorization_change_error_explains_operator_recovery() {
+        let response = callback_error_response(
+            true,
+            CallbackFailure::AuthorizationChanged.status(),
+            CallbackFailure::AuthorizationChanged,
+            None,
+        );
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains("Console authorization changed"));
+        assert!(body.contains("installation configuration problem"));
+        assert!(body.contains("Retry sign-in"));
+        assert!(body.contains("Return to Console"));
+        assert!(!body.contains("invalid_scope"));
+    }
+
+    #[test]
+    fn authorization_configuration_requires_exact_resource_and_complete_scope_support() {
+        let required = ["admin:manage", "operator:use"]
+            .into_iter()
+            .map(|scope| ScopeName::new(scope).unwrap())
+            .collect();
+        let metadata = ProtectedResourceMetadata {
+            resource: "https://console.example/mcp/admin".to_owned(),
+            scopes_supported: ["admin:manage", "operator:use", "view:read"]
+                .into_iter()
+                .map(|scope| ScopeName::new(scope).unwrap())
+                .collect(),
+        };
+        assert!(authorization_configuration_matches(
+            "https://console.example/mcp/admin",
+            &required,
+            &metadata
+        ));
+
+        let missing_scope = ["admin:manage", "operator:use", "view:write"]
+            .into_iter()
+            .map(|scope| ScopeName::new(scope).unwrap())
+            .collect();
+        assert!(!authorization_configuration_matches(
+            "https://console.example/mcp/admin",
+            &missing_scope,
+            &metadata
+        ));
+        assert!(!authorization_configuration_matches(
+            "https://console.example/mcp/operator",
+            &required,
+            &metadata
+        ));
     }
 
     #[test]
