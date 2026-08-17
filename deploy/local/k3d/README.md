@@ -135,6 +135,50 @@ kubectl --context k3d-veoveo-sumo -n veoveo rollout restart deployment/sumo-mcp
 helm --kube-context k3d-veoveo-sumo -n veoveo list
 ```
 
+## Troubleshooting after a host or Docker restart
+
+A host or Docker restart normally preserves the cluster. One observed restart left
+`k3d-veoveo-sumo-server-0` in `restarting` state even though k3d still reported the
+cluster as running. The container retained its nominal Docker network attachment but
+had no endpoint ID or IP address. k3s then stopped with:
+
+```text
+failed to start networking
+failed to find interface with specified node ip
+```
+
+The resulting `kubectl` failure may instead report an `EOF` while downloading the
+Kubernetes OpenAPI document. Capture the underlying state before restarting or deleting
+anything:
+
+```bash
+k3d cluster list
+docker inspect k3d-veoveo-sumo-server-0
+docker network inspect k3d-veoveo-sumo
+docker logs k3d-veoveo-sumo-server-0
+```
+
+If the server is restarting or lacks `NetworkSettings.Networks` values for `EndpointID`
+or `IPAddress`, first try the non-destructive profile restart:
+
+```bash
+PROFILE=showcase/sumo/deploy/deployment.json
+cargo xtask smoke profile-cluster-stop --profile "$PROFILE"
+cargo xtask smoke profile-cluster-up --profile "$PROFILE"
+```
+
+If the node remains degraded, recreate the disposable cluster manually:
+
+```bash
+cargo xtask smoke profile-cluster-delete --profile "$PROFILE"
+cargo xtask smoke profile-cluster-up --profile "$PROFILE"
+```
+
+`profile-cluster-delete` removes the cluster's Kubernetes resources and local persistent
+volumes. Preserve any required local data before running it. This network failure was
+intermittent and did not recur across subsequent host restarts, so the harness does not
+delete or repair Docker networking automatically.
+
 ## Cleanup
 
 Remove the profile's Helm releases:
