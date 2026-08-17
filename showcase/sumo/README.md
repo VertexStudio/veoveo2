@@ -48,8 +48,10 @@ cargo xtask smoke sumo-push
 ```
 
 The live verification targets the active k3d profile. It checks the unauthenticated
-boundary, reads the live world, changes an edge speed, advances a durable batch,
-and proves that Recording Hub retained the world:
+boundary, reads the live world, changes an edge speed, and advances a durable batch.
+It then proves that Recording Hub retained the world, signs into Console through the
+local Keycloak realm, loads the playback manifest, reads the History archive through
+the required Redap surface, and consumes one complete framed RRD message from Live:
 
 ```bash
 cargo xtask smoke sumo-verify --context k3d-veoveo-sumo
@@ -75,6 +77,13 @@ cargo xtask release images \
   --lock-output "$LOCK"
 cargo xtask smoke profile-up --profile "$PROFILE" --lock "$LOCK"
 ```
+
+The local identity provider runs at
+`http://localhost:8080/realms/veoveo-local`. Open Console at
+`http://localhost:8780/console/` and sign in as `alice` with password
+`keycloak-local-password`. These fixed credentials and the generated local CA belong
+only to this disposable loopback profile. Fielded installations supply their own
+identity provider, trust roots, clients, and credentials.
 
 The profile derives the exact platform images and publishes the SUMO images through a
 separate `workload` source. Publication configures the managed builder from the

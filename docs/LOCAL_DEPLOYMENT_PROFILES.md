@@ -163,11 +163,11 @@ Local material lifecycle is explicit, not implicit in profile loading:
 - `profile-cluster-stop` never generates material.
 - `profile-cluster-delete` never generates material; it removes whatever already exists.
 - `profile-validate` and every other read-only command never generate or delete
-  anything. For a profile that declares `generatedPublicFiles`, this means
-  `profile-validate` can only fully evaluate the gateway activation after
-  `profile-cluster-up` has generated the material at least once in that checkout; before
-  that, it fails with a message naming the missing file and pointing at
-  `profile-cluster-up`.
+  anything. `profile-validate` substitutes a structurally valid placeholder for each
+  declared generated file while it validates the typed profile, key coverage, and
+  control-plane references. It does not claim that runtime material exists or that its
+  cryptographic contents are valid. `profile-cluster-up` and `profile-up` perform those
+  checks when they materialize the declared files.
 
 The `extension-foundation` preset selects the gateway, platform store, object store,
 artifact service, Artifact MCP, Frames MCP, and Recording MCP/hub. A custom selection

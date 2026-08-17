@@ -239,6 +239,21 @@ gateway schema upgrade path: an older active payload does not need to satisfy
 the new schema before the current seed replaces it. A matching hash still
 requires the stored active revision to pass full typed validation.
 
+Every gateway replica reads the same mounted seed before it opens its listener. It
+requires the latest persisted `SeedFile` revision to match that seed, then loads the
+active revision from SurrealDB. A replica that starts before installation bootstrap
+publishes the mounted seed exits without accepting traffic; Kubernetes retries it after
+bootstrap completes. Reads bracket the active revision with two observations of the
+latest seed and reject a seed change during startup, so one rollout cannot combine a
+seed check from one revision with an active pointer from another.
+
+The seed is a rollout barrier, not a permanent replacement for the durable active
+pointer. An authorized `AdminApi` revision activated after the matching seed remains the
+active revision when a replica restarts. A later Helm rollout publishes its own seed
+before replicas for that rollout can serve. This coordination removes the need for an
+operator-initiated gateway restart after bootstrap; it does not replace normal rollout,
+rollback, and availability validation in the target cluster.
+
 Deployment v4 installations should declare `gatewayActivation` in their profile instead
 of applying the gateway ConfigMap separately. The profile names the composed document,
 its public JWKS and CA files, the pre-existing confidential Secret, and the Secret keys
