@@ -1510,7 +1510,7 @@ fn helm_render_locked(
         release,
         &source.revision,
         ReleaseValueContext {
-            image_digests: Some(image_digests),
+            image_digests: Some(&image_digests),
             components,
             mcp_servers,
             gateway_activation: activation,
@@ -1845,7 +1845,7 @@ fn helm_up(
         release,
         &source.revision,
         ReleaseValueContext {
-            image_digests: Some(image_digests),
+            image_digests: Some(&image_digests),
             components,
             mcp_servers,
             gateway_activation: activation,
@@ -1860,14 +1860,19 @@ fn helm_up(
     status_checked("helm", refs, &[], None)
 }
 
-fn release_image_digests<'a>(
+fn release_image_digests(
     values_contract: ReleaseValuesContract,
-    source: &'a BTreeMap<String, String>,
-    deployment: &'a BTreeMap<String, String>,
-) -> &'a BTreeMap<String, String> {
+    source: &BTreeMap<String, String>,
+    deployment: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
     match values_contract {
-        ReleaseValuesContract::Extension => deployment,
-        ReleaseValuesContract::Platform | ReleaseValuesContract::VeoveoSource => source,
+        ReleaseValuesContract::Platform => source.clone(),
+        ReleaseValuesContract::VeoveoSource => deployment
+            .iter()
+            .filter(|(key, _)| key.starts_with("veoveo/"))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect(),
+        ReleaseValuesContract::Extension => deployment.clone(),
     }
 }
 
@@ -2299,28 +2304,34 @@ mod tests {
     }
 
     #[test]
-    fn external_values_receive_platform_images_without_polluting_platform_values() {
-        let source = [("veoveo/gateway".to_owned(), DIGEST_A.to_owned())]
+    fn release_value_contract_selects_expected_digest_closure() {
+        let source = [("veoveo/sumo-mcp".to_owned(), DIGEST_A.to_owned())]
             .into_iter()
             .collect::<BTreeMap<_, _>>();
         let deployment = [
             ("extension/runtime".to_owned(), DIGEST_B.to_owned()),
-            ("veoveo/gateway".to_owned(), DIGEST_A.to_owned()),
+            ("veoveo/sumo-mcp".to_owned(), DIGEST_A.to_owned()),
+            ("veoveo/recording-forwarder".to_owned(), DIGEST_B.to_owned()),
         ]
         .into_iter()
         .collect::<BTreeMap<_, _>>();
 
         assert_eq!(
             release_image_digests(ReleaseValuesContract::Platform, &source, &deployment),
-            &source
+            source
         );
         assert_eq!(
             release_image_digests(ReleaseValuesContract::VeoveoSource, &source, &deployment),
-            &source
+            [
+                ("veoveo/recording-forwarder".to_owned(), DIGEST_B.to_owned()),
+                ("veoveo/sumo-mcp".to_owned(), DIGEST_A.to_owned()),
+            ]
+            .into_iter()
+            .collect()
         );
         assert_eq!(
             release_image_digests(ReleaseValuesContract::Extension, &source, &deployment),
-            &deployment
+            deployment
         );
     }
 
