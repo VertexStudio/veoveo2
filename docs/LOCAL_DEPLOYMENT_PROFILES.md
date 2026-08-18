@@ -1,8 +1,8 @@
 # Local deployment profiles
 
 Typed deployment profiles are a repository-development convenience for disposable
-showcases. They select Docker Bake groups, a local k3d cluster, development Secrets,
-and local Helm charts. Enterprise installations use the OCI and GitOps contract in
+showcases. They select Docker Bake groups, a local k3d cluster, existing
+installation-owned Secrets, and local Helm charts. Enterprise installations use the OCI and GitOps contract in
 [Enterprise deployment](ENTERPRISE_DEPLOYMENT.md).
 
 The current complete profile is the SUMO development environment:
@@ -30,6 +30,8 @@ REVISION=$(git rev-parse HEAD)
 
 cargo xtask smoke profile-validate --profile "$PROFILE"
 cargo xtask smoke profile-cluster-up --profile "$PROFILE"
+kubectl --context k3d-veoveo-sumo apply \
+  -f deploy/local/k3d/development-resources.yaml
 cargo xtask release images \
   --profile "$PROFILE" \
   --profile-revision "$REVISION" \
@@ -69,12 +71,10 @@ internal discovery endpoint, starts a valid stopped container, and recreates a
 stale one. Production profiles do not create or manage this container.
 
 A profile whose `gatewayActivation` declares `generatedPublicFiles` (see
-[Generated public files](#generated-public-files)) needs `profile-cluster-up` to have
-generated that material at least once in the current checkout before `profile-validate`
-can fully evaluate the gateway activation; run `profile-cluster-up` first, or expect
-`profile-validate` to fail naming the missing generated file. `profile-up` and
-`release images` are unaffected by this ordering: `profile-up` generates the material
-itself if it is still missing, and `release images` never reads it.
+[Generated public files](#generated-public-files)) does not require those files to exist
+for `profile-validate`; validation uses a synthetic placeholder and remains read-only.
+`profile-cluster-up` and `profile-up` materialize the files when they perform their
+respective real workflows, while `release images` never reads them.
 
 BuildKit pushes images directly to the profile-selected OCI registry. It does not load
 release images into the host Docker image store. The publisher configures the managed
@@ -112,9 +112,9 @@ paths resolve inside that source's exact checkout. The fields are:
 | kubernetes.context | Explicit kubectl and Helm context |
 | kubernetes.localCluster | k3d configuration and node bootstrap manifests |
 | namespace | Namespace for local resources |
-| resources.manifests | Kubernetes resources applied before Helm |
+| resources.manifests | Non-Secret Kubernetes resources applied before Helm; rendered Secrets are rejected |
 | resources.configMaps | File-backed development ConfigMaps |
-| resources.secrets | Environment-backed development Secrets |
+| resources.secrets | Reserved v6 field that must remain empty; profiles do not own Secrets |
 | gatewayActivation.controlPlane | Complete installation-owned composed gateway document |
 | gatewayActivation.publicFiles | Exact public JWKS and CA files referenced by that document, resolved from a committed installation-repository path |
 | gatewayActivation.generatedPublicFiles | Public files referenced by that document but produced by a local-cluster lifecycle command instead of a committed path; see [Generated public files](#generated-public-files) |
@@ -147,7 +147,8 @@ another mutable source expression.
 When `gatewayActivation` is present, profile validation parses the control plane, checks
 that its complete file reference set exactly matches the union of `publicFiles` and
 `generatedPublicFiles`, and validates each JWKS or CA bundle. Profile application
-verifies the confidential Secret keys, creates a digest-named immutable ConfigMap, and
+renders and verifies the complete SecretClosure before any Kubernetes or Helm mutation.
+It verifies the confidential Secret keys, creates a digest-named immutable ConfigMap, and
 supplies that name and digest to the platform release. A repeated application reuses
 the same revision, while a changed public input is fully installed before Helm starts
 the replacement gateway.
@@ -210,9 +211,15 @@ and adds `recording-forwarder` to the required image closure for producer-side
 transport. Profile validation and publication reject a platform selection that omits a
 required target or introduces an unnecessary one.
 
-Secret values pass to Kubernetes over stdin. The JSON file contains environment
-variable names, not bytes. This mechanism is confined to local development; enterprise
-Secrets are projected by the owner's secret-management platform.
+The installation owner supplies every Secret before `profile-up`. For the loopback SUMO
+fixture, this is the explicit `kubectl apply` step shown above. Shared and enterprise
+installations use their own Secret-management reconciliation path.
+
+Before its first Kubernetes or Helm mutation, `profile-up` renders every locked chart
+and raw object. It extracts workload, image-pull, volume, Ingress, Gateway, and admitted
+custom-resource Secret references. It then verifies existing Secret and key presence.
+Missing, forbidden, timed-out, malformed, and transport-failed reads remain distinct
+fail-closed results. The closure and diagnostics retain no Secret values.
 
 ## Registry and GPU
 

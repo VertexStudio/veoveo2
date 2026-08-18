@@ -24,6 +24,7 @@ component:
 | [`RECORDINGS.md`](RECORDINGS.md) | recording ingest, catalog, sealing, and governed read path |
 | [`RECORDING_INGEST.md`](RECORDING_INGEST.md) | external/LAN producer protocol, auth, durability, and routing |
 | [`DEVELOPMENT_ITERATION.md`](DEVELOPMENT_ITERATION.md) | affected-target staging, digest-locked development rollout, focused acceptance, runtime pressure diagnostics, and iteration budgets |
+| [`CONTINUOUS_INTEGRATION.md`](CONTINUOUS_INTEGRATION.md) | temporary host-local test reporting, informational GitHub presentation, and the future full GPU CI architecture |
 | [`connectors/README.md`](connectors/README.md) | third-party MCP connector catalog, recipe contract, and governed upstream path |
 
 Exploratory documents preserve open design work. They are not normative and do not
@@ -34,13 +35,15 @@ authorize implementation:
 | [`SELF_IMPROVING_HARNESS.md`](SELF_IMPROVING_HARNESS.md) | auth-aware profile strategies, MCP dynamics evidence, evaluation, and possible self-improving harness boundaries |
 | [`REGULATED_READINESS.md`](REGULATED_READINESS.md) | shared responsibility model, control fabric, gap register, and remediation backlog for regulated work |
 
-Approved implementation plans describe future hard cuts. Existing contracts remain
-authoritative until each planned change lands:
+Implementation plans describe future hard cuts. A plan's status line records whether
+its execution is approved. Existing contracts remain authoritative until each planned
+change lands:
 
 | Document | Planned change |
 |---|---|
 | [`REPOSITORY_HARDENING_PLAN.md`](REPOSITORY_HARDENING_PLAN.md) | compiled repository tooling, contract enforcement, test and smoke ownership, architecture policy, supply-chain hardening, external-extension seams, and governance |
 | [`RMCP_3_MIGRATION.md`](RMCP_3_MIGRATION.md) | hard cut to MCP `2026-07-28` and `rmcp` 3, official Tasks and multi-round requests, stateless transport, subscription and replica redesign, Rig migration, duplicate protocol deletion, and acceptance |
+| [`PLATFORM_IMPROVEMENTS_PLAN.md`](PLATFORM_IMPROVEMENTS_PLAN.md) | test-driven agent resource continuity and correction, owner-supplied Secret closure, standalone MCP Apps, canonical domain resource handoff, compiler-ready provenance, spatial correctness, and optional or evidence-gated deployment, model, GPU, and private-build work |
 
 MCP designs live with the crate whose public contract they specify:
 
@@ -107,7 +110,7 @@ Hub, administration, and GPU policy.
 | `configs/stream/` | admitted GStreamer graph, typed profile, TensorRT model, and live-ingress catalog example |
 | `configs/reason/` | world-model checkpoint reason catalog example and deployment contract |
 | `configs/view/` | server-side 3D scene-layer catalog without provider secret values |
-| `deploy/contract/` | multi-source deployment v5 profiles and locks, platform/workload/extension ownership, exact platform-image and managed DRA closure, split source/installation Helm values, typed registry transport, physical-GPU topology, collision-free publication preflight, schema generation, and pure validation |
+| `deploy/contract/` | multi-source deployment v6 profiles and locks, platform/workload/extension ownership, exact platform-image and managed DRA closure, rendered Secret-reference closure, split source/installation Helm values, typed registry transport, physical-GPU topology, collision-free publication preflight, schema generation, and pure validation |
 | `docs/GPU_PLACEMENT.md` | managed NVIDIA DRA artifacts, installation schema, lifecycle, conflict transition, validation, upgrade, rollback, and recovery contract |
 | `extensions/contract/` | typed external artifact, compatibility-manifest, extension-release, simulation build-lock/result/evidence, and schema contracts |
 | `extensions/examples/` | anonymous external fragment and installation-binding examples |
@@ -123,14 +126,14 @@ Hub, administration, and GPU policy.
 | `sdk/` | language SDK workspaces |
 | `deploy/helm/veoveo/` | Kubernetes installation chart, chart-owned first-party service definitions, and typed component/server presets |
 | `showcase/uav-sim/deploy/helm/` | authoritative GPU simulator, UAV MCP server, isolated generic pilot agents, live-view signaling/media ingress, render-product capacity, and per-viewer lease configuration |
-| `testing/smoke/src/bin/smoke/deployment.rs` | profile validation and orchestration, immutable gateway activation, and ordered Helm release inputs |
+| `testing/smoke/src/bin/smoke/deployment.rs` | profile validation and orchestration, pre-mutation Secret presence closure, immutable gateway activation, and ordered Helm release inputs |
 | `testing/smoke/src/bin/smoke/deployment/keycloak/` | local-only Keycloak container reconciliation, cross-process lifecycle locking, generated TLS state, and focused tests |
 | `testing/smoke/src/bin/smoke/deployment/gpu.rs` | managed NVIDIA DRA orchestration, ResourceSlice inventory, persistent-claim preservation, and workload placement proof |
 | `testing/smoke/src/bin/smoke/deployment/gpu/helm.rs` | Helm v4 release metadata, exact allocator artifact and render verification, and atomic installation |
 | `testing/smoke/src/bin/smoke/deployment/gpu/admission.rs` | kubelet-plugin selector, DaemonSet readiness, node taint, and pod scheduling diagnostics |
 | `testing/smoke/src/bin/smoke/deployment/gpu/workloads.rs` | typed Deployment selector, current ReplicaSet ownership, Ready Pod/container, replica-count, and in-container GPU evidence targeting |
 | `testing/deployment-smoke/` | focused deployment-profile and exact-revision GitOps convergence CLI that avoids compiling unrelated protocol and visual scenarios |
-| `testing/browser-smoke/` | focused headed-browser acceptance over an already-running simulation plus explicit native live-view container-restart recovery evidence |
+| `testing/browser-smoke/` | focused headed-browser acceptance over an already-running simulation, mandatory Console and standalone App host preflights, and explicit native live-view container-restart recovery evidence |
 | `deploy/helm/veoveo-extension/` | private reusable extension-chart helper API and immutable chart package source |
 | `deploy/offline/` | pinned image manifest, bundle builder/loader, offline values |
 | `showcase/sumo/` | real SUMO/TraCI domain showcase |
@@ -145,7 +148,7 @@ Hub, administration, and GPU policy.
 | `deploy/contract/tests/multi_repository.rs` | anonymous acceptance using independent platform, extension, and installation Git histories with one combined deployment lock |
 | `testing/fixtures/simulation-overlay/` | repository-neutral overlay identity and CUDA probe for canonical simulation-base acceptance |
 | `tools/image-build/` | registry-neutral managed BuildKit base configuration, shared Rust builder inputs, and the source-locked first-party Datasheet image environment |
-| `tools/xtask/` | compiled repository command, enforcement, typed smoke prerequisite builds and dispatch, exact image planning, profile-registry builder configuration, and release orchestration |
+| `tools/xtask/` | compiled repository command, enforcement, local test reporting, typed smoke prerequisite builds and dispatch, exact image planning, profile-registry builder configuration, and release orchestration |
 
 ## Placement Rules
 
@@ -221,7 +224,7 @@ schema merely because the server is first-party.
 | `provider.rs` | provider job/event contracts; no status polling API |
 | `subscriptions.rs` | request-scoped resource and list-change event hub for final `subscriptions/listen` streams |
 | `protocol.rs` | sole final MCP revision, shared cache lifetimes, and bounded W3C trace metadata validation |
-| `transport.rs` | canonical stateless Streamable HTTP configuration and no-session adapter |
+| `transport.rs` | canonical stateless Streamable HTTP configuration, no-session adapter, and whole-response 8 MiB final JSON budget enforcement |
 | `telemetry.rs` | tracing/log initialization and guards |
 
 ### `mcp/composer`
@@ -402,7 +405,8 @@ Current MCP crates under `servers/` are indexed here:
 | `servers/stream-mcp` | admitted live and replay GStreamer execution, typed pipeline profiles and results, encoded preview, and the Stream MCP App |
 | `servers/reason-mcp` | local recorded-video reasoning, grounding, and Rerun annotations |
 | `servers/recording-mcp` | governed recording catalog, queries, subscriptions, and sealing |
-| `servers/timeseries-mcp` | time-series analysis, forecasting, evaluation, and artifacts |
+| `servers/timeseries-mcp` | time-series analysis, forecasting, evaluation, canonical artifact handoff, and artifacts |
+| `servers/timeseries-mcp/src/bin/server/usage_index.rs` | bounded authority-filtered usage discovery with stable task ordering and opaque cursors |
 | `servers/time-mcp` | temporal authority, clock assessment, operational calendars, mission timelines, and events |
 | `servers/view-mcp` | immutable governed scene compositions, owner and Work Context scoped geospatial views, shared 3D Tiles streaming, GPU overlays, and captured frames |
 | `servers/uav-sim-mcp` | provider-neutral UAV simulation sessions, principal-to-vehicle grants, Map route admission, exclusive command leases, missions, telemetry, tasks, recording references, authoritative logical cameras, isolated per-viewer GPU products, authenticated signaling, and the UAV App |
@@ -446,7 +450,7 @@ The packaged Node chart server keeps its Veoveo boundary beside the image:
 | `examples/bioma/uav-sim-values.yaml` | reference authoritative camera, product, public gateway origin, and recording tenant binding |
 | `testing/smoke/src/bin/smoke/scenarios/uav_sim.rs` | runtime world publication plus credentialed Google tiles, PX4, independent live Stream processing, Recording Hub replay, Reason, and concurrent GPU acceptance |
 | `testing/smoke/src/bin/smoke/scenarios/uav_sim/showcase.rs` | showcase-owned authoritative UAV cameras and products, real authenticated Console checkpoints, governed Rerun playback, and revision-qualified evidence |
-| `testing/smoke/src/bin/smoke/scenarios/uav_sim/browser.rs` | headed authenticated Chrome attachment, hardware WebGPU-or-WebGL enforcement, dedicated simultaneous-viewer windows, Console live-view interaction, and screenshots |
+| `testing/smoke/src/bin/smoke/scenarios/uav_sim/browser.rs` | headed authenticated Chrome attachment, hardware WebGPU-or-WebGL enforcement, dedicated simultaneous-viewer windows, shared Console/standalone-App boundary checks, Console live-view interaction, and screenshots |
 | `testing/browser-smoke/src/restart.rs` | focused same-document native live-view recovery across independent MCP-pod and simulator-container restarts, including proof that MCP replacement leaves the GPU pod unchanged |
 | `testing/smoke/src/bin/smoke/scenarios/uav_sim/browser/recording_acceptance.rs` | scoped Redap network evidence, live-source continuity, archive-request rejection, and nonblank Rerun viewport measurement |
 
@@ -515,6 +519,7 @@ provenance, and DuckDB persistence.
 | `servers/optimization-mcp/src/executor/` | private bounded Unix-socket protocol and Rust client |
 | `servers/optimization-mcp/executor/` | pinned Python cuOpt 26.06 GPU adapter and hardware health check |
 | `servers/optimization-mcp/src/bin/server/` | MCP tasks, GPU queue, problem/run/solution resources, artifact publication, prompts, and identity |
+| `servers/optimization-mcp/src/bin/server/index.rs` | authority-scoped exact domain lookup, compact stable pages, opaque collection cursors, bounded completion search, and usage discovery |
 | `deploy/contract/src/lib.rs` | portable Optimization capability, exact Optimization image closure, and mandatory `cuopt-executor` GPU scheduling declaration |
 | `deploy/helm/veoveo/definitions/domain-services.yaml` | single Optimization Pod, CPU control container, one-GPU cuOpt sidecar, shared socket, memory-backed shared memory, and persistent workspace |
 | `examples/bioma/images.lock.yaml` | immutable Bioma release digests for both Optimization control and cuOpt executor images |
@@ -526,7 +531,7 @@ provenance, and DuckDB persistence.
 |---|---|
 | `servers/time-mcp` | authority-bound time resolution and conversion, calendar expansion, timeline validation, interval algebra, clock assessment, mission epochs, and temporal events |
 | `servers/time-mcp/src/acquisition/` | bounded IANA TZDB and leap-second acquisition, validation, compilation, and staging |
-| `platform/store/src/time.rs` | tenant temporal catalog, optimistic release activation, owner events, and clock policy |
+| `platform/store/src/time.rs` | tenant temporal catalog, optimistic release activation, exact acquisition-to-release provenance lookup, owner events, and clock policy |
 
 [`servers/time-mcp/DESIGN.md`](../servers/time-mcp/DESIGN.md) owns the complete
 protocol, authority, administration, deployment, and synchronization-observation
@@ -547,8 +552,9 @@ DuckDB-specific ownership:
 | Path | Responsibility |
 |---|---|
 | `servers/duckdb-mcp/DESIGN.md` | public contract, runtime boundary, tasks, persistence, deployment, and limits |
-| `platform/runtimes/duckdb/` | bounded engine runtime and sandbox primitives |
+| `platform/runtimes/duckdb/` | bounded engine runtime, closed Spatial axis policy, effective-setting verification, and sandbox primitives |
 | `mcp/contract/src/duckdb.rs` | cross-server governed source vocabulary |
+| `mcp/contract/src/digest.rs` | canonical typed SHA-256 provenance digest shared by server contracts |
 | `servers/duckdb-mcp/src/contract.rs` | server-local tool request and result types |
 | `servers/duckdb-mcp/src/engine.rs` | adapter from server results to the shared runtime |
 | `servers/duckdb-mcp/src/bin/server/ownership.rs` | derived owner workspaces and database resolution |
@@ -731,7 +737,7 @@ SurrealDB-backed agent, episode, task watcher, wake, lease, and scheduling persi
 | File | Responsibility |
 |---|---|
 | `control.rs` | database-authenticated, exact-context external operator messages and input-request decisions with UUIDv7 idempotency, durable wakes, actor attribution, and a domain-neutral conversation projection over wakes and episodes |
-| `runtime.rs` | lease-fenced agent mutations, inactive-manifest reconciliation, and race-safe durable input-request terminal waits |
+| `runtime.rs` | lease-fenced agent mutations, inactive-manifest reconciliation, race-safe durable input-request terminal waits, and atomic terminal-delivery consumption with first-party Task retention release |
 
 ### `agents/kernel`
 
@@ -746,7 +752,8 @@ SurrealDB-backed agent, episode, task watcher, wake, lease, and scheduling persi
 | `memory.rs` | durable memory API over analytical stores |
 | `rrd.rs`, `recorder.rs` | episode/world Rerun recording |
 | `budget.rs` | enforced episode/tool/cost budgets |
-| `connection.rs` | final-profile gateway client epoch, request-scoped listener restoration, and deferred-task resolver |
+| `connection.rs` | final-profile gateway client epoch, serialized request-boundary credential freshness, acknowledged request-scoped listener restoration, and deferred-task resolver |
+| `resource.rs` | governed current-profile resource reads, episode-local accounting, admitted text validation, and bounded correction diagnostics |
 
 ### `platform/gateway/src/bin/gateway/admin`
 
@@ -760,11 +767,12 @@ SurrealDB-backed agent, episode, task watcher, wake, lease, and scheduling persi
 
 | File | Responsibility |
 |---|---|
-| `oauth.rs` | PKCE login, token exchange, refresh rotation |
-| `session.rs` | XChaCha20-Poly1305 cookies and CSRF material |
+| `oauth.rs` | PKCE login, token exchange, refresh rotation, and shared Console/standalone-App return settlement |
+| `session.rs` | XChaCha20-Poly1305 cookies, CSRF material, and bounded same-origin `BrowserReturnPath` authority |
+| `app_host.rs` | typed `/apps/{server}/{page...}` route authority, public no-store entry document, and caller-authorized App bootstrap |
 | `api.rs` | snapshot, SSE, mutation, artifact preview/download, and same-origin CSRF-protected agent-message/input-request BFF projections; browser credentials and database authority never enter an MCP App |
 | `recording_playback.rs` | authenticated playback-manifest and framed live-stream pass-through; no archive bytes or BFF session store |
-| `apps.rs`, `mcp_client.rs` | MCP Apps host backend: auth-scoped final-profile client pool, public gateway authority preservation, reactive failure-isolated app catalog, sandboxed frame serving, declared agent-message targets, allowlisted tool calls, explicit resource-read settlement, and one bounded multiplexed resource-wake stream per App |
+| `apps.rs`, `mcp_client.rs` | MCP Apps host backend: auth-scoped final-profile client pool, public gateway authority preservation, reactive failure-isolated app catalog, standalone descriptors, sandboxed frame serving, declared agent-message targets, allowlisted tool calls, explicit resource-read settlement, configured listener/subscription admission, bounded token-replacement cancellation, and one multiplexed resource-wake stream per App |
 | `config.rs`, `viewer_config.rs` | validated public/gateway/OAuth-resource/MCP-transport and embedded-map configuration, exact profile binding, redacted provider credentials, and the authenticated no-store Rerun map projection |
 | `outbound_http.rs` | additive installation CA trust shared by Console HTTP, streaming, live, MCP, and Kubernetes clients |
 
@@ -773,6 +781,7 @@ SurrealDB-backed agent, episode, task watcher, wake, lease, and scheduling persi
 | File | Responsibility |
 |---|---|
 | `App.tsx` | application shell: platform navigation plus catalog-driven MCP App entries, topbar, view routing, drawer mounting |
+| `appHost.tsx`, `StandaloneAppHost.tsx`, `standaloneBootstrap.ts` | minimal standalone App entry, authorized same-path bootstrap, shared OAuth/CSRF settlement, authorized title, and Console return link |
 | `views/Recordings.tsx` | searchable lifecycle browser and lazy Rerun playback workspace |
 | `components/GovernedRerunViewer.tsx`, `rerunSources.ts`, `rerunLiveChannel.ts`, `recordingRrdFetch.ts`, `rerunMap.ts` | persistent WebViewer lifecycle, producer Blueprint-first opening, one native incremental-RRD or lazy-archive receiver, exact same-origin RRD authorization, duplicate-free current-head reconnect, event-driven rollover without cursor forcing, archive-only credential renewal, and installation-owned browser map-provider activation |
 | `views/Agents.tsx`, `agentControl.ts` | reactive agent state, actor-attributed conversation, durable message submission, pending input-request decisions, and client-owned UUIDv7 retry identity |
@@ -785,7 +794,7 @@ SurrealDB-backed agent, episode, task watcher, wake, lease, and scheduling persi
 | `queries.ts`, `queryClient.ts` | TanStack Query keys, snapshot/apps/cluster queries, mutation hooks with targeted cache patches |
 | `live.ts` | EventSource console stream feeding row upserts into the snapshot cache |
 | `theme.ts`, `ThemeProvider.tsx` | persisted Console theme registry, semantic palette selection, and MCP App light/dark host context |
-| `apps/` | MCP Apps host: sandboxed iframe component, stable postMessage bridge, closed internal navigation, declared agent messages, explicit resource-read adapter, and fetch-backed multiplexed SSE wake decoder |
+| `apps/` | MCP Apps host: one exported opaque-origin sandbox policy, shared iframe component, stable postMessage bridge, closed internal navigation, declared agent messages, explicit resource-read adapter, and fetch-backed multiplexed SSE wake decoder |
 | `auth.ts` | one-way authentication transition shared by every 401 handler |
 | `api.ts` | ordered same-origin BFF calls and CSRF rotation |
 | `types.ts` | TypeScript snapshot and mutation response shapes |
@@ -801,7 +810,8 @@ SurrealDB-backed agent, episode, task watcher, wake, lease, and scheduling persi
 | `testing/smoke/src/bin/smoke/support/` | process, HTTP, auth, fixture, usage helpers |
 | `testing/smoke/tests/` | static deployment/offline contract tests |
 | component-local `tests/` | focused live SurrealDB and service integration tests |
-| `.github/workflows/ci.yml` | formatting, clippy, tests, UI, Keycloak, deployment CI |
+| `testing/local-test-report.json` | committed informational result of checks executed on the qualified development host |
+| `.github/workflows/local-test-report.yml` | lightweight presentation of the committed local test report; it performs no substantive build, deployment, GPU, or browser acceptance |
 
 There should be no smoke lifecycle, retry, assertion, or cleanup logic in shell recipes.
 

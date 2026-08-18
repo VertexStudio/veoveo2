@@ -20,7 +20,7 @@ use browser::{
     ConsoleLiveCaptureEvidence, ConsoleLiveGridEvidence, ConsoleRecordingArchiveCaptureEvidence,
     ConsoleRecordingCaptureEvidence, capture_console_live_app, capture_console_live_app_grid,
     capture_console_live_app_pair, capture_console_recording, capture_console_recording_archive,
-    preflight_console_live_app,
+    preflight_console_live_app, preflight_standalone_live_app,
 };
 use restart::{RestartVerification, verify_live_view_restarts};
 
@@ -35,6 +35,10 @@ const QUALIFIED_CAMERA_IDS: [&str; 5] = [
     "stabilized",
     "formation",
 ];
+const FOCUSED_UAV_APP_HOST_PREFLIGHTS: [FocusedUavAppHostPreflight; 2] = [
+    FocusedUavAppHostPreflight::Console,
+    FocusedUavAppHostPreflight::Standalone,
+];
 const OPERATOR_PROFILE_SCOPES: &[&str] = &[
     "operator:use",
     "uav-sim:read",
@@ -45,6 +49,26 @@ const OPERATOR_PROFILE_SCOPES: &[&str] = &[
     "map:dataset:read",
     "time:read",
 ];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FocusedUavAppHostPreflight {
+    Console,
+    Standalone,
+}
+
+impl FocusedUavAppHostPreflight {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Console => "console",
+            Self::Standalone => "standalone",
+        }
+    }
+}
+
+#[cfg(test)]
+fn focused_uav_app_host_preflights() -> [&'static str; 2] {
+    FOCUSED_UAV_APP_HOST_PREFLIGHTS.map(FocusedUavAppHostPreflight::label)
+}
 
 #[derive(Debug, Parser)]
 #[command(
@@ -61,6 +85,15 @@ struct Args {
 // browser binary; the shared prefix is part of the CLI rather than Rust type noise.
 #[allow(clippy::enum_variant_names)]
 enum SmokeCommand {
+    /// Verify the Console and standalone UAV App hosts without opening live products.
+    UavAppHostsBrowserVerify {
+        #[arg(long)]
+        public_base_url: String,
+        #[arg(long, default_value = "http://127.0.0.1:9222")]
+        chrome_cdp_url: String,
+        #[arg(long, default_value_t = 180)]
+        timeout_seconds: u64,
+    },
     /// Repeat headed Console acceptance without restarting or commanding the simulation.
     UavShowcaseBrowserVerify {
         #[arg(long, default_value = "target/debug/conformance")]
@@ -263,6 +296,18 @@ impl OperatorClient<'_> {
 async fn main() -> Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     match Args::parse().command {
+        SmokeCommand::UavAppHostsBrowserVerify {
+            public_base_url,
+            chrome_cdp_url,
+            timeout_seconds,
+        } => {
+            verify_uav_app_hosts(
+                &public_base_url,
+                &chrome_cdp_url,
+                Duration::from_secs(timeout_seconds),
+            )
+            .await
+        }
         SmokeCommand::UavShowcaseBrowserVerify {
             conformance_bin,
             scenario,
@@ -332,6 +377,23 @@ async fn main() -> Result<()> {
             .await
         }
     }
+}
+
+async fn verify_uav_app_hosts(
+    public_base_url: &str,
+    chrome_cdp_url: &str,
+    timeout: Duration,
+) -> Result<()> {
+    let public_base_url = public_base_url.trim_end_matches('/');
+    ensure!(
+        url::Url::parse(public_base_url)?.scheme() == "https",
+        "focused UAV App host acceptance requires public HTTPS"
+    );
+    preflight_focused_uav_app_hosts(chrome_cdp_url, public_base_url, timeout).await?;
+    println!(
+        "Focused UAV App host acceptance passed for the authenticated Console and standalone routes"
+    );
+    Ok(())
 }
 
 async fn verify_recording_archive(
@@ -497,7 +559,7 @@ async fn verify_running_showcase(
         "focused browser acceptance requires public HTTPS"
     );
     let timeout = Duration::from_secs(scenario.view.timeout_seconds);
-    preflight_console_live_app(chrome_cdp_url, public_base_url, timeout).await?;
+    preflight_focused_uav_app_hosts(chrome_cdp_url, public_base_url, timeout).await?;
     let token = gateway_token(conformance, public_base_url).await?;
     let operator = OperatorClient {
         conformance,
@@ -697,6 +759,25 @@ async fn verify_running_showcase(
         "Focused browser acceptance passed without restarting or commanding the simulation. Evidence: {}",
         manifest.display()
     );
+    Ok(())
+}
+
+async fn preflight_focused_uav_app_hosts(
+    chrome_cdp_url: &str,
+    public_base_url: &str,
+    timeout: Duration,
+) -> Result<()> {
+    for host in FOCUSED_UAV_APP_HOST_PREFLIGHTS {
+        match host {
+            FocusedUavAppHostPreflight::Console => {
+                preflight_console_live_app(chrome_cdp_url, public_base_url, timeout).await
+            }
+            FocusedUavAppHostPreflight::Standalone => {
+                preflight_standalone_live_app(chrome_cdp_url, public_base_url, timeout).await
+            }
+        }
+        .with_context(|| format!("preflighting the focused {} UAV App host", host.label()))?;
+    }
     Ok(())
 }
 
@@ -1011,6 +1092,11 @@ fn git_revision() -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn focused_uav_acceptance_preflights_both_app_hosts() {
+        assert_eq!(focused_uav_app_host_preflights(), ["console", "standalone"]);
+    }
 
     #[test]
     fn source_timeline_is_aligned_at_the_rerun_observation() {

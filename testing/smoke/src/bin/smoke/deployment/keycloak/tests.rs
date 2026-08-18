@@ -33,7 +33,7 @@ use super::{
         validate_generation,
     },
 };
-use crate::deployment::{prepare_gateway_activation, validate_gateway_activation};
+use crate::deployment::{prepare_gateway_activation, prepare_gateway_activation_for_validation};
 
 struct Fixture {
     _dir: tempfile::TempDir,
@@ -113,7 +113,8 @@ fn fixture() -> Fixture {
 fn structural_validation_does_not_require_or_create_runtime_state() {
     let fixture = fixture();
     assert!(!state_dir(&fixture.profile.repository).exists());
-    validate_gateway_activation(&fixture.profile).expect("validate generated file structure");
+    prepare_gateway_activation_for_validation(&fixture.profile)
+        .expect("validate generated file structure");
     assert!(profile_requires_local_keycloak(&fixture.profile).unwrap());
     assert!(!state_dir(&fixture.profile.repository).exists());
 }

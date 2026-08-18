@@ -236,6 +236,14 @@ pub(crate) async fn helm_config() -> Result<()> {
         ],
         [],
     )?;
+    let gateway_deployment = platform
+        .split("\n---\n")
+        .find(|document| {
+            document.contains("kind: Deployment") && document.contains("name: mcp-gateway\n")
+        })
+        .context("finding rendered mcp-gateway deployment")?;
+    contains(gateway_deployment, "startupProbe:")?;
+    contains(gateway_deployment, "failureThreshold: 24")?;
     for expected in [
         "image: surrealdb/surrealdb:v3.2.3",
         "image: rustfs/rustfs:1.0.0-beta.8",
@@ -246,7 +254,7 @@ pub(crate) async fn helm_config() -> Result<()> {
         "name: console-bff",
         "name: VEOVEO_CONSOLE_MCP_TRANSPORT_URL",
         "value: \"http://mcp-gateway:8788/mcp/admin\"",
-        "value: \"operator:use admin:manage uav-sim:stream map:admin map:dataset:read map:feature:admin map:feature:publish map:feature:read map:feature:write map:raster:derive map:spatial:derive time:read view:read view:write view:capture\"",
+        "value: \"operator:use admin:manage uav-sim:admin uav-sim:stream map:admin map:dataset:read map:feature:admin map:feature:publish map:feature:read map:feature:write map:raster:derive map:spatial:derive time:read view:read view:write view:capture\"",
         "host: localhost",
         "path: /s",
         "mountPath: /etc/veoveo/gateway",
@@ -470,8 +478,19 @@ pub(crate) async fn helm_config() -> Result<()> {
                     && document.contains(&format!("name: {component}\n"))
             })
             .with_context(|| format!("finding rendered {component} deployment"))?;
-        contains(deployment, "replicas: 1")?;
-        contains(deployment, "strategy:\n    type: Recreate")?;
+        contains(
+            deployment,
+            if matches!(component, "mcp-gateway" | "chart-mcp") {
+                "replicas: 2"
+            } else {
+                "replicas: 1"
+            },
+        )?;
+        if component == "mcp-gateway" {
+            not_contains(deployment, "strategy:\n    type: Recreate")?;
+        } else {
+            contains(deployment, "strategy:\n    type: Recreate")?;
+        }
         contains(deployment, "veoveo.ai/chart-revision: \"0.1.0\"")?;
         let required_driver_capabilities = match component {
             "reason-mcp" | "stream-mcp" => Some("compute,utility,video"),
@@ -603,6 +622,7 @@ pub(crate) async fn helm_config() -> Result<()> {
         "nvidia.com/gpu: 1",
         "name: uav-sim-runtime",
         "value: \"http://uav-sim-runtime:8810/\"",
+        "veoveo.ai/chart-revision: \"0.1.0\"",
     ] {
         contains(&uav_sim, expected)?;
     }
@@ -615,7 +635,6 @@ pub(crate) async fn helm_config() -> Result<()> {
         "name: stream-signal",
         "name: stream-media",
         "UAV_SIM_RUNTIME_EVENT_SOCKET",
-        "veoveo.ai/chart-revision",
     ] {
         if uav_sim.contains(forbidden) {
             bail!("UAV simulation render must not contain `{forbidden}`");
@@ -639,10 +658,10 @@ pub(crate) async fn helm_config() -> Result<()> {
         "authoritative simulator and recording forwarder must precede the independent MCP deployment"
     );
     ensure!(
-        uav_sim.matches("kind: Deployment").count() == 2
+        uav_sim.matches("kind: Deployment").count() == 6
             && uav_sim.matches("runtimeClassName: nvidia").count() == 1
             && uav_sim.matches("nvidia.com/gpu: 1").count() == 2,
-        "UAV chart must render one GPU runtime deployment and one GPU-independent MCP deployment"
+        "UAV chart must render four pilots, one GPU runtime, and one GPU-independent MCP deployment"
     );
 
     let production_without_digests = Command::new("helm")
@@ -860,11 +879,11 @@ pub(crate) async fn helm_config() -> Result<()> {
             && uav_dependencies
                 .pointer("/components/rerun/version")
                 .and_then(Value::as_str)
-                == Some("0.35.0")
+                == Some("0.36.0")
             && uav_dependencies
                 .pointer("/components/python_runtime/rerun_sdk")
                 .and_then(Value::as_str)
-                == Some("0.35.0"),
+                == Some("0.36.0"),
         "UAV dependency lock omitted a canonical release or Google tiles identity"
     );
     let simulation_lock_bytes =
@@ -892,6 +911,10 @@ pub(crate) async fn helm_config() -> Result<()> {
         "showcase/uav-sim/runtime/Dockerfile",
         "testing/fixtures/simulation-overlay/Dockerfile",
     ];
+    let python_path_dockerfiles = [
+        "showcase/uav-sim/runtime/Dockerfile.dependencies",
+        "testing/fixtures/simulation-overlay/Dockerfile",
+    ];
     for dockerfile in [
         "platform/runtimes/simulation/Dockerfile",
         overlay_dockerfiles[0],
@@ -899,7 +922,7 @@ pub(crate) async fn helm_config() -> Result<()> {
     ] {
         assert_revision_metadata_follows_payload(dockerfile)?;
     }
-    for dockerfile in overlay_dockerfiles {
+    for dockerfile in python_path_dockerfiles {
         let contents = fs::read_to_string(dockerfile)?;
         contains(&contents, "${PYTHONPATH}")?;
         for platform_root in [
@@ -942,21 +965,23 @@ pub(crate) async fn helm_config() -> Result<()> {
             "missing simulation runtime probe {probe}"
         );
     }
-    let uav_runtime_dockerfile = fs::read_to_string("showcase/uav-sim/runtime/Dockerfile")?;
+    let uav_runtime_dockerfile = format!(
+        "{}\n{}",
+        fs::read_to_string("showcase/uav-sim/runtime/Dockerfile.dependencies")?,
+        fs::read_to_string("showcase/uav-sim/runtime/Dockerfile")?,
+    );
     for expected in [
         "ARG SIMULATION_RUNTIME_IMAGE=veoveo/simulation-runtime:2026.07.0",
         "px4io/px4-dev:v1.17.0@sha256:",
         "PX4_COMMIT=d6f12ad1c4f70ad3230afd7d86e971421e02fef4",
         "PEGASUS_COMMIT=644da37e9d5268e5f9a34e78bdcfd57a8bab82b4",
-        "CESIUM_VERSION=0.29.0",
-        "sha256sum --check --strict",
         "cesium-0.29.0-preinstalled-vendor.patch",
         "lxml-6.0.2-cp312-cp312",
         "git -C pegasus apply --unidiff-zero --check",
-        "ARG RERUN_SDK_VERSION=0.35.0",
+        "ARG RERUN_SDK_VERSION=0.36.0",
         "rerun-sdk==${RERUN_SDK_VERSION}",
         "FROM --platform=${TARGETPLATFORM} ${SIMULATION_RUNTIME_IMAGE} AS uav-overlay",
-        "FROM uav-overlay AS runtime",
+        "FROM uav-sim-dependencies AS runtime",
         "uav-overlay.identity.json",
         "org.opencontainers.image.revision=",
         "USER 10001:10001",
@@ -968,10 +993,10 @@ pub(crate) async fn helm_config() -> Result<()> {
     }
     contains(
         &fs::read_to_string("platform/recordings/hub/Dockerfile")?,
-        "rerun-sdk==0.35.0",
+        "rerun-sdk==0.36.0",
     )?;
     let stdio_bridge_dockerfile = fs::read_to_string("mcp/bridges/stdio/Dockerfile")?;
-    contains(&stdio_bridge_dockerfile, "ARG RERUN_VERSION=0.35.0")?;
+    contains(&stdio_bridge_dockerfile, "ARG RERUN_VERSION=0.36.0")?;
     contains(
         &stdio_bridge_dockerfile,
         r#"rerun --version | grep -F "rerun-cli ${RERUN_VERSION} ""#,

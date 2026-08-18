@@ -19,7 +19,7 @@ use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{
         CallToolResult, CompleteRequestParams, CompleteResult, CompletionInfo, ContentBlock,
-        GetPromptRequestParams, GetPromptResult, ListPromptsResult, ListResourceTemplatesResult,
+        GetPromptRequestParams, ListPromptsResult, ListResourceTemplatesResult,
         ListResourcesResult, ListToolsResult, PaginatedRequestParams, Prompt,
         ReadResourceRequestParams, ReadResourceResult, Reference, Resource, ResourceContents,
         ResourceTemplate, ServerCapabilities, ServerInfo, SubscriptionFilter,
@@ -784,6 +784,9 @@ async fn main() -> anyhow::Result<()> {
     let mcp = Router::new()
         .route_service("/", service.clone())
         .route_service("/{*path}", service)
+        .layer(middleware::from_fn(
+            veoveo_mcp_contract::enforce_serialized_mcp_response,
+        ))
         .layer(middleware::from_fn_with_state(
             auth_state.clone(),
             authenticate,

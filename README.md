@@ -9,6 +9,10 @@
   </picture>
 </p>
 
+<p align="center">
+  <a href="https://github.com/BiomaAI/veoveo/actions/workflows/local-test-report.yml"><img src="https://github.com/BiomaAI/veoveo/actions/workflows/local-test-report.yml/badge.svg?branch=main" alt="Build"></a>
+</p>
+
 Veoveo is an operations platform for physical AI. Teams run agents that
 observe the physical world, rehearse in simulated worlds, act on real
 systems, and turn everything that happened into operational intelligence.
@@ -570,6 +574,18 @@ as everything it verifies. `cargo xtask smoke` builds the typed harness and
 its scenario-specific local binary prerequisites, then dispatches it. Local
 deployment profiles use the current tool versions pinned in
 [`deploy/local/k3d/versions.env`](deploy/local/k3d/versions.env).
+
+During the current single-host development phase, checks run locally and their
+informational result is committed for GitHub to display:
+
+```bash
+cargo xtask test-report run --name rust-workspace -- cargo xtask enforce rust
+cargo xtask test-report show
+```
+
+This status does not block pushes or deployments. The temporary workflow and the
+planned dedicated GPU CI architecture are described in
+[`docs/CONTINUOUS_INTEGRATION.md`](docs/CONTINUOUS_INTEGRATION.md).
 
 ## Repository Guide
 

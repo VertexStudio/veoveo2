@@ -792,6 +792,7 @@ async fn verify_history_redap(archive: &SumoPlaybackArchive, token: &str) -> Res
         "GetRrdManifest",
         &GetRrdManifestRequest {
             segment_id: Some(archive.segment_id.clone().into()),
+            generate_direct_urls: false,
         },
         token,
         Some(dataset_id),

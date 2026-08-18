@@ -17,7 +17,7 @@ use anyhow::{Context as _, Result, ensure};
 use chrono::{DateTime, TimeDelta, Utc};
 use futures::Stream;
 use re_auth::{Claims, Jwt, Permission, RedapProvider, VerificationOptions};
-use re_log_types::{EntryId, EntryName, StoreId, StoreKind};
+use re_log_types::{ApplicationId, EntryId, EntryName, StoreId, StoreKind};
 use re_protos::{
     cloud::v1alpha1::{
         self as proto,
@@ -302,7 +302,7 @@ impl PlaybackManager {
             dataset_id: catalog.dataset_id.to_string(),
             segment_id: catalog.segment_id.clone(),
             revision: catalog.revision.clone(),
-            rrd_version: "0.35.0".to_owned(),
+            rrd_version: "0.36.0".to_owned(),
             optimization_profile: "object-store".to_owned(),
             byte_len: catalog.byte_len,
             layer_count: catalog.layers.len(),
@@ -516,9 +516,11 @@ async fn build_catalog(
 }
 
 pub fn playback_store_id(recording_id: RecordingId, segment_id: &str) -> Result<StoreId> {
+    let application_id = ApplicationId::try_new(playback_dataset_id(recording_id)?.to_string())
+        .context("playback dataset id is not a valid Rerun application id")?;
     Ok(StoreId::new(
         StoreKind::Recording,
-        playback_dataset_id(recording_id)?.to_string(),
+        application_id,
         segment_id,
     ))
 }

@@ -14,16 +14,17 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use url::Url;
 use veoveo_deploy_contract::{
-    ConfigMapSpec, DeploymentLock, DeploymentSource, DeploymentSourceRole, FirstPartyMcpServer,
-    LoadedProfile, LockedSource, PlannedImage, PlatformComponent, ReleaseSpec,
-    ReleaseValuesContract, SecretFormat, SecretSpec, SourceRepository, load_local_registry,
+    ConfigMapSpec, CustomSecretReferenceRegistry, DeploymentLock, DeploymentSource,
+    DeploymentSourceRole, FirstPartyMcpServer, KubernetesObjectKey, LoadedProfile, LockedSource,
+    PlannedImage, PlatformComponent, ReleaseSpec, ReleaseValuesContract, SecretClosure,
+    SecretClosureStatus, SecretObjectKey, SecretObservation, SecretObservationStatus,
+    SecretReferenceKind, SecretReferenceRequirement, SourceRepository, collect_secret_requirements,
+    load_local_registry,
 };
-use veoveo_mcp_contract::{GatewayControlPlane, GatewayInternalTrustBundle};
+use veoveo_mcp_contract::GatewayControlPlane;
 
 #[path = "deployment/cluster.rs"]
 mod cluster;
-#[path = "deployment/gpu.rs"]
-mod gpu;
 #[path = "deployment/keycloak/mod.rs"]
 mod keycloak;
 
@@ -32,12 +33,14 @@ use cluster::{
     DockerContainer, LifecycleAction, RecoveryConfig, assess_cluster, cluster_lifecycle_decision,
     orchestrate_cluster,
 };
+
+#[path = "deployment/gpu.rs"]
+mod gpu;
+
 use gpu::{apply_gpu_placement, ensure_gpu_allocator, prepare_gpu_placement, verify_gpu_placement};
 
 const VALIDATION_REVISION: &str = "0123456789abcdef0123456789abcdef01234567";
 const GATEWAY_MOUNT_ROOT: &str = "/etc/veoveo/gateway/";
-const GATEWAY_VALIDATION_REVISION: &str =
-    "0000000000000000000000000000000000000000000000000000000000000000";
 // Source resolution needs only the selected build paths. Keep unrelated LFS
 // objects as pointers; a selected LFS input still fails in its owning build.
 const GIT_SKIP_LFS_SMUDGE: &[(&str, &str)] = &[("GIT_LFS_SKIP_SMUDGE", "1")];
@@ -98,7 +101,7 @@ struct ResolvedSource {
 }
 
 #[derive(Debug)]
-struct PreparedGatewayActivation {
+pub(super) struct PreparedGatewayActivation {
     config_map_name: String,
     revision: String,
     confidential_secret: String,
@@ -106,17 +109,16 @@ struct PreparedGatewayActivation {
     data: BTreeMap<String, String>,
 }
 
-type GatewayActivationStructure = (String, BTreeSet<String>, BTreeSet<String>);
-
 pub(crate) fn profile_validate(path: &Path) -> Result<()> {
     let profile = load_profile(path)?;
-    validate_gateway_activation(&profile)?;
+    validate_node_bootstrap_secret_boundary(&profile)?;
     keycloak::validate_profile(&profile)?;
+    let _gateway_activation = prepare_gateway_activation_for_validation(&profile)?;
     let _gpu_placement = prepare_gpu_placement(&profile)?;
     let sources = resolve_sources(&profile)?;
     let selected_images = validate_bake_selections(&profile, &sources)?;
     profile.validate_image_plan(&selected_images)?;
-    validate_helm_releases(&profile, &sources)?;
+    validate_helm_releases(&profile, &sources, _gateway_activation.as_ref())?;
     let platform = profile.resolved_platform()?;
     println!(
         "Deployment profile {} is valid: {} sources, {} image publication phases, {} Helm releases, {} platform components, and {} MCP servers",
@@ -148,6 +150,7 @@ pub(crate) fn profile_registry_up(path: &Path) -> Result<()> {
 
 pub(crate) fn profile_cluster_up(path: &Path) -> Result<()> {
     let profile = load_profile(path)?;
+    validate_node_bootstrap_secret_boundary(&profile)?;
     ensure_local_registry(&profile)?;
     let cluster = profile
         .definition
@@ -155,11 +158,10 @@ pub(crate) fn profile_cluster_up(path: &Path) -> Result<()> {
         .local_cluster
         .as_ref()
         .context("deployment profile does not manage a local k3d cluster")?;
-    let clusters = k3d_clusters()?;
-    let existing = clusters
-        .iter()
+    let existing = k3d_clusters()?
+        .into_iter()
         .find(|candidate| candidate.name == cluster.name);
-    let presence = match cluster_lifecycle_decision(existing) {
+    let presence = match cluster_lifecycle_decision(existing.as_ref()) {
         ClusterLifecycleDecision::Create => ClusterPresence::Absent,
         ClusterLifecycleDecision::Inspect => ClusterPresence::Existing,
     };
@@ -167,7 +169,7 @@ pub(crate) fn profile_cluster_up(path: &Path) -> Result<()> {
         &profile,
         &profile.definition.kubernetes.context,
         &cluster.name,
-        existing.cloned(),
+        existing,
         presence,
         path,
     )?;
@@ -199,7 +201,7 @@ fn ensure_local_cluster_ready(
     profile_path: &Path,
 ) -> Result<()> {
     let network = format!("k3d-{cluster_name}");
-    let summary_hint = summary.clone();
+    let hint = summary.clone();
     let started_at = Instant::now();
     let manual_recovery = format!(
         "Manual recreation is required if recovery cannot be repaired. Run exactly:\n  cargo xtask smoke profile-cluster-delete --profile {}\n  cargo xtask smoke profile-cluster-up --profile {}\nWARNING: profile-cluster-delete deletes the entire k3d cluster and may delete persistent volumes/PVC-backed data; it is never run automatically.",
@@ -208,13 +210,17 @@ fn ensure_local_cluster_ready(
     );
     orchestrate_cluster(
         presence,
-        || probe_local_cluster(context, cluster_name, summary_hint.as_ref(), &network),
+        || probe_local_cluster(context, cluster_name, hint.as_ref(), &network),
         |action| match action {
             LifecycleAction::Create => {
-                let arguments = local_cluster_create_arguments(profile)
-                    .map_err(|error| format!("{error:#}"))?;
-                let arguments = arguments.iter().map(String::as_str).collect::<Vec<_>>();
-                status_checked("k3d", arguments, &[], None).map_err(|error| format!("{error:#}"))
+                let args = local_cluster_create_arguments(profile).map_err(|e| format!("{e:#}"))?;
+                status_checked(
+                    "k3d",
+                    args.iter().map(String::as_str).collect::<Vec<_>>(),
+                    &[],
+                    None,
+                )
+                .map_err(|e| format!("{e:#}"))
             }
             LifecycleAction::Start | LifecycleAction::Stop => status_checked(
                 "k3d",
@@ -230,9 +236,9 @@ fn ensure_local_cluster_ready(
                 &[],
                 None,
             )
-            .map_err(|error| format!("{error:#}")),
+            .map_err(|e| format!("{e:#}")),
             LifecycleAction::ApplyBootstrap => {
-                apply_local_cluster_bootstrap(profile).map_err(|error| format!("{error:#}"))
+                apply_local_cluster_bootstrap(profile).map_err(|e| format!("{e:#}"))
             }
         },
         || thread::sleep(Duration::from_secs(1)),
@@ -241,7 +247,7 @@ fn ensure_local_cluster_ready(
             println!(
                 "waiting for k3d cluster {cluster_name} recovery: {}",
                 format_health(health)
-            );
+            )
         },
         RecoveryConfig {
             spontaneous_window: LOCAL_CLUSTER_SPONTANEOUS_RECOVERY,
@@ -258,16 +264,16 @@ fn ensure_local_cluster_ready(
 fn probe_local_cluster(
     context: &str,
     cluster_name: &str,
-    summary_hint: Option<&K3dClusterSummary>,
+    hint: Option<&K3dClusterSummary>,
     network: &str,
 ) -> ClusterHealth {
     let (summary, inventory_error) = match k3d_clusters() {
-        Ok(clusters) => clusters
+        Ok(items) => items
             .into_iter()
-            .find(|candidate| candidate.name == cluster_name)
+            .find(|item| item.name == cluster_name)
             .map(|summary| (summary, None))
             .or_else(|| {
-                summary_hint.cloned().map(|summary| {
+                hint.cloned().map(|summary| {
                     (
                         summary,
                         Some("cluster is absent from current k3d inventory".to_owned()),
@@ -287,7 +293,7 @@ fn probe_local_cluster(
                 )
             }),
         Err(error) => (
-            summary_hint.cloned().unwrap_or_else(|| K3dClusterSummary {
+            hint.cloned().unwrap_or(K3dClusterSummary {
                 name: cluster_name.to_owned(),
                 servers_running: 0,
                 servers_count: 1,
@@ -321,9 +327,12 @@ fn probe_local_cluster(
 
 fn docker_cluster_containers(cluster_name: &str) -> Result<Vec<DockerContainer>> {
     let filter = format!("label=k3d.cluster={cluster_name}");
-    let ids = output_checked("docker", ["ps", "-aq", "--filter", filter.as_str()], None)?;
-    let ids_text = String::from_utf8(ids)?;
-    let ids = ids_text
+    let ids = String::from_utf8(output_checked(
+        "docker",
+        ["ps", "-aq", "--filter", filter.as_str()],
+        None,
+    )?)?;
+    let ids = ids
         .lines()
         .map(str::trim)
         .filter(|id| !id.is_empty())
@@ -333,12 +342,12 @@ fn docker_cluster_containers(cluster_name: &str) -> Result<Vec<DockerContainer>>
     }
     let mut args = vec!["inspect"];
     args.extend(ids);
-    let output = output_checked("docker", args, None)?;
-    serde_json::from_slice(&output).context("decoding docker node inspection")
+    serde_json::from_slice(&output_checked("docker", args, None)?)
+        .context("decoding docker node inspection")
 }
 
 fn kubernetes_api_ready(context: &str) -> Result<()> {
-    let output = output_checked(
+    validate_readyz_body(&output_checked(
         "kubectl",
         [
             "--context",
@@ -349,10 +358,8 @@ fn kubernetes_api_ready(context: &str) -> Result<()> {
             "--raw=/readyz",
         ],
         None,
-    )?;
-    validate_readyz_body(&output)
+    )?)
 }
-
 fn validate_readyz_body(output: &[u8]) -> Result<()> {
     let body = std::str::from_utf8(output)?.trim();
     ensure!(
@@ -361,7 +368,6 @@ fn validate_readyz_body(output: &[u8]) -> Result<()> {
     );
     Ok(())
 }
-
 fn format_health(health: &ClusterHealth) -> String {
     health
         .issues
@@ -414,118 +420,118 @@ pub(crate) fn profile_up(path: &Path, lock_path: &Path) -> Result<()> {
     let selected_images = validate_bake_selections(&profile, &sources)?;
     profile.validate_image_plan(&selected_images)?;
     validate_locked_images(&profile, &lock, &sources, &selected_images)?;
-    validate_helm_releases(&profile, &sources)?;
-    let platform = profile.resolved_platform()?;
-    let context = profile.definition.kubernetes.context.as_str();
-    // Runtime mutation starts only after the lock, sources, images, and rendered
-    // Helm releases have passed their pure validation gates. The generated-file
-    // guard remains live through the remainder of profile application.
+    let synthetic_activation = prepare_gateway_activation_for_validation(&profile)?;
+    validate_helm_releases(&profile, &sources, synthetic_activation.as_ref())?;
     let generated_public_files = keycloak::ensure_generated_public_files(&profile)?;
     let gateway_activation = prepare_gateway_activation(&profile, &generated_public_files)?;
-
-    apply_local_cluster_bootstrap(&profile)?;
-    if platform.gpu_scheduling.is_some() {
-        wait_for_cluster_nodes(context, Duration::from_secs(120))?;
-    } else {
-        wait_for_cluster_gpu(context, Duration::from_secs(120))?;
-    }
-
-    kubectl_apply_value(
-        context,
-        &serde_json::json!({
-            "apiVersion": "v1",
-            "kind": "Namespace",
-            "metadata": {"name": profile.definition.namespace}
-        }),
+    let platform = profile.resolved_platform()?;
+    let context = profile.definition.kubernetes.context.as_str();
+    let secret_closure = prepare_secret_closure(
+        path,
+        lock_path,
+        &profile,
+        &sources,
+        &platform.components,
+        &platform.mcp_servers,
+        gateway_activation.as_ref(),
     )?;
 
-    if let Some(placement) = prepare_gpu_placement(&profile)? {
-        let scheduling = platform
-            .gpu_scheduling
-            .as_ref()
-            .context("prepared GPU placement has no resolved scheduling profile")?;
-        ensure_gpu_allocator(context, &profile.definition.namespace, scheduling)?;
-        apply_gpu_placement(
-            context,
-            &profile.definition.namespace,
-            scheduling,
-            &placement,
-        )?;
-    }
+    after_secret_closure(secret_closure, |_closure| {
+        apply_local_cluster_bootstrap(&profile)?;
+        if platform.gpu_scheduling.is_some() {
+            wait_for_cluster_nodes(context, Duration::from_secs(120))?;
+        } else {
+            wait_for_cluster_gpu(context, Duration::from_secs(120))?;
+        }
 
-    for manifest in &profile.definition.resources.manifests {
-        let manifest = profile.resolve(manifest);
-        status_checked(
-            "kubectl",
-            [
-                "--context",
-                context,
-                "--namespace",
-                profile.definition.namespace.as_str(),
-                "apply",
-                "-f",
-                path_str(&manifest)?,
-            ],
-            &[],
-            None,
-        )?;
-    }
-    for config_map in &profile.definition.resources.config_maps {
-        apply_config_map(&profile, context, config_map)?;
-    }
-    for secret in &profile.definition.resources.secrets {
-        apply_secret(&profile, context, secret)?;
-    }
-    if let Some(activation) = &gateway_activation {
-        validate_gateway_secret(
+        kubectl_apply_value(
             context,
-            &profile.definition.namespace,
-            &activation.confidential_secret,
-            &activation.required_secret_keys,
+            &serde_json::json!({
+                "apiVersion": "v1",
+                "kind": "Namespace",
+                "metadata": {"name": profile.definition.namespace}
+            }),
         )?;
-        apply_gateway_activation(context, &profile.definition.namespace, activation)?;
-    }
 
-    for source in &sources {
-        for release in &source.definition.releases {
-            helm_up(
-                &profile,
-                source,
+        if let Some(placement) = prepare_gpu_placement(&profile)? {
+            let scheduling = platform
+                .gpu_scheduling
+                .as_ref()
+                .context("prepared GPU placement has no resolved scheduling profile")?;
+            ensure_gpu_allocator(context, &profile.definition.namespace, scheduling)?;
+            apply_gpu_placement(
                 context,
-                release,
-                &platform.components,
-                &platform.mcp_servers,
-                gateway_activation.as_ref(),
+                &profile.definition.namespace,
+                scheduling,
+                &placement,
             )?;
         }
-    }
-    for deployment in &profile.definition.wait_for_deployments {
-        let target = format!("deployment/{deployment}");
-        status_checked(
-            "kubectl",
-            [
-                "--context",
-                context,
-                "--namespace",
-                profile.definition.namespace.as_str(),
-                "rollout",
-                "status",
-                target.as_str(),
-                "--timeout=10m",
-            ],
-            &[],
-            None,
-        )?;
-    }
-    if let Some(scheduling) = &platform.gpu_scheduling {
-        verify_gpu_placement(context, &profile.definition.namespace, scheduling)?;
-    }
-    println!(
-        "Deployment profile {} now runs {} digest-locked sources",
-        profile.definition.name,
-        sources.len()
-    );
-    Ok(())
+
+        for manifest in &profile.definition.resources.manifests {
+            let manifest = profile.resolve(manifest);
+            status_checked(
+                "kubectl",
+                [
+                    "--context",
+                    context,
+                    "--namespace",
+                    profile.definition.namespace.as_str(),
+                    "apply",
+                    "-f",
+                    path_str(&manifest)?,
+                ],
+                &[],
+                None,
+            )?;
+        }
+        for config_map in &profile.definition.resources.config_maps {
+            apply_config_map(&profile, context, config_map)?;
+        }
+        if let Some(activation) = &gateway_activation {
+            apply_gateway_activation(context, &profile.definition.namespace, activation)?;
+        }
+
+        for source in &sources {
+            for release in &source.definition.releases {
+                helm_up(
+                    &profile,
+                    source,
+                    context,
+                    release,
+                    &platform.components,
+                    &platform.mcp_servers,
+                    gateway_activation.as_ref(),
+                )?;
+            }
+        }
+        for deployment in &profile.definition.wait_for_deployments {
+            let target = format!("deployment/{deployment}");
+            status_checked(
+                "kubectl",
+                [
+                    "--context",
+                    context,
+                    "--namespace",
+                    profile.definition.namespace.as_str(),
+                    "rollout",
+                    "status",
+                    target.as_str(),
+                    "--timeout=10m",
+                ],
+                &[],
+                None,
+            )?;
+        }
+        if let Some(scheduling) = &platform.gpu_scheduling {
+            verify_gpu_placement(context, &profile.definition.namespace, scheduling)?;
+        }
+        println!(
+            "Deployment profile {} now runs {} digest-locked sources",
+            profile.definition.name,
+            sources.len()
+        );
+        Ok(())
+    })
 }
 
 pub(crate) fn profile_gpu_verify(path: &Path) -> Result<()> {
@@ -587,10 +593,6 @@ pub(crate) fn profile_down(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Loads and validates a deployment profile. This is a pure read: it never
-/// creates, generates, or deletes any file. Commands that must ensure local
-/// generated material exists (`profile-cluster-up`, `profile-up`) do so
-/// explicitly after loading, never here.
 fn load_profile(path: &Path) -> Result<LoadedProfile> {
     let base = path.parent().unwrap_or_else(|| Path::new("."));
     let repository = repository_root(base).or_else(|_| {
@@ -1260,7 +1262,11 @@ fn validate_bake_selections(
     Ok(selected_images)
 }
 
-fn validate_helm_releases(profile: &LoadedProfile, sources: &[ResolvedSource]) -> Result<()> {
+fn validate_helm_releases(
+    profile: &LoadedProfile,
+    sources: &[ResolvedSource],
+    activation: Option<&PreparedGatewayActivation>,
+) -> Result<()> {
     let platform = profile.resolved_platform()?;
     for source in sources {
         for release in &source.definition.releases {
@@ -1271,6 +1277,7 @@ fn validate_helm_releases(profile: &LoadedProfile, sources: &[ResolvedSource]) -
                 VALIDATION_REVISION,
                 &platform.components,
                 &platform.mcp_servers,
+                activation,
             )?;
             let images = rendered_container_images(&rendered)?;
             ensure!(
@@ -1328,28 +1335,269 @@ fn apply_config_map(
     )
 }
 
-fn validate_gateway_activation(profile: &LoadedProfile) -> Result<()> {
-    let Some(activation) = &profile.definition.gateway_activation else {
-        return Ok(());
-    };
-    let (_, jwks_keys, ca_keys) = gateway_activation_structure(profile)?
-        .context("gateway activation disappeared while validating it")?;
-    for (key, path) in &activation.public_files {
-        let resolved = profile.resolve(path);
-        let text = fs::read_to_string(&resolved).with_context(|| {
-            format!(
-                "reading gateway activation public file {}",
-                resolved.display()
-            )
-        })?;
-        validate_gateway_public_file(key, &text, jwks_keys.contains(key), ca_keys.contains(key))?;
+fn after_secret_closure<T>(
+    closure: SecretClosure,
+    action: impl FnOnce(&SecretClosure) -> Result<T>,
+) -> Result<T> {
+    ensure!(
+        closure.status == SecretClosureStatus::Satisfied,
+        "rendered Secret-reference closure failed: {}",
+        serde_json::to_string(&closure)?
+    );
+    action(&closure)
+}
+
+fn prepare_secret_closure(
+    profile_path: &Path,
+    lock_path: &Path,
+    profile: &LoadedProfile,
+    sources: &[ResolvedSource],
+    components: &BTreeSet<PlatformComponent>,
+    mcp_servers: &BTreeSet<FirstPartyMcpServer>,
+    gateway_activation: Option<&PreparedGatewayActivation>,
+) -> Result<SecretClosure> {
+    let mut objects = Vec::new();
+    if let Some(cluster) = &profile.definition.kubernetes.local_cluster {
+        for manifest in &cluster.node_bootstrap_manifests {
+            append_yaml_objects(&profile.resolve(manifest), &mut objects)?;
+        }
+    }
+    for manifest in &profile.definition.resources.manifests {
+        append_yaml_objects(&profile.resolve(manifest), &mut objects)?;
+    }
+    for source in sources {
+        for release in &source.definition.releases {
+            let rendered = helm_render_locked(
+                profile,
+                source,
+                release,
+                components,
+                mcp_servers,
+                gateway_activation,
+            )?;
+            append_yaml_bytes(
+                rendered.as_bytes(),
+                &format!("Helm release {}", release.name),
+                &mut objects,
+            )?;
+        }
+    }
+
+    let mut requirements = collect_secret_requirements(
+        &objects,
+        &profile.definition.namespace,
+        &CustomSecretReferenceRegistry::default(),
+    )?;
+    if let Some(activation) = gateway_activation {
+        for key in &activation.required_secret_keys {
+            requirements.push(SecretReferenceRequirement {
+                secret: SecretObjectKey {
+                    namespace: profile.definition.namespace.clone(),
+                    name: activation.confidential_secret.clone(),
+                },
+                key: Some(key.clone()),
+                optional: false,
+                kind: SecretReferenceKind::GatewayActivation,
+                referring_object: KubernetesObjectKey {
+                    group: String::new(),
+                    version: "v1".to_owned(),
+                    kind: "ConfigMap".to_owned(),
+                    namespace: Some(profile.definition.namespace.clone()),
+                    name: activation.config_map_name.clone(),
+                },
+                field_path: "/gatewayActivation/requiredSecretKeys".to_owned(),
+            });
+        }
+    }
+    requirements.sort();
+    requirements.dedup();
+    let secret_keys = requirements
+        .iter()
+        .map(|requirement| requirement.secret.clone())
+        .collect::<BTreeSet<_>>();
+    let observations = secret_keys
+        .into_iter()
+        .map(|secret| observe_secret(&profile.definition.kubernetes.context, secret))
+        .collect::<Vec<_>>();
+    let profile_digest = file_digest(profile_path, "deployment profile")?;
+    let lock_digest = file_digest(lock_path, "deployment lock")?;
+    SecretClosure::evaluate(profile_digest, lock_digest, requirements, observations)
+        .map_err(Into::into)
+}
+
+fn validate_node_bootstrap_secret_boundary(profile: &LoadedProfile) -> Result<()> {
+    let mut objects = Vec::new();
+    if let Some(cluster) = &profile.definition.kubernetes.local_cluster {
+        for manifest in &cluster.node_bootstrap_manifests {
+            append_yaml_objects(&profile.resolve(manifest), &mut objects)?;
+        }
+    }
+    let requirements = collect_secret_requirements(
+        &objects,
+        &profile.definition.namespace,
+        &CustomSecretReferenceRegistry::default(),
+    )?;
+    ensure!(
+        requirements.is_empty(),
+        "node bootstrap manifests cannot depend on Secrets before the installation owner can supply them"
+    );
+    Ok(())
+}
+
+fn file_digest(path: &Path, label: &str) -> Result<String> {
+    let bytes = fs::read(path).with_context(|| format!("reading {label} {}", path.display()))?;
+    Ok(format!("sha256:{}", hex::encode(Sha256::digest(bytes))))
+}
+
+fn append_yaml_objects(path: &Path, output: &mut Vec<Value>) -> Result<()> {
+    let bytes = fs::read(path).with_context(|| format!("reading manifest {}", path.display()))?;
+    append_yaml_bytes(&bytes, &format!("manifest {}", path.display()), output)
+}
+
+fn append_yaml_bytes(bytes: &[u8], source: &str, output: &mut Vec<Value>) -> Result<()> {
+    for document in serde_yaml_ng::Deserializer::from_slice(bytes) {
+        let yaml = serde_yaml_ng::Value::deserialize(document)
+            .with_context(|| format!("decoding {source}"))?;
+        if yaml.is_null() {
+            continue;
+        }
+        let value = serde_json::to_value(yaml).with_context(|| format!("normalizing {source}"))?;
+        if value.get("kind").and_then(Value::as_str) == Some("List") {
+            let items = value
+                .get("items")
+                .and_then(Value::as_array)
+                .with_context(|| format!("Kubernetes List in {source} has no items"))?;
+            output.extend(items.iter().cloned());
+        } else {
+            output.push(value);
+        }
     }
     Ok(())
 }
 
-fn gateway_activation_structure(
+fn helm_render_locked(
     profile: &LoadedProfile,
-) -> Result<Option<GatewayActivationStructure>> {
+    source: &ResolvedSource,
+    release: &ReleaseSpec,
+    components: &BTreeSet<PlatformComponent>,
+    mcp_servers: &BTreeSet<FirstPartyMcpServer>,
+    activation: Option<&PreparedGatewayActivation>,
+) -> Result<String> {
+    let chart = source.repository.join(&release.chart);
+    let mut args = vec![
+        "template".to_owned(),
+        release.name.clone(),
+        path_str(&chart)?.to_owned(),
+        "--namespace".to_owned(),
+        profile.definition.namespace.clone(),
+        "--include-crds".to_owned(),
+    ];
+    for values in ordered_release_values(&source.repository, &profile.directory, release) {
+        args.push("--values".to_owned());
+        args.push(path_str(&values)?.to_owned());
+    }
+    let image_digests = release_image_digests(
+        release.values_contract,
+        &source.image_digests,
+        &source.deployment_image_digests,
+    );
+    append_release_values(
+        &mut args,
+        profile,
+        release,
+        &source.revision,
+        ReleaseValueContext {
+            image_digests: Some(image_digests),
+            components,
+            mcp_servers,
+            gateway_activation: activation,
+        },
+    )?;
+    let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
+    let rendered = output_checked("helm", refs, None)
+        .with_context(|| format!("rendering locked Helm release {}", release.name))?;
+    String::from_utf8(rendered).context("Helm output is not UTF-8")
+}
+
+fn observe_secret(context: &str, secret: SecretObjectKey) -> SecretObservation {
+    let output = Command::new("kubectl")
+        .args([
+            "--context",
+            context,
+            "--namespace",
+            secret.namespace.as_str(),
+            "get",
+            "secret",
+            secret.name.as_str(),
+            "--ignore-not-found=true",
+            "--request-timeout=10s",
+            "--output=json",
+        ])
+        .output();
+    match output {
+        Ok(output) => decode_secret_observation(
+            secret,
+            output.status.success(),
+            &output.stdout,
+            &output.stderr,
+        ),
+        Err(_) => SecretObservation {
+            secret,
+            status: SecretObservationStatus::Transport,
+        },
+    }
+}
+
+fn decode_secret_observation(
+    secret: SecretObjectKey,
+    success: bool,
+    stdout: &[u8],
+    stderr: &[u8],
+) -> SecretObservation {
+    let status = if success && stdout.iter().all(u8::is_ascii_whitespace) {
+        SecretObservationStatus::Missing
+    } else if success {
+        decode_present_secret(&secret, stdout).unwrap_or(SecretObservationStatus::Malformed)
+    } else {
+        let diagnostic = String::from_utf8_lossy(stderr).to_ascii_lowercase();
+        if diagnostic.contains("forbidden") {
+            SecretObservationStatus::Forbidden
+        } else if diagnostic.contains("timed out")
+            || diagnostic.contains("timeout")
+            || diagnostic.contains("deadline exceeded")
+        {
+            SecretObservationStatus::Timeout
+        } else {
+            SecretObservationStatus::Transport
+        }
+    };
+    SecretObservation { secret, status }
+}
+
+fn decode_present_secret(
+    expected: &SecretObjectKey,
+    bytes: &[u8],
+) -> Option<SecretObservationStatus> {
+    let value: Value = serde_json::from_slice(bytes).ok()?;
+    if value.get("apiVersion").and_then(Value::as_str) != Some("v1")
+        || value.get("kind").and_then(Value::as_str) != Some("Secret")
+        || value.pointer("/metadata/name").and_then(Value::as_str) != Some(&expected.name)
+        || value.pointer("/metadata/namespace").and_then(Value::as_str) != Some(&expected.namespace)
+    {
+        return None;
+    }
+    let keys = value
+        .get("data")
+        .and_then(Value::as_object)
+        .map(|data| data.keys().cloned().collect())
+        .unwrap_or_default();
+    Some(SecretObservationStatus::Present { keys })
+}
+
+fn prepare_gateway_activation(
+    profile: &LoadedProfile,
+    generated: &keycloak::GeneratedPublicFiles,
+) -> Result<Option<PreparedGatewayActivation>> {
     let Some(activation) = &profile.definition.gateway_activation else {
         return Ok(None);
     };
@@ -1370,6 +1618,7 @@ fn gateway_activation_structure(
     control_plane
         .validate()
         .context("validating gateway activation control plane")?;
+
     let jwks_keys = control_plane
         .jwks_file_paths()
         .into_iter()
@@ -1381,48 +1630,16 @@ fn gateway_activation_structure(
         .map(gateway_mount_key)
         .collect::<Result<BTreeSet<_>>>()?;
     let referenced = jwks_keys.union(&ca_keys).cloned().collect::<BTreeSet<_>>();
-    let configured = activation
+    let mut configured = activation
         .public_files
         .keys()
-        .chain(activation.generated_public_files.keys())
         .cloned()
         .collect::<BTreeSet<_>>();
+    configured.extend(activation.generated_public_files.keys().cloned());
     ensure!(
         referenced == configured,
-        "gateway activation publicFiles/generatedPublicFiles differ from control-plane file references; referenced={referenced:?}, configured={configured:?}"
+        "gateway activation publicFiles differ from control-plane file references; referenced={referenced:?}, configured={configured:?}"
     );
-    Ok(Some((control_plane_text, jwks_keys, ca_keys)))
-}
-
-fn prepare_gateway_activation_for_validation(
-    profile: &LoadedProfile,
-) -> Result<Option<PreparedGatewayActivation>> {
-    validate_gateway_activation(profile)?;
-    let Some(activation) = &profile.definition.gateway_activation else {
-        return Ok(None);
-    };
-    Ok(Some(PreparedGatewayActivation {
-        config_map_name: format!(
-            "{}-{}",
-            activation.config_map_name_prefix,
-            &GATEWAY_VALIDATION_REVISION[..12]
-        ),
-        revision: GATEWAY_VALIDATION_REVISION.to_owned(),
-        confidential_secret: activation.confidential_secret.clone(),
-        required_secret_keys: activation.required_secret_keys.clone(),
-        data: BTreeMap::new(),
-    }))
-}
-
-fn prepare_gateway_activation(
-    profile: &LoadedProfile,
-    generated_public_files: &keycloak::GeneratedPublicFiles,
-) -> Result<Option<PreparedGatewayActivation>> {
-    let Some(activation) = &profile.definition.gateway_activation else {
-        return Ok(None);
-    };
-    let (control_plane_text, jwks_keys, ca_keys) = gateway_activation_structure(profile)?
-        .context("gateway activation disappeared while preparing it")?;
 
     let mut data = BTreeMap::from([(activation.control_plane_key.clone(), control_plane_text)]);
     for (key, path) in &activation.public_files {
@@ -1437,15 +1654,11 @@ fn prepare_gateway_activation(
         data.insert(key.clone(), text);
     }
     for key in activation.generated_public_files.keys() {
-        let resolved = generated_public_files.path(key).with_context(|| {
-            format!("generated gateway activation file {key} was not materialized")
-        })?;
-        let text = fs::read_to_string(resolved).with_context(|| {
-            format!(
-                "reading generated gateway activation file {} ({key})",
-                resolved.display()
-            )
-        })?;
+        let path = generated
+            .path(key)
+            .with_context(|| format!("generated gateway file {key} is unavailable"))?;
+        let text = fs::read_to_string(path)
+            .with_context(|| format!("reading generated gateway file {}", path.display()))?;
         validate_gateway_public_file(key, &text, jwks_keys.contains(key), ca_keys.contains(key))?;
         data.insert(key.clone(), text);
     }
@@ -1470,6 +1683,66 @@ fn prepare_gateway_activation(
     Ok(Some(PreparedGatewayActivation {
         config_map_name: format!("{}-{}", activation.config_map_name_prefix, &digest[..12]),
         revision: digest,
+        confidential_secret: activation.confidential_secret.clone(),
+        required_secret_keys: activation.required_secret_keys.clone(),
+        data,
+    }))
+}
+
+pub(super) fn prepare_gateway_activation_for_validation(
+    profile: &LoadedProfile,
+) -> Result<Option<PreparedGatewayActivation>> {
+    let Some(activation) = &profile.definition.gateway_activation else {
+        return Ok(None);
+    };
+    let control_plane_path = profile.resolve(&activation.control_plane);
+    let control_plane_text = fs::read_to_string(&control_plane_path).with_context(|| {
+        format!(
+            "reading gateway activation control plane {}",
+            control_plane_path.display()
+        )
+    })?;
+    let control_plane: GatewayControlPlane = serde_json::from_str(&control_plane_text)
+        .context("decoding gateway activation control plane")?;
+    control_plane
+        .validate()
+        .context("validating gateway activation control plane")?;
+    let jwks_keys = control_plane
+        .jwks_file_paths()
+        .into_iter()
+        .map(gateway_mount_key)
+        .collect::<Result<BTreeSet<_>>>()?;
+    let ca_keys = control_plane
+        .certificate_authority_file_paths()
+        .into_iter()
+        .map(gateway_mount_key)
+        .collect::<Result<BTreeSet<_>>>()?;
+    let referenced = jwks_keys.union(&ca_keys).cloned().collect::<BTreeSet<_>>();
+    let configured = activation
+        .public_files
+        .keys()
+        .chain(activation.generated_public_files.keys())
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    ensure!(
+        referenced == configured,
+        "gateway activation publicFiles differ from control-plane file references"
+    );
+    let mut data = BTreeMap::from([(activation.control_plane_key.clone(), control_plane_text)]);
+    for (key, path) in &activation.public_files {
+        let resolved = profile.resolve(path);
+        let text = fs::read_to_string(&resolved).with_context(|| {
+            format!(
+                "reading gateway activation public file {}",
+                resolved.display()
+            )
+        })?;
+        validate_gateway_public_file(key, &text, jwks_keys.contains(key), ca_keys.contains(key))?;
+        data.insert(key.clone(), text);
+    }
+    Ok(Some(PreparedGatewayActivation {
+        config_map_name: format!("{}-000000000000", activation.config_map_name_prefix),
+        revision: "0".repeat(64),
         confidential_secret: activation.confidential_secret.clone(),
         required_secret_keys: activation.required_secret_keys.clone(),
         data,
@@ -1504,44 +1777,6 @@ fn validate_gateway_public_file(key: &str, text: &str, jwks: bool, ca: bool) -> 
     Ok(())
 }
 
-fn validate_gateway_secret(
-    context: &str,
-    namespace: &str,
-    name: &str,
-    required_keys: &BTreeSet<String>,
-) -> Result<()> {
-    let bytes = output_checked(
-        "kubectl",
-        [
-            "--context",
-            context,
-            "--namespace",
-            namespace,
-            "get",
-            "secret",
-            name,
-            "--output=json",
-        ],
-        None,
-    )
-    .with_context(|| format!("reading installation-owned gateway Secret {name}"))?;
-    let secret: Value = serde_json::from_slice(&bytes)
-        .with_context(|| format!("decoding installation-owned gateway Secret {name}"))?;
-    let data = secret
-        .get("data")
-        .and_then(Value::as_object)
-        .with_context(|| format!("installation-owned gateway Secret {name} has no data"))?;
-    for key in required_keys {
-        ensure!(
-            data.get(key)
-                .and_then(Value::as_str)
-                .is_some_and(|value| !value.is_empty()),
-            "installation-owned gateway Secret {name} is missing required key {key}"
-        );
-    }
-    Ok(())
-}
-
 fn apply_gateway_activation(
     context: &str,
     namespace: &str,
@@ -1569,35 +1804,6 @@ fn apply_gateway_activation(
     )
 }
 
-fn apply_secret(profile: &LoadedProfile, context: &str, secret: &SecretSpec) -> Result<()> {
-    let mut data = BTreeMap::new();
-    for entry in &secret.data_from_env {
-        let value = required_environment(&entry.environment)?;
-        if matches!(entry.format, SecretFormat::GatewayInternalTrustJwks) {
-            GatewayInternalTrustBundle::from_json(&value).with_context(|| {
-                format!(
-                    "{} must contain canonical gateway trust JSON",
-                    entry.environment
-                )
-            })?;
-        }
-        data.insert(entry.key.clone(), value);
-    }
-    kubectl_apply_value(
-        context,
-        &serde_json::json!({
-            "apiVersion": "v1",
-            "kind": "Secret",
-            "metadata": {
-                "name": secret.name,
-                "namespace": profile.definition.namespace
-            },
-            "type": "Opaque",
-            "stringData": data
-        }),
-    )
-}
-
 fn helm_up(
     profile: &LoadedProfile,
     source: &ResolvedSource,
@@ -1605,7 +1811,7 @@ fn helm_up(
     release: &ReleaseSpec,
     components: &BTreeSet<PlatformComponent>,
     mcp_servers: &BTreeSet<FirstPartyMcpServer>,
-    gateway_activation: Option<&PreparedGatewayActivation>,
+    activation: Option<&PreparedGatewayActivation>,
 ) -> Result<()> {
     let chart = source.repository.join(&release.chart);
     let mut args = vec![
@@ -1636,10 +1842,10 @@ fn helm_up(
         release,
         &source.revision,
         ReleaseValueContext {
-            image_digests: Some(&image_digests),
+            image_digests: Some(image_digests),
             components,
             mcp_servers,
-            gateway_activation,
+            gateway_activation: activation,
         },
     )?;
     args.extend([
@@ -1651,21 +1857,17 @@ fn helm_up(
     status_checked("helm", refs, &[], None)
 }
 
-fn release_image_digests(
+fn release_image_digests<'a>(
     values_contract: ReleaseValuesContract,
-    source: &BTreeMap<String, String>,
-    deployment: &BTreeMap<String, String>,
-) -> BTreeMap<String, String> {
+    source: &'a BTreeMap<String, String>,
+    deployment: &'a BTreeMap<String, String>,
+) -> &'a BTreeMap<String, String> {
     match values_contract {
-        ReleaseValuesContract::Platform => source.clone(),
-        ReleaseValuesContract::VeoveoSource => deployment
-            .iter()
-            .filter(|(repository, _)| repository.starts_with("veoveo/"))
-            .map(|(repository, digest)| (repository.clone(), digest.clone()))
-            .collect(),
-        ReleaseValuesContract::Extension => deployment.clone(),
+        ReleaseValuesContract::Extension => deployment,
+        ReleaseValuesContract::Platform | ReleaseValuesContract::VeoveoSource => source,
     }
 }
+
 fn helm_render(
     profile: &LoadedProfile,
     source: &ResolvedSource,
@@ -1673,6 +1875,7 @@ fn helm_render(
     revision: &str,
     components: &BTreeSet<PlatformComponent>,
     mcp_servers: &BTreeSet<FirstPartyMcpServer>,
+    activation: Option<&PreparedGatewayActivation>,
 ) -> Result<String> {
     let chart = source.repository.join(&release.chart);
     let mut args = vec![
@@ -1684,7 +1887,6 @@ fn helm_render(
         args.push("--values".to_owned());
         args.push(path_str(&values)?.to_owned());
     }
-    let gateway_activation = prepare_gateway_activation_for_validation(profile)?;
     append_release_values(
         &mut args,
         profile,
@@ -1694,7 +1896,7 @@ fn helm_render(
             image_digests: None,
             components,
             mcp_servers,
-            gateway_activation: gateway_activation.as_ref(),
+            gateway_activation: activation,
         },
     )?;
     let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
@@ -1733,14 +1935,14 @@ fn append_release_values(
     profile: &LoadedProfile,
     release: &ReleaseSpec,
     revision: &str,
-    values: ReleaseValueContext<'_>,
+    context: ReleaseValueContext<'_>,
 ) -> Result<()> {
     let ReleaseValueContext {
         image_digests,
         components,
         mcp_servers,
-        gateway_activation,
-    } = values;
+        gateway_activation: activation,
+    } = context;
     match release.values_contract {
         ReleaseValuesContract::Platform | ReleaseValuesContract::VeoveoSource => {
             args.extend([
@@ -1805,7 +2007,7 @@ fn append_release_values(
                         ),
                     ]);
                 }
-                if let Some(activation) = gateway_activation {
+                if let Some(activation) = activation {
                     args.extend([
                         "--set-string".to_owned(),
                         format!(
@@ -1936,47 +2138,6 @@ fn repository_root(directory: &Path) -> Result<PathBuf> {
     Ok(PathBuf::from(String::from_utf8(output)?.trim()))
 }
 
-fn required_environment(name: &str) -> Result<String> {
-    let value = match env::var(name) {
-        Ok(value) => value,
-        Err(env::VarError::NotPresent) => environment_from_main_worktree(name)?.with_context(|| {
-            format!(
-                "required environment variable {name} is absent from the process and main worktree .env"
-            )
-        })?,
-        Err(error) => return Err(error).with_context(|| format!("reading {name}")),
-    };
-    ensure!(
-        !value.trim().is_empty(),
-        "required environment variable {name} is empty"
-    );
-    Ok(value)
-}
-
-fn environment_from_main_worktree(name: &str) -> Result<Option<String>> {
-    let output = output_checked("git", ["worktree", "list", "--porcelain"], None)?;
-    let listing = String::from_utf8(output)?;
-    let Some(main_worktree) = listing
-        .lines()
-        .find_map(|line| line.strip_prefix("worktree "))
-    else {
-        return Ok(None);
-    };
-    let environment_file = Path::new(main_worktree).join(".env");
-    if !environment_file.is_file() {
-        return Ok(None);
-    }
-    for item in dotenvy::from_path_iter(&environment_file)
-        .with_context(|| format!("reading {}", environment_file.display()))?
-    {
-        let (key, value) = item.context("decoding main worktree .env")?;
-        if key == name {
-            return Ok(Some(value));
-        }
-    }
-    Ok(None)
-}
-
 fn output_checked<'a>(
     program: &str,
     args: impl IntoIterator<Item = &'a str>,
@@ -2060,21 +2221,31 @@ fn path_str(path: &Path) -> Result<&str> {
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::{BTreeMap, BTreeSet},
+        cell::Cell,
+        collections::BTreeMap,
         path::{Path, PathBuf},
     };
 
     use veoveo_deploy_contract::{
         DeploymentSourceRole, LoadedProfile, LockedImage, LockedSource, ReleaseSpec,
-        ReleaseValuesContract,
+        ReleaseValuesContract, SecretClosure, SecretClosureStatus, SecretObjectKey,
+        SecretObservationStatus,
     };
 
     use super::{
-        PreparedGatewayActivation, ReleaseValueContext, append_release_values, gateway_mount_key,
+        after_secret_closure, decode_secret_observation, gateway_mount_key,
         locked_image_digests_for_registry, normalize_origin, ordered_release_values,
         prepare_gateway_activation_for_validation, release_image_digests,
         validate_gateway_public_file, validate_readyz_body,
     };
+
+    #[test]
+    fn readyz_requires_exact_ok_body() {
+        assert!(validate_readyz_body(b"ok\n").is_ok());
+        assert!(validate_readyz_body(b"ok\n\n").is_ok());
+        assert!(validate_readyz_body(b"OK\n").is_err());
+        assert!(validate_readyz_body(b"ok\nwarning").is_err());
+    }
 
     const DIGEST_A: &str =
         "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -2124,34 +2295,28 @@ mod tests {
     }
 
     #[test]
-    fn workload_values_receive_the_deployment_image_closure() {
+    fn external_values_receive_platform_images_without_polluting_platform_values() {
         let source = [("veoveo/gateway".to_owned(), DIGEST_A.to_owned())]
             .into_iter()
             .collect::<BTreeMap<_, _>>();
         let deployment = [
             ("extension/runtime".to_owned(), DIGEST_B.to_owned()),
             ("veoveo/gateway".to_owned(), DIGEST_A.to_owned()),
-            ("veoveo/recording-forwarder".to_owned(), DIGEST_B.to_owned()),
         ]
         .into_iter()
         .collect::<BTreeMap<_, _>>();
 
         assert_eq!(
             release_image_digests(ReleaseValuesContract::Platform, &source, &deployment),
-            source
+            &source
         );
         assert_eq!(
             release_image_digests(ReleaseValuesContract::VeoveoSource, &source, &deployment),
-            [
-                ("veoveo/gateway".to_owned(), DIGEST_A.to_owned()),
-                ("veoveo/recording-forwarder".to_owned(), DIGEST_B.to_owned()),
-            ]
-            .into_iter()
-            .collect()
+            &source
         );
         assert_eq!(
             release_image_digests(ReleaseValuesContract::Extension, &source, &deployment),
-            deployment
+            &deployment
         );
     }
 
@@ -2187,74 +2352,34 @@ mod tests {
             ]
         );
     }
+
     #[test]
-    fn helm_install_uses_materialized_activation_while_render_uses_placeholder() {
-        let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .canonicalize()
-            .unwrap();
+    fn checked_in_profile_preflights_revisioned_gateway_activation() {
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let profile_path = repository.join("showcase/sumo/deploy/deployment.json");
         let profile = LoadedProfile::load(&profile_path, &repository).unwrap();
-        let platform = profile.resolved_platform().unwrap();
-        let release = ReleaseSpec {
-            name: "veoveo".to_owned(),
-            chart: PathBuf::from("deploy/helm/veoveo"),
-            source_values: Vec::new(),
-            installation_values: Vec::new(),
-            values_contract: ReleaseValuesContract::Platform,
-            create_namespace: false,
-            timeout_seconds: 60,
-        };
-        let real_revision = "d".repeat(64);
-        let real = PreparedGatewayActivation {
-            config_map_name: "veoveo-gateway-deadbeefcafe".to_owned(),
-            revision: real_revision.clone(),
-            confidential_secret: "veoveo-installation-secrets".to_owned(),
-            required_secret_keys: BTreeSet::new(),
-            data: BTreeMap::new(),
-        };
-
-        let mut install_args = Vec::new();
-        append_release_values(
-            &mut install_args,
-            &profile,
-            &release,
-            "a-revision",
-            ReleaseValueContext {
-                image_digests: None,
-                components: &platform.components,
-                mcp_servers: &platform.mcp_servers,
-                gateway_activation: Some(&real),
-            },
-        )
-        .unwrap();
-        assert!(install_args.contains(
-            &"gateway.existingControlPlaneConfigMap=veoveo-gateway-deadbeefcafe".to_owned()
-        ));
-        assert!(install_args.contains(&format!("gateway.controlPlaneRevision={real_revision}")));
-        assert!(!install_args.iter().any(|arg| arg.contains("000000000000")));
-
-        let placeholder = prepare_gateway_activation_for_validation(&profile)
+        let activation = prepare_gateway_activation_for_validation(&profile)
             .unwrap()
-            .expect("SUMO profile has gateway activation");
-        let mut render_args = Vec::new();
-        append_release_values(
-            &mut render_args,
-            &profile,
-            &release,
-            "a-revision",
-            ReleaseValueContext {
-                image_digests: None,
-                components: &platform.components,
-                mcp_servers: &platform.mcp_servers,
-                gateway_activation: Some(&placeholder),
-            },
-        )
-        .unwrap();
-        assert!(render_args.contains(
-            &"gateway.existingControlPlaneConfigMap=veoveo-gateway-000000000000".to_owned()
-        ));
-        assert!(render_args.contains(&format!("gateway.controlPlaneRevision={}", "0".repeat(64))));
+            .unwrap();
+
+        assert_eq!(activation.config_map_name, "veoveo-gateway-000000000000");
+        assert_eq!(activation.revision, "0".repeat(64));
+        assert!(
+            activation
+                .revision
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+        );
+        assert_eq!(
+            activation.data.keys().cloned().collect::<Vec<_>>(),
+            ["gateway.json", "jwks.json"]
+        );
+        assert!(!activation.data.contains_key("ca.pem"));
+        assert!(
+            activation
+                .required_secret_keys
+                .contains("oidc-client-secret")
+        );
     }
 
     #[test]
@@ -2283,10 +2408,97 @@ mod tests {
     }
 
     #[test]
-    fn readyz_requires_exact_ok_body_after_trimming() {
-        assert!(validate_readyz_body(b"ok\n").is_ok());
-        assert!(validate_readyz_body(b"ok\n\n").is_ok());
-        assert!(validate_readyz_body(b"OK\n").is_err());
-        assert!(validate_readyz_body(b"ok\nwarning").is_err());
+    fn failed_secret_closure_never_enters_the_mutation_phase() {
+        let reconcile_calls = Cell::new(0u32);
+        let kubernetes_mutations = Cell::new(0u32);
+        let closure = SecretClosure {
+            profile_digest: DIGEST_A.to_owned(),
+            lock_digest: DIGEST_B.to_owned(),
+            requirements: Vec::new(),
+            presence: Vec::new(),
+            status: SecretClosureStatus::MissingSecret,
+        };
+
+        let error = after_secret_closure(closure, |_| {
+            reconcile_calls.set(reconcile_calls.get() + 1);
+            kubernetes_mutations.set(kubernetes_mutations.get() + 1);
+            Ok(())
+        })
+        .expect_err("failed closure must stop before mutation");
+        assert_eq!(reconcile_calls.get(), 0);
+        assert_eq!(kubernetes_mutations.get(), 0);
+        assert!(error.to_string().contains("missing_secret"));
+    }
+
+    #[test]
+    fn secret_read_decoding_retains_only_presence_and_key_names() {
+        let secret = SecretObjectKey {
+            namespace: "mission".to_owned(),
+            name: "runtime".to_owned(),
+        };
+        let observed = decode_secret_observation(
+            secret.clone(),
+            true,
+            br#"{"apiVersion":"v1","kind":"Secret","metadata":{"name":"runtime","namespace":"mission"},"data":{"token":"secret-value-canary"}}"#,
+            &[],
+        );
+        assert!(matches!(
+            observed.status,
+            SecretObservationStatus::Present { ref keys } if keys.contains("token")
+        ));
+        assert!(
+            !serde_json::to_string(&observed)
+                .unwrap()
+                .contains("secret-value-canary")
+        );
+
+        let forbidden = decode_secret_observation(
+            secret.clone(),
+            false,
+            &[],
+            b"Error from server (Forbidden): secret-value-canary",
+        );
+        assert_eq!(forbidden.status, SecretObservationStatus::Forbidden);
+        assert!(
+            !serde_json::to_string(&forbidden)
+                .unwrap()
+                .contains("secret-value-canary")
+        );
+
+        let missing = decode_secret_observation(secret, true, b"\n", &[]);
+        assert_eq!(missing.status, SecretObservationStatus::Missing);
+
+        let malformed = decode_secret_observation(
+            SecretObjectKey {
+                namespace: "mission".to_owned(),
+                name: "runtime".to_owned(),
+            },
+            true,
+            b"not-json",
+            &[],
+        );
+        assert_eq!(malformed.status, SecretObservationStatus::Malformed);
+
+        let timeout = decode_secret_observation(
+            SecretObjectKey {
+                namespace: "mission".to_owned(),
+                name: "runtime".to_owned(),
+            },
+            false,
+            &[],
+            b"request deadline exceeded: secret-value-canary",
+        );
+        assert_eq!(timeout.status, SecretObservationStatus::Timeout);
+
+        let transport = decode_secret_observation(
+            SecretObjectKey {
+                namespace: "mission".to_owned(),
+                name: "runtime".to_owned(),
+            },
+            false,
+            &[],
+            b"connection refused: secret-value-canary",
+        );
+        assert_eq!(transport.status, SecretObservationStatus::Transport);
     }
 }

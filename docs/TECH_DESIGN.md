@@ -21,8 +21,8 @@ catalog.
 | MCP Enterprise-Managed Authorization / ID-JAG | Explicit enterprise grant profile with durable replay protection, client binding, tenant mapping, and scope reduction. |
 | HTTPS and HTTP range semantics | External acquisition, MCP transport, provider webhooks, and artifact delivery. Internal cleartext HTTP exists only inside declared cluster trust boundaries. |
 | OpenTelemetry OTLP/HTTP | Optional traces and logs from shared server instrumentation. Export remains disabled unless the installation supplies an endpoint. |
-| Veoveo recording ingest | Version `2026-08-06`; authenticated protobuf batches and distinct Blueprint publications preserve native Rerun 0.35.0 stores, ordering, idempotency, decoder-safe rollover markers, and policy-scoped single-recording replacement. |
-| Rerun 0.35.0 gRPC, RRD, Rerun Data Protocol, and `VideoStream` | Producer-local log ingestion, immutable time-and-space records, recording-scoped lazy viewer playback, and H.264 Annex B video with exact timeline indices. |
+| Veoveo recording ingest | Version `2026-08-06`; authenticated protobuf batches and distinct Blueprint publications preserve native Rerun 0.36.0 stores, ordering, idempotency, decoder-safe rollover markers, and policy-scoped single-recording replacement. |
+| Rerun 0.36.0 gRPC, RRD, Rerun Data Protocol, and `VideoStream` | Producer-local log ingestion, immutable time-and-space records, recording-scoped lazy viewer playback, and H.264 Annex B video with exact timeline indices. |
 | S3-compatible object API | Private Artifact service storage only. SurrealDB remains authoritative for occurrences, identity, grants, release state, shares, policy, and audit. Client delivery uses HTTP streaming and byte ranges through the installation origin. |
 | NVIDIA cuOpt 26.06 and CUDA 13.2 | Digest-pinned hardware-GPU execution for heterogeneous routing, BatchSolve scenarios, continuous LP/QP/QCQP/SOCP, and linear MILP. `veoveo.io/travel-model-artifact/v1` is the repository-owned Map handoff; `veoveo.io/cuopt-executor/v1` is a private pod-local adapter protocol rather than a public contract. |
 | Kubernetes, Helm, and OCI images | Canonical workload graph, declarative installation configuration, registry-first delivery, GitOps reconciliation, and offline bundle material. |
@@ -492,8 +492,12 @@ traffic controls, resources, and tasks.
 The agent kernel runs bounded episodes and persists scheduling through
 `veoveo-agent-runtime`. Tool tasks detach at episode end; durable descriptors, watcher
 leases, retry schedules, retention pins, results, and wakes survive process restart.
-Outbox/changefeed events wake the next episode. DuckDB and RRD are analytical memory
-planes; chat history is not the source of truth.
+The gateway route retains the protocol's opaque upstream Task ID and, for a
+first-party shared-runtime Task, a strong record reference. The consuming episode
+verifies every claimed wake, releases that Task's retention pin, marks the delivery
+consumed, acknowledges the wakes, and writes the outbox receipt in one SurrealDB
+transaction. Outbox/changefeed events wake the next episode. DuckDB and RRD are
+analytical memory planes; chat history is not the source of truth.
 
 Agent manifests separate the Gateway's canonical public origin from its physical
 HTTP transport origin. OAuth audience and protected-resource identity use the
@@ -506,7 +510,12 @@ installation-specific copies. A manifest may also declare a bounded set of absol
 resource URIs that wake the agent on change. During token
 rotation, the kernel connects the replacement session and restores the complete
 subscription set before publishing its connection epoch; a failed subscription leaves
-the prior authenticated session active.
+the prior authenticated session active. Every MCP request performs the same serialized
+freshness check before dispatch, so concurrent callers cannot publish competing
+epochs. The current epoch also provides one governed resource-read tool. It admits
+bounded text and JSON under episode-local read, family, byte, wall-time, and pagination
+limits, and it projects only fixed correction fields for invalid input. Protocol,
+authorization, transport, and storage details do not enter model context.
 
 Authenticated human control stays available through the gateway and Console BFF; the
 agent pod is never an ingress service. An operator message is committed as a

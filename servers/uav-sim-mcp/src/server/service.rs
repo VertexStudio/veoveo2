@@ -887,27 +887,14 @@ impl ServerHandler for UavSimMcp {
 
     async fn call_tool(
         &self,
-        request: CallToolRequestParams,
+        mut request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
-        if context
-            .meta
-            .client_capabilities()
-            .is_some_and(|caps| caps.supports_tasks())
+        if let Some(created) =
+            veoveo_task_runtime::start_durable_tool_task(&self.task_service, &mut request, &context)
+                .await?
         {
-            let caller = veoveo_task_runtime::DurableTaskService::authenticate(
-                &self.task_service,
-                &context,
-            )?;
-            if let Some(created) = veoveo_task_runtime::DurableTaskService::start_tool_task(
-                &self.task_service,
-                &caller,
-                request.clone(),
-            )
-            .await?
-            {
-                return Ok(created.into());
-            }
+            return Ok(created.into());
         }
         let call = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
         self.tool_router.call(call).await
@@ -1682,6 +1669,9 @@ pub(super) async fn serve() -> anyhow::Result<()> {
     let mcp_router = Router::new()
         .route_service("/", mcp_service.clone())
         .route_service("/{*path}", mcp_service)
+        .layer(middleware::from_fn(
+            veoveo_mcp_contract::enforce_serialized_mcp_response,
+        ))
         .layer(middleware::from_fn_with_state(
             InternalMcpAuthState {
                 verifier: verifier.clone(),

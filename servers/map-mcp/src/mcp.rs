@@ -217,7 +217,7 @@ impl MapMcp {
 
     #[tool(
         title = "Query immutable source features",
-        description = "Query complete normalized point, line, polygon, and relation features from one immutable Map release by source identity, exact or existing tags, normalized text, and bounded spatial predicates. Ordering and cursors are deterministic.",
+        description = "Query complete normalized point, line, polygon, and relation features from one immutable Map release by source identity, exact or existing tags, normalized text, and bounded spatial predicates. Geographic distance uses WGS84 longitude/latitude meters. Results use deterministic feature order or materialized distance-then-feature order, and only current cursor-domain values are accepted.",
         output_schema = rmcp::handler::server::tool::schema_for_type::<QuerySourceFeaturesOutput>(),
         annotations(read_only_hint = true, destructive_hint = false, idempotent_hint = true, open_world_hint = false)
     )]
@@ -847,27 +847,14 @@ impl ServerHandler for MapMcp {
 
     async fn call_tool(
         &self,
-        request: CallToolRequestParams,
+        mut request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
-        if context
-            .meta
-            .client_capabilities()
-            .is_some_and(|caps| caps.supports_tasks())
+        if let Some(created) =
+            veoveo_task_runtime::start_durable_tool_task(&self.task_service, &mut request, &context)
+                .await?
         {
-            let caller = veoveo_task_runtime::DurableTaskService::authenticate(
-                &self.task_service,
-                &context,
-            )?;
-            if let Some(created) = veoveo_task_runtime::DurableTaskService::start_tool_task(
-                &self.task_service,
-                &caller,
-                request.clone(),
-            )
-            .await?
-            {
-                return Ok(created.into());
-            }
+            return Ok(created.into());
         }
         let call = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
         self.tool_router.call(call).await

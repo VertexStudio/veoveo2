@@ -323,27 +323,14 @@ impl ServerHandler for TimeMcp {
 
     async fn call_tool(
         &self,
-        request: CallToolRequestParams,
+        mut request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
-        if context
-            .meta
-            .client_capabilities()
-            .is_some_and(|caps| caps.supports_tasks())
+        if let Some(created) =
+            veoveo_task_runtime::start_durable_tool_task(&self.task_service, &mut request, &context)
+                .await?
         {
-            let caller = veoveo_task_runtime::DurableTaskService::authenticate(
-                &self.task_service,
-                &context,
-            )?;
-            if let Some(created) = veoveo_task_runtime::DurableTaskService::start_tool_task(
-                &self.task_service,
-                &caller,
-                request.clone(),
-            )
-            .await?
-            {
-                return Ok(created.into());
-            }
+            return Ok(created.into());
         }
         let call = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
         self.tool_router.call(call).await
@@ -516,6 +503,14 @@ impl ServerHandler for TimeMcp {
             }
             uris::CLOCK_CURRENT_URI => {
                 let quality = self.state.clock.quality().await.map_err(internal)?;
+                let policy = self
+                    .state
+                    .catalog
+                    .clock_policy(&scope)
+                    .await
+                    .map_err(internal)?
+                    .map(|value| value.0)
+                    .unwrap_or_else(default_clock_policy);
                 let time = engine
                     .resolve(&ResolveTimeRequest {
                         expression: crate::contract::TimeExpression::Rfc3339 {
@@ -524,13 +519,13 @@ impl ServerHandler for TimeMcp {
                         additional_uncertainty_nanoseconds: quality.error_bound_nanoseconds,
                     })
                     .map_err(invalid_params)?;
-                return json_resource(uri, &json!({"time": time, "clock_quality": quality}));
-            }
-            uris::AUTHORITIES_CURRENT_URI => {
                 return json_resource(
                     uri,
-                    &json!({"binding": engine.authority().binding, "releases": self.state.catalog.active_releases(&scope).await.map_err(internal)?}),
+                    &json!({"time": time, "effective_policy": policy, "clock_quality": quality}),
                 );
+            }
+            uris::AUTHORITIES_CURRENT_URI => {
+                return json_resource(uri, &engine.authority().effective);
             }
             uris::CALENDARS_URI => {
                 return json_resource(
@@ -566,6 +561,30 @@ impl ServerHandler for TimeMcp {
                 );
             }
             _ => {}
+        }
+        if let Some(release_id) = uris::parse_authority_release(uri) {
+            let release_id =
+                crate::contract::AuthorityReleaseId::new(release_id).map_err(invalid_params)?;
+            let effective = &engine.authority().effective;
+            let reference = if effective.tzdb.release_id == release_id {
+                effective.tzdb.clone()
+            } else if effective.leap_seconds.release_id == release_id {
+                effective.leap_seconds.clone()
+            } else {
+                let release = self
+                    .state
+                    .catalog
+                    .release(&scope, &release_id)
+                    .await
+                    .map_err(internal)?
+                    .ok_or_else(|| not_found("authority release"))?;
+                self.state
+                    .catalog
+                    .authority_reference(&scope, &release)
+                    .await
+                    .map_err(internal)?
+            };
+            return json_resource(uri, &reference);
         }
         if let Some(zone_id) = uris::parse_zone(uri) {
             let now = engine
@@ -933,6 +952,11 @@ fn resource_templates() -> Vec<ResourceTemplate> {
             uris::ZONE_TEMPLATE,
             "IANA time zone",
             "Zone interpretation under active TZDB.",
+        ),
+        template(
+            uris::AUTHORITY_RELEASE_TEMPLATE,
+            "Time authority release",
+            "Immutable compiler-ready authority provenance.",
         ),
         template(
             uris::CALENDAR_TEMPLATE,

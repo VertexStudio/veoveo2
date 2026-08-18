@@ -278,6 +278,8 @@ impl GatewayMcp {
             veoveo_mcp_contract::PrincipalKind::User => StorePrincipalKind::User,
             veoveo_mcp_contract::PrincipalKind::Service => StorePrincipalKind::Service,
         };
+        let source_task_id = created.task.task_id.clone();
+        let source_task = source_task_id.parse().ok();
         let (canonical, _) = self
             .state
             .create_task_route(GatewayTaskRouteDraft {
@@ -289,7 +291,8 @@ impl GatewayMcp {
                 work_context: subject.authority.work_context.to_string(),
                 profile: self.profile_id.to_string(),
                 server: server.to_string(),
-                source_task_id: created.task.task_id.clone(),
+                source_task_id,
+                source_task,
                 authority_digest,
                 ttl_ms: created.task.ttl_ms,
             })

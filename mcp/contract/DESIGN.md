@@ -17,7 +17,7 @@ complies with in its crate documents and in its contract resource.
 | Standard or protocol | Supported profile |
 |---|---|
 | Model Context Protocol | protocol version `2026-07-28`; Discover is mandatory and Initialize is excluded from the hosted profile |
-| MCP Streamable HTTP | stateless POST requests with JSON terminal responses; SSE is used only by methods whose final flow requires a stream; protocol sessions, reconnect GET, DELETE, and replay are excluded |
+| MCP Streamable HTTP | stateless POST requests with JSON terminal responses capped at 8 MiB after serialization; SSE is used only by methods whose final flow requires a stream; protocol sessions, reconnect GET, DELETE, and replay are excluded |
 | MCP Tasks, SEP-2663 | official `tasks/get`, `tasks/update`, and `tasks/cancel`, optional task notifications, opaque task IDs, and typed terminal payloads |
 | MCP multi-round requests, SEP-2322 | `input_required`, protected opaque `requestState`, and retry `inputResponses`; server-initiated elicitation is excluded |
 | MCP subscriptions | request-scoped `subscriptions/listen` with an authorized accepted filter; resource subscribe and unsubscribe are excluded |
@@ -87,6 +87,33 @@ server uses the protocol surface that matches its domain:
 | live condition | `subscriptions/listen` and a resource notification filter |
 | progress/result wake | task-ID filter on `subscriptions/listen`; `tasks/get` remains the correctness path |
 | cross-server identity | canonical URI and resource link |
+
+A successful terminal task that creates an addressable product returns one
+top-level `result_uri` in `structuredContent`. The value is the canonical URI
+owned by the producing domain. The adjacent human-readable content is a short,
+identity-free status and contains one resource link for that result. Typed
+provenance and artifact metadata remain in structured content. A task that does
+not create an addressable product omits `result_uri` and does not invent a
+resource identity.
+
+Growing domain collections are read through bounded domain-owned pages with a
+stable order and opaque cursors. Exact canonical-URI reads use the owning
+domain identity and do not require a full collection scan. `resources/list`
+advertises stable roots and templates rather than enumerating every dynamic
+record. Completion queries are bounded at their authoritative store.
+
+An agent reads resources through a governed current-profile adapter rather than an
+unrestricted protocol peer. The adapter admits absolute domain resource URIs and
+bounded text or JSON content. It rejects browser, local-file, network, credential,
+fragment, HTML, event-stream, binary, and oversized inputs. Episode-local accounting
+limits read count, resource families, bytes, wall time, and pagination depth.
+
+A missing resource remains JSON-RPC `Invalid Params` (`-32602`) on the wire. The agent
+may receive a fixed correction record containing a sanitized requested URI, a stable
+code, static guidance, `automatic_retry: false`, and the remaining safe budget. The
+adapter never copies upstream error text or data into model context. Authorization,
+timeout, transport, and internal failures remain fixed generic failures, while a
+schema-valid domain rejection remains an ordinary tool result with `isError: true`.
 
 Compatibility helpers are allowed only when they are explicit product features
 for clients that cannot use the richer MCP surfaces well. They must be
@@ -158,6 +185,10 @@ Strong types govern every controlled shape: typed structs, enums, and explicit
 domain types wherever the shape is known or owned by this contract. Raw JSON
 is reserved for genuinely open-ended boundaries.
 
+Content digests establish integrity and provenance. They do not become a
+parallel public address. Artifact occurrences use fresh opaque UUIDv7
+identities and may be presented under the producing domain's canonical scheme.
+
 ## Runtime Boundary
 
 A hosted server owns its domain models and declared schemas and consumes the
@@ -174,6 +205,14 @@ URI conventions, Work Context propagation, and internal identity.
 - A server has no private control database. Durable state lives in the
   platform stores.
 - A server has no private byte route. Bytes flow through the artifact plane.
+- Every Rust Streamable HTTP endpoint applies the shared terminal-response
+  middleware after final JSON serialization. A response through 8 MiB is
+  delivered unchanged. A larger response is discarded in full and replaced
+  by JSON-RPC error `-32010` with diagnostic code
+  `response_budget_exceeded`, `maximum_bytes`, and `actual_bytes` when the
+  completed byte count is available. A body collection failure uses
+  `response_serialization_failed`. Neither diagnostic contains a partial
+  result or an internal error detail.
 
 ## Deployment Identity
 
@@ -241,15 +280,15 @@ Server crates are named `*-mcp`.
 | ID | Level | Requirement |
 |---|---|---|
 | C01 | MUST | Each capability uses the canonical MCP surface for its need per the Protocol Surface table. |
-| C02 | MUST | Every tool declares input and output JSON Schemas. |
+| C02 | MUST | Every tool declares input and output JSON Schemas; an addressable terminal product has one top-level canonical `result_uri`, while a no-product task omits it. |
 | C03 | MUST | Durable operations are task-augmented tools on the shared task runtime. |
-| C04 | MUST | Addressable state is exposed as resources or resource templates under the server's canonical scheme. |
+| C04 | MUST | Addressable state is exposed as resources or resource templates under the server's canonical scheme; growing collections use bounded domain-owned pages and exact reads do not scan the full collection. |
 | C05 | MUST | The server is not flattened to a tool-only convenience surface. |
 | C06 | MUST | Compatibility helpers are additive projections reusing canonical models, policy, audit, tasks, and URIs. |
 | C07 | MUST | Tool input schemas use JSON Schema 2020-12 and pass the shared depth, node, reference, branch, and size bounds. |
 | C08 | MUST | Schemas are generated through ordinary rmcp/Schemars or official SDK/Pydantic machinery. |
 | C09 | MUST | Controlled shapes use strong domain types; raw JSON only at open boundaries. |
-| C10 | MUST | Shared mechanics come from `veoveo_mcp_contract`, not reimplementation. |
+| C10 | MUST | Shared mechanics, including the final 8 MiB serialized JSON response cap, come from `veoveo_mcp_contract`, not reimplementation. |
 | C11 | MUST | Artifact and recording operations use the forwarded internal identity. |
 | C12 | MUST | Administrative HTTP exists only under the canonical mount. |
 | C13 | MUST | No private control database. |
@@ -297,9 +336,10 @@ rules:
 - **Construction** — C03, C10, C18–C21 are inherited by consuming
   `veoveo_mcp_contract`; avoiding them requires bypassing the shared crate,
   which review treats as a contract change.
-- **Transport conformance** — the shared Streamable HTTP constructor, gateway
-  upstream client pool, and deployment checks enforce C25–C31 for first-party Rust servers. Packaged
-  servers must pass the same black-box checks.
+- **Transport conformance** — the shared Streamable HTTP constructor, terminal
+  response-budget middleware, gateway upstream client pool, and deployment
+  checks enforce C10 and C25–C31 for first-party Rust servers. Packaged servers
+  must pass the same black-box checks.
 - **Review** — C05, C06, C09, C13, and C14 are review-enforced boundaries;
   their violation is architectural, not stylistic.
 

@@ -17,6 +17,7 @@ pub mod bootstrap;
 pub mod catalog;
 pub mod coordinates;
 pub mod deployment;
+pub mod digest;
 pub mod docs;
 pub mod duckdb;
 pub mod gateway;
@@ -89,6 +90,7 @@ pub use deployment::{
     ServiceToServiceTransport, SurrealDbVersion, SurrealStorageEngine, TelemetryCollectorKind,
     TelemetryDeployment, TelemetrySignal, TenantModel, TenantModelKind,
 };
+pub use digest::{Sha256Digest, Sha256DigestError};
 pub use duckdb::{
     DuckDbFormat, DuckDbReadOptions, DuckDbSource, DuckDbSqlBuildError, duckdb_quote_identifier,
     duckdb_quote_literal, duckdb_read_function_sql, duckdb_read_options_sql,
@@ -180,7 +182,11 @@ pub use tasks::{
     now_utc, parse_gateway_task_resource_uri, related_task_meta, set_related_task_meta,
 };
 pub use telemetry::{TelemetryGuard, init_server_telemetry};
-pub use transport::{canonical_streamable_http_server_config, stateless_session_manager};
+pub use transport::{
+    MAX_MCP_RESPONSE_BYTES, bound_serialized_jsonrpc_response,
+    canonical_streamable_http_server_config, enforce_serialized_mcp_response,
+    stateless_session_manager,
+};
 pub use uri::{
     ServerResourceUri, ServerResourceUriError, ServerResourceUris, parse_server_doc_uri,
 };
