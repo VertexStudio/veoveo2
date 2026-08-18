@@ -16,16 +16,18 @@ use veoveo_deploy_contract::{
 
 use super::{
     CERT_MOUNT_DESTINATION, KEY_MOUNT_DESTINATION, KEYCLOAK_ENV_VARS, KEYCLOAK_IMAGE,
-    LOCAL_KEYCLOAK_CONFIG_DIGEST_LABEL, REALM_MOUNT_DESTINATION,
+    LOCAL_KEYCLOAK_CONFIG_DIGEST_LABEL, LOCAL_KEYCLOAK_RESTART_POLICY, REALM_MOUNT_DESTINATION,
     ensure_generated_public_files_with, profile_requires_local_keycloak, startup_args,
 };
 use super::{
     container::{
-        ContainerInspect, ContainerInspectConfig, ContainerInspectMount,
-        ContainerInspectNetworkSettings, FingerprintInputs, config_fingerprint, container_is_valid,
+        ContainerInspect, ContainerInspectConfig, ContainerInspectHostConfig,
+        ContainerInspectMount, ContainerInspectNetworkSettings, ContainerInspectRestartPolicy,
+        ContainerReconcileDecision, FingerprintInputs, config_fingerprint, container_is_valid,
+        container_reconcile_decision, create_container_arguments,
     },
     tls::{
-        StateLock, active_generation, ensure_generation, generate_material,
+        StateLock, TlsGeneration, active_generation, ensure_generation, generate_material,
         restrict_key_permissions, state_dir,
         test_support::{current_pointer, generation_directory},
         validate_generation,
@@ -439,7 +441,7 @@ fn fingerprint_is_deterministic_and_tracks_configuration() {
         CERT_MOUNT_DESTINATION,
         KEY_MOUNT_DESTINATION,
     ];
-    let fingerprint = |realm: &[u8], cert: &[u8], network: &str| {
+    let fingerprint = |realm: &[u8], cert: &[u8], network: &str, restart_policy: &str| {
         config_fingerprint(&FingerprintInputs {
             image: KEYCLOAK_IMAGE,
             realm_bytes: realm,
@@ -449,15 +451,29 @@ fn fingerprint_is_deterministic_and_tracks_configuration() {
             active_generation_digest: "aabbccdd",
             mount_destinations: &mounts,
             network,
+            restart_policy,
         })
     };
     let realm = b"{\"realm\":\"veoveo-local\"}";
     let cert = b"certificate";
-    let baseline = fingerprint(realm, cert, "k3d-sumo");
-    assert_eq!(baseline, fingerprint(realm, cert, "k3d-sumo"));
-    assert_ne!(baseline, fingerprint(b"changed", cert, "k3d-sumo"));
-    assert_ne!(baseline, fingerprint(realm, b"changed", "k3d-sumo"));
-    assert_ne!(baseline, fingerprint(realm, cert, "k3d-other"));
+    let baseline = fingerprint(realm, cert, "k3d-sumo", LOCAL_KEYCLOAK_RESTART_POLICY);
+    assert_eq!(
+        baseline,
+        fingerprint(realm, cert, "k3d-sumo", LOCAL_KEYCLOAK_RESTART_POLICY)
+    );
+    assert_ne!(baseline, fingerprint(realm, cert, "k3d-sumo", "no"));
+    assert_ne!(
+        baseline,
+        fingerprint(b"changed", cert, "k3d-sumo", LOCAL_KEYCLOAK_RESTART_POLICY)
+    );
+    assert_ne!(
+        baseline,
+        fingerprint(realm, b"changed", "k3d-sumo", LOCAL_KEYCLOAK_RESTART_POLICY)
+    );
+    assert_ne!(
+        baseline,
+        fingerprint(realm, cert, "k3d-other", LOCAL_KEYCLOAK_RESTART_POLICY)
+    );
 }
 
 fn sample_inspect(fingerprint: Option<&str>, network: &str) -> ContainerInspect {
@@ -488,6 +504,11 @@ fn sample_inspect(fingerprint: Option<&str>, network: &str) -> ContainerInspect 
         network_settings: ContainerInspectNetworkSettings {
             networks: BTreeMap::from([(network.to_owned(), Value::Null)]),
         },
+        host_config: Some(ContainerInspectHostConfig {
+            restart_policy: Some(ContainerInspectRestartPolicy {
+                name: LOCAL_KEYCLOAK_RESTART_POLICY.to_owned(),
+            }),
+        }),
     }
 }
 
@@ -533,5 +554,82 @@ fn container_reuse_requires_label_network_and_mounts() {
             "expected"
         )
         .unwrap()
+    );
+}
+
+#[test]
+fn restart_policy_is_part_of_fingerprint_and_container_validity() {
+    let mounts = [
+        (Path::new("/realm"), REALM_MOUNT_DESTINATION),
+        (Path::new("/cert"), CERT_MOUNT_DESTINATION),
+        (Path::new("/key"), KEY_MOUNT_DESTINATION),
+    ];
+    let canonical = sample_inspect(Some("expected"), "network");
+    assert!(container_is_valid(&canonical, "network", &mounts, "expected").unwrap());
+    for policy in ["no", "always", "on-failure", ""] {
+        let mut inspect = canonical.clone();
+        inspect.host_config = Some(ContainerInspectHostConfig {
+            restart_policy: Some(ContainerInspectRestartPolicy {
+                name: policy.to_owned(),
+            }),
+        });
+        assert!(!container_is_valid(&inspect, "network", &mounts, "expected").unwrap());
+    }
+    let mut absent = canonical.clone();
+    absent.host_config = None;
+    assert!(!container_is_valid(&absent, "network", &mounts, "expected").unwrap());
+    let mut null_policy = canonical.clone();
+    null_policy.host_config = Some(ContainerInspectHostConfig {
+        restart_policy: None,
+    });
+    assert!(!container_is_valid(&null_policy, "network", &mounts, "expected").unwrap());
+}
+
+#[test]
+fn keycloak_creation_arguments_use_unless_stopped() {
+    let directory = tempfile::tempdir().unwrap();
+    let generation = TlsGeneration {
+        digest: "a".repeat(64),
+        ca_path: directory.path().join("ca.pem"),
+        cert_path: directory.path().join("tls.crt"),
+        key_path: directory.path().join("tls.key"),
+    };
+    let args = create_container_arguments(
+        "k3d-test",
+        &directory.path().join("realm.json"),
+        &generation,
+        "fingerprint",
+    )
+    .unwrap();
+    let restart = args
+        .windows(2)
+        .find(|pair| pair[0] == "--restart" && pair[1] == LOCAL_KEYCLOAK_RESTART_POLICY)
+        .expect("restart policy arguments");
+    assert_eq!(restart, ["--restart", "unless-stopped"]);
+    assert_eq!(
+        args.iter()
+            .filter(|arg| arg.as_str() == "--restart")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn valid_stopped_container_takes_start_path_without_docker() {
+    assert_eq!(
+        container_reconcile_decision(true, true, false),
+        ContainerReconcileDecision::Start
+    );
+    assert_eq!(
+        container_reconcile_decision(true, true, true),
+        ContainerReconcileDecision::Reuse
+    );
+    assert_eq!(
+        container_reconcile_decision(true, false, false),
+        ContainerReconcileDecision::Recreate
+    );
+    assert_eq!(
+        container_reconcile_decision(false, false, false),
+        ContainerReconcileDecision::Create
     );
 }

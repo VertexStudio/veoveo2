@@ -29,6 +29,7 @@ const KEYCLOAK_ENV_VARS: &[(&str, &str)] = &[
     ("KC_BOOTSTRAP_ADMIN_PASSWORD", "admin"),
 ];
 const LOCAL_KEYCLOAK_CONFIG_DIGEST_LABEL: &str = "io.veoveo.local-keycloak.config-digest";
+const LOCAL_KEYCLOAK_RESTART_POLICY: &str = "unless-stopped";
 
 fn startup_args() -> Vec<String> {
     vec![

@@ -56,6 +56,18 @@ manual recreation commands. Do not run `profile-cluster-delete` casually: it
 deletes the k3d cluster and can delete persistent volumes and PVC-backed data;
 the command is never run automatically.
 
+### Local Keycloak after a host restart
+
+Profiles whose gateway control plane explicitly declares the local-development
+Keycloak provider create `k3d-veoveo-keycloak` with Docker restart policy
+`unless-stopped`. Docker may restore that container after a daemon or host
+restart, while a manual `profile-cluster-stop` remains authoritative: Docker
+does not restart a container that was explicitly stopped until it is started
+again. `profile-cluster-up` remains the supported reconciliation command. It
+validates the image, fingerprint, mounts, cluster network, host discovery, and
+internal discovery endpoint, starts a valid stopped container, and recreates a
+stale one. Production profiles do not create or manage this container.
+
 A profile whose `gatewayActivation` declares `generatedPublicFiles` (see
 [Generated public files](#generated-public-files)) needs `profile-cluster-up` to have
 generated that material at least once in the current checkout before `profile-validate`

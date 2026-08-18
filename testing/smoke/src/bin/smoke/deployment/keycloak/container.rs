@@ -30,6 +30,7 @@ pub(super) struct FingerprintInputs<'a> {
     pub(super) active_generation_digest: &'a str,
     pub(super) mount_destinations: &'a [&'a str],
     pub(super) network: &'a str,
+    pub(super) restart_policy: &'a str,
 }
 
 pub(super) fn config_fingerprint(inputs: &FingerprintInputs<'_>) -> String {
@@ -58,6 +59,8 @@ pub(super) fn config_fingerprint(inputs: &FingerprintInputs<'_>) -> String {
         hasher.update([0]);
     }
     hasher.update(inputs.network.as_bytes());
+    hasher.update([0]);
+    hasher.update(inputs.restart_policy.as_bytes());
     hex::encode(hasher.finalize())
 }
 
@@ -81,7 +84,31 @@ fn container_exists(name: &str) -> Result<bool> {
     Ok(!String::from_utf8_lossy(&output).trim().is_empty())
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ContainerReconcileDecision {
+    Create,
+    Start,
+    Reuse,
+    Recreate,
+}
+
+pub(super) fn container_reconcile_decision(
+    exists: bool,
+    valid: bool,
+    running: bool,
+) -> ContainerReconcileDecision {
+    if !exists {
+        ContainerReconcileDecision::Create
+    } else if !valid {
+        ContainerReconcileDecision::Recreate
+    } else if !running {
+        ContainerReconcileDecision::Start
+    } else {
+        ContainerReconcileDecision::Reuse
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub(super) struct ContainerInspect {
     #[serde(rename = "Config")]
     pub(super) config: ContainerInspectConfig,
@@ -89,9 +116,23 @@ pub(super) struct ContainerInspect {
     pub(super) mounts: Vec<ContainerInspectMount>,
     #[serde(rename = "NetworkSettings")]
     pub(super) network_settings: ContainerInspectNetworkSettings,
+    #[serde(rename = "HostConfig", default)]
+    pub(super) host_config: Option<ContainerInspectHostConfig>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct ContainerInspectHostConfig {
+    #[serde(rename = "RestartPolicy", default)]
+    pub(super) restart_policy: Option<ContainerInspectRestartPolicy>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct ContainerInspectRestartPolicy {
+    #[serde(rename = "Name", default)]
+    pub(super) name: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub(super) struct ContainerInspectConfig {
     #[serde(rename = "Image")]
     pub(super) image: String,
@@ -99,7 +140,7 @@ pub(super) struct ContainerInspectConfig {
     pub(super) labels: Option<BTreeMap<String, String>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub(super) struct ContainerInspectMount {
     #[serde(rename = "Source")]
     pub(super) source: String,
@@ -107,7 +148,7 @@ pub(super) struct ContainerInspectMount {
     pub(super) destination: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub(super) struct ContainerInspectNetworkSettings {
     #[serde(rename = "Networks")]
     pub(super) networks: BTreeMap<String, Value>,
@@ -137,6 +178,14 @@ pub(super) fn container_is_valid(
         .as_ref()
         .and_then(|labels| labels.get(LOCAL_KEYCLOAK_CONFIG_DIGEST_LABEL));
     if stored_fingerprint.map(String::as_str) != Some(expected_fingerprint) {
+        return Ok(false);
+    }
+    let restart_policy = inspect
+        .host_config
+        .as_ref()
+        .and_then(|host_config| host_config.restart_policy.as_ref())
+        .map(|policy| policy.name.as_str());
+    if restart_policy != Some(super::LOCAL_KEYCLOAK_RESTART_POLICY) {
         return Ok(false);
     }
     if !inspect.network_settings.networks.contains_key(network) {
@@ -191,6 +240,7 @@ pub(super) fn ensure(profile: &LoadedProfile, lock: &StateLock) -> Result<()> {
         active_generation_digest: &generation.digest,
         mount_destinations: &mount_destinations,
         network: &network,
+        restart_policy: super::LOCAL_KEYCLOAK_RESTART_POLICY,
     });
     let expected_mounts = [
         (realm_path.as_path(), REALM_MOUNT_DESTINATION),
@@ -202,29 +252,38 @@ pub(super) fn ensure(profile: &LoadedProfile, lock: &StateLock) -> Result<()> {
         let inspect = inspect_container(KEYCLOAK_CONTAINER_NAME)?;
         let valid =
             container_is_valid(&inspect, &network, &expected_mounts, &expected_fingerprint)?;
-        if valid {
-            if !is_container_running(KEYCLOAK_CONTAINER_NAME)? {
-                status_checked("docker", ["start", KEYCLOAK_CONTAINER_NAME], &[], None)?;
-            }
-            match wait_until_ready(&cluster.name, &generation, Duration::from_secs(120)) {
-                Ok(()) => {
-                    println!(
-                        "Local Keycloak {KEYCLOAK_CONTAINER_NAME} is ready at {KEYCLOAK_ISSUER}"
-                    );
-                    return Ok(());
+        let decision = container_reconcile_decision(
+            true,
+            valid,
+            is_container_running(KEYCLOAK_CONTAINER_NAME)?,
+        );
+        match decision {
+            ContainerReconcileDecision::Start | ContainerReconcileDecision::Reuse => {
+                if matches!(decision, ContainerReconcileDecision::Start) {
+                    status_checked("docker", ["start", KEYCLOAK_CONTAINER_NAME], &[], None)?;
                 }
-                Err(error) => {
-                    println!(
-                        "Local Keycloak {KEYCLOAK_CONTAINER_NAME} failed readiness and will be recreated: {error:#}"
-                    );
-                    status_checked("docker", ["rm", "-f", KEYCLOAK_CONTAINER_NAME], &[], None)?;
+                match wait_until_ready(&cluster.name, &generation, Duration::from_secs(120)) {
+                    Ok(()) => {
+                        println!(
+                            "Local Keycloak {KEYCLOAK_CONTAINER_NAME} is ready at {KEYCLOAK_ISSUER}"
+                        );
+                        return Ok(());
+                    }
+                    Err(error) => {
+                        println!(
+                            "Local Keycloak {KEYCLOAK_CONTAINER_NAME} failed readiness and will be recreated: {error:#}"
+                        );
+                        status_checked("docker", ["rm", "-f", KEYCLOAK_CONTAINER_NAME], &[], None)?;
+                    }
                 }
             }
-        } else {
-            println!(
-                "Local Keycloak {KEYCLOAK_CONTAINER_NAME} configuration is stale (image, realm/TLS configuration, network, or mounts changed) and will be recreated"
-            );
-            status_checked("docker", ["rm", "-f", KEYCLOAK_CONTAINER_NAME], &[], None)?;
+            ContainerReconcileDecision::Recreate => {
+                println!(
+                    "Local Keycloak {KEYCLOAK_CONTAINER_NAME} configuration is stale (image, realm/TLS configuration, network, mounts, or restart policy changed) and will be recreated"
+                );
+                status_checked("docker", ["rm", "-f", KEYCLOAK_CONTAINER_NAME], &[], None)?;
+            }
+            ContainerReconcileDecision::Create => unreachable!("existing container was inspected"),
         }
     }
 
@@ -240,6 +299,17 @@ fn create_container(
     generation: &TlsGeneration,
     fingerprint: &str,
 ) -> Result<()> {
+    let args = create_container_arguments(network, realm_path, generation, fingerprint)?;
+    let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
+    status_checked("docker", refs, &[], None)
+}
+
+pub(super) fn create_container_arguments(
+    network: &str,
+    realm_path: &Path,
+    generation: &TlsGeneration,
+    fingerprint: &str,
+) -> Result<Vec<String>> {
     let realm_mount = format!("{}:{REALM_MOUNT_DESTINATION}:ro", path_str(realm_path)?);
     let crt_mount = format!(
         "{}:{CERT_MOUNT_DESTINATION}:ro",
@@ -255,6 +325,8 @@ fn create_container(
         "-d".to_owned(),
         "--name".to_owned(),
         KEYCLOAK_CONTAINER_NAME.to_owned(),
+        "--restart".to_owned(),
+        super::LOCAL_KEYCLOAK_RESTART_POLICY.to_owned(),
         "--network".to_owned(),
         network.to_owned(),
         "-p".to_owned(),
@@ -276,8 +348,7 @@ fn create_container(
         KEYCLOAK_IMAGE.to_owned(),
     ]);
     args.extend(startup_args());
-    let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
-    status_checked("docker", refs, &[], None)
+    Ok(args)
 }
 
 fn wait_until_ready(
