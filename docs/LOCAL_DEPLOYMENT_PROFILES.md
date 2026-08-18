@@ -37,6 +37,25 @@ cargo xtask release images \
 cargo xtask smoke profile-up --profile "$PROFILE" --lock "$LOCK"
 ~~~
 
+### Restart recovery
+
+`profile-cluster-up` treats `k3d cluster list` as an inventory signal, not as
+readiness. For an existing cluster it inspects every expected server and agent
+with Docker's structured inspection output. A restarting or stopped node, a
+missing `k3d-<cluster>` attachment, an absent EndpointID, or an absent or
+invalid address keeps the cluster unhealthy. The command also requires
+`kubectl --context <profile-context> get --raw=/readyz` to succeed before it
+applies any node bootstrap manifest.
+
+An unhealthy cluster is observed for a bounded recovery window with periodic
+diagnostics. If it does not recover, the command performs one ordered
+`k3d cluster stop` followed by `k3d cluster start`, then repeats the complete
+node, network, and API checks. This recovery does not delete the cluster or its
+volumes. A persistent failure aborts before `kubectl apply` and prints the exact
+manual recreation commands. Do not run `profile-cluster-delete` casually: it
+deletes the k3d cluster and can delete persistent volumes and PVC-backed data;
+the command is never run automatically.
+
 A profile whose `gatewayActivation` declares `generatedPublicFiles` (see
 [Generated public files](#generated-public-files)) needs `profile-cluster-up` to have
 generated that material at least once in the current checkout before `profile-validate`
