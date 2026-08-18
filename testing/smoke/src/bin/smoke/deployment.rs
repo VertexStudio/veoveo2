@@ -20,11 +20,17 @@ use veoveo_deploy_contract::{
 };
 use veoveo_mcp_contract::{GatewayControlPlane, GatewayInternalTrustBundle};
 
+#[path = "deployment/cluster.rs"]
+mod cluster;
 #[path = "deployment/gpu.rs"]
 mod gpu;
 #[path = "deployment/keycloak/mod.rs"]
 mod keycloak;
 
+use cluster::{
+    ClusterHealth, ClusterIssue, ClusterLifecycleDecision, DockerContainer, RecoveryDecision,
+    assess_cluster, cluster_lifecycle_decision, recovery_decision,
+};
 use gpu::{apply_gpu_placement, ensure_gpu_allocator, prepare_gpu_placement, verify_gpu_placement};
 
 const VALIDATION_REVISION: &str = "0123456789abcdef0123456789abcdef01234567";
@@ -34,8 +40,10 @@ const GATEWAY_VALIDATION_REVISION: &str =
 // Source resolution needs only the selected build paths. Keep unrelated LFS
 // objects as pointers; a selected LFS input still fails in its owning build.
 const GIT_SKIP_LFS_SMUDGE: &[(&str, &str)] = &[("GIT_LFS_SKIP_SMUDGE", "1")];
+const LOCAL_CLUSTER_SPONTANEOUS_RECOVERY: Duration = Duration::from_secs(45);
+const LOCAL_CLUSTER_RESTART_RECOVERY: Duration = Duration::from_secs(120);
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct K3dClusterSummary {
     name: String,
@@ -145,17 +153,14 @@ pub(crate) fn profile_cluster_up(path: &Path) -> Result<()> {
         .as_ref()
         .context("deployment profile does not manage a local k3d cluster")?;
     let clusters = k3d_clusters()?;
-    match clusters
+    let existing = clusters
         .iter()
-        .find(|candidate| candidate.name == cluster.name)
-    {
-        Some(existing)
-            if existing.servers_running == existing.servers_count
-                && existing.agents_running == existing.agents_count =>
-        {
+        .find(|candidate| candidate.name == cluster.name);
+    match cluster_lifecycle_decision(existing) {
+        ClusterLifecycleDecision::Inspect => {
             println!("k3d cluster {} is already running", cluster.name);
         }
-        Some(_) => {
+        ClusterLifecycleDecision::Start => {
             status_checked(
                 "k3d",
                 ["cluster", "start", cluster.name.as_str()],
@@ -163,12 +168,27 @@ pub(crate) fn profile_cluster_up(path: &Path) -> Result<()> {
                 None,
             )?;
         }
-        None => {
+        ClusterLifecycleDecision::Create => {
             let arguments = local_cluster_create_arguments(&profile)?;
             let arguments = arguments.iter().map(String::as_str).collect::<Vec<_>>();
             status_checked("k3d", arguments, &[], None)?;
         }
     }
+    let summary = k3d_clusters()?
+        .into_iter()
+        .find(|candidate| candidate.name == cluster.name)
+        .with_context(|| {
+            format!(
+                "k3d cluster {} disappeared after lifecycle command",
+                cluster.name
+            )
+        })?;
+    ensure_local_cluster_ready(
+        &profile.definition.kubernetes.context,
+        &cluster.name,
+        &summary,
+        path,
+    )?;
     apply_local_cluster_bootstrap(&profile)?;
     if profile.resolved_platform()?.gpu_scheduling.is_some() {
         wait_for_cluster_nodes(
@@ -187,6 +207,143 @@ pub(crate) fn profile_cluster_up(path: &Path) -> Result<()> {
         profile.definition.name
     );
     Ok(())
+}
+
+fn ensure_local_cluster_ready(
+    context: &str,
+    cluster_name: &str,
+    summary: &K3dClusterSummary,
+    profile_path: &Path,
+) -> Result<()> {
+    let network = format!("k3d-{cluster_name}");
+    let mut recovery_attempted = false;
+    let mut deadline = Instant::now() + LOCAL_CLUSTER_SPONTANEOUS_RECOVERY;
+    let mut next_diagnostic = Instant::now();
+    loop {
+        let health = probe_local_cluster(context, cluster_name, summary, &network);
+        let decision = recovery_decision(&health, Instant::now() >= deadline, recovery_attempted);
+        match decision {
+            RecoveryDecision::Ready => {
+                println!("k3d cluster {cluster_name} has healthy nodes and Kubernetes /readyz");
+                return Ok(());
+            }
+            RecoveryDecision::Wait => {
+                if Instant::now() >= next_diagnostic {
+                    println!(
+                        "waiting for k3d cluster {cluster_name} recovery: {}",
+                        format_health(&health)
+                    );
+                    next_diagnostic = Instant::now() + Duration::from_secs(5);
+                }
+                thread::sleep(Duration::from_secs(1));
+            }
+            RecoveryDecision::StopStart => {
+                println!(
+                    "k3d cluster {cluster_name} did not recover spontaneously: {}; performing one non-destructive stop/start",
+                    format_health(&health)
+                );
+                status_checked("k3d", ["cluster", "stop", cluster_name], &[], None)
+                    .with_context(|| format!("stopping unhealthy k3d cluster {cluster_name}"))?;
+                status_checked("k3d", ["cluster", "start", cluster_name], &[], None)
+                    .with_context(|| format!("starting unhealthy k3d cluster {cluster_name}"))?;
+                recovery_attempted = true;
+                deadline = Instant::now() + LOCAL_CLUSTER_RESTART_RECOVERY;
+                next_diagnostic = Instant::now();
+            }
+            RecoveryDecision::Fail => {
+                bail!(
+                    "k3d cluster {cluster_name} remains unhealthy after spontaneous recovery and one non-destructive stop/start: {}\n\nManual recreation is required if recovery cannot be repaired. Run exactly:\n  cargo xtask smoke profile-cluster-delete --profile {}\n  cargo xtask smoke profile-cluster-up --profile {}\nWARNING: profile-cluster-delete deletes the entire k3d cluster and may delete persistent volumes/PVC-backed data; it is never run automatically.",
+                    format_health(&health),
+                    profile_path.display(),
+                    profile_path.display()
+                );
+            }
+        }
+    }
+}
+
+fn probe_local_cluster(
+    context: &str,
+    cluster_name: &str,
+    summary: &K3dClusterSummary,
+    network: &str,
+) -> ClusterHealth {
+    let summary = k3d_clusters()
+        .ok()
+        .and_then(|clusters| {
+            clusters
+                .into_iter()
+                .find(|candidate| candidate.name == cluster_name)
+        })
+        .unwrap_or_else(|| summary.clone());
+    let mut probe_errors = Vec::new();
+    let containers = match docker_cluster_containers(cluster_name) {
+        Ok(containers) => containers,
+        Err(error) => {
+            probe_errors.push(format!("docker node inspection failed: {error:#}"));
+            Vec::new()
+        }
+    };
+    let api_detail = match kubernetes_api_ready(context) {
+        Ok(()) => "ready".to_owned(),
+        Err(error) => {
+            probe_errors.push(format!("kubectl /readyz failed: {error:#}"));
+            format!("{error:#}")
+        }
+    };
+    let mut health = assess_cluster(
+        &summary,
+        &containers,
+        network,
+        probe_errors.is_empty() && api_detail == "ready",
+        api_detail,
+    );
+    health.issues.extend(
+        probe_errors
+            .into_iter()
+            .map(|detail| ClusterIssue::ApiNotReady { detail }),
+    );
+    health
+}
+
+fn docker_cluster_containers(cluster_name: &str) -> Result<Vec<DockerContainer>> {
+    let filter = format!("label=k3d.cluster={cluster_name}");
+    let ids = output_checked("docker", ["ps", "-aq", "--filter", filter.as_str()], None)?;
+    let ids_text = String::from_utf8(ids)?;
+    let ids = ids_text
+        .lines()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .collect::<Vec<_>>();
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut args = vec!["inspect"];
+    args.extend(ids);
+    let output = output_checked("docker", args, None)?;
+    serde_json::from_slice(&output).context("decoding docker node inspection")
+}
+
+fn kubernetes_api_ready(context: &str) -> Result<()> {
+    let output = output_checked(
+        "kubectl",
+        ["--context", context, "get", "--raw=/readyz"],
+        None,
+    )?;
+    ensure!(
+        !output.is_empty(),
+        "kubectl /readyz returned an empty response for context {context}"
+    );
+    Ok(())
+}
+
+fn format_health(health: &ClusterHealth) -> String {
+    health
+        .issues
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 pub(crate) fn profile_cluster_stop(path: &Path) -> Result<()> {
@@ -241,6 +398,13 @@ pub(crate) fn profile_up(path: &Path, lock_path: &Path) -> Result<()> {
     let generated_public_files = keycloak::ensure_generated_public_files(&profile)?;
     let gateway_activation = prepare_gateway_activation(&profile, &generated_public_files)?;
 
+    if let Some(cluster) = &profile.definition.kubernetes.local_cluster {
+        let summary = k3d_clusters()?
+            .into_iter()
+            .find(|candidate| candidate.name == cluster.name)
+            .with_context(|| format!("k3d cluster {} is absent", cluster.name))?;
+        ensure_local_cluster_ready(context, &cluster.name, &summary, path)?;
+    }
     apply_local_cluster_bootstrap(&profile)?;
     if platform.gpu_scheduling.is_some() {
         wait_for_cluster_nodes(context, Duration::from_secs(120))?;
