@@ -1,6 +1,6 @@
 //! Non-destructive readiness and recovery for profile-owned k3d clusters.
 
-use std::{collections::BTreeMap, fmt, net::IpAddr};
+use std::{collections::BTreeMap, fmt, net::IpAddr, time::Duration};
 
 use serde::Deserialize;
 
@@ -9,7 +9,6 @@ use super::K3dClusterSummary;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ClusterLifecycleDecision {
     Create,
-    Start,
     Inspect,
 }
 
@@ -18,13 +17,7 @@ pub(crate) fn cluster_lifecycle_decision(
 ) -> ClusterLifecycleDecision {
     match summary {
         None => ClusterLifecycleDecision::Create,
-        Some(summary)
-            if summary.servers_running == summary.servers_count
-                && summary.agents_running == summary.agents_count =>
-        {
-            ClusterLifecycleDecision::Inspect
-        }
-        Some(_) => ClusterLifecycleDecision::Start,
+        Some(_) => ClusterLifecycleDecision::Inspect,
     }
 }
 
@@ -45,6 +38,12 @@ impl K3dNodeRole {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ClusterIssue {
+    K3dInventoryFailed {
+        detail: String,
+    },
+    DockerInspectionFailed {
+        detail: String,
+    },
     K3dCounts {
         role: K3dNodeRole,
         running: u64,
@@ -87,6 +86,9 @@ pub(crate) enum ClusterIssue {
 impl fmt::Display for ClusterIssue {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::K3dInventoryFailed { detail } => {
+                write!(formatter, "k3d cluster inventory failed: {detail}")
+            }
             Self::K3dCounts {
                 role,
                 running,
@@ -96,6 +98,9 @@ impl fmt::Display for ClusterIssue {
                 "k3d reports {running}/{expected} {role} nodes running",
                 role = role.as_str()
             ),
+            Self::DockerInspectionFailed { detail } => {
+                write!(formatter, "Docker node inspection failed: {detail}")
+            }
             Self::MissingNodes {
                 role,
                 expected,
@@ -137,6 +142,7 @@ impl fmt::Display for ClusterIssue {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ClusterHealth {
     pub(crate) issues: Vec<ClusterIssue>,
+    pub(crate) all_expected_nodes_stopped: bool,
 }
 
 impl ClusterHealth {
@@ -151,18 +157,18 @@ pub(crate) struct DockerContainer {
     #[serde(default)]
     pub(crate) name: String,
     #[serde(default)]
-    pub(crate) config: DockerConfig,
+    pub(crate) config: Option<DockerConfig>,
     #[serde(default)]
-    pub(crate) state: DockerState,
+    pub(crate) state: Option<DockerState>,
     #[serde(default)]
-    pub(crate) network_settings: DockerNetworkSettings,
+    pub(crate) network_settings: Option<DockerNetworkSettings>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub(crate) struct DockerConfig {
     #[serde(default)]
-    pub(crate) labels: BTreeMap<String, String>,
+    pub(crate) labels: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -196,10 +202,13 @@ pub(crate) fn assess_cluster(
     summary: &K3dClusterSummary,
     containers: &[DockerContainer],
     network: &str,
-    api_ready: bool,
-    api_detail: impl Into<String>,
+    api: ApiHealth,
 ) -> ClusterHealth {
     let mut issues = Vec::new();
+    let node_containers = containers
+        .iter()
+        .filter(|container| node_role(container).is_some())
+        .collect::<Vec<_>>();
     for (role, expected) in [
         (K3dNodeRole::Server, summary.servers_count),
         (K3dNodeRole::Agent, summary.agents_count),
@@ -217,9 +226,7 @@ pub(crate) fn assess_cluster(
         }
         let found = containers
             .iter()
-            .filter(|container| {
-                container.config.labels.get("k3d.role").map(String::as_str) == Some(role.as_str())
-            })
+            .filter(|container| node_role(container) == Some(role))
             .count() as u64;
         if found < expected {
             issues.push(ClusterIssue::MissingNodes {
@@ -230,21 +237,35 @@ pub(crate) fn assess_cluster(
         }
     }
 
-    for container in containers {
+    for container in node_containers.iter().copied() {
         let name = container.name.trim_start_matches('/').to_owned();
-        if container.state.restarting || container.state.status == "restarting" {
-            issues.push(ClusterIssue::Restarting { name: name.clone() });
-        } else if !container.state.running || container.state.status != "running" {
+        let Some(state) = &container.state else {
             issues.push(ClusterIssue::NotRunning {
                 name: name.clone(),
-                status: if container.state.status.is_empty() {
+                status: "unknown".to_owned(),
+            });
+            continue;
+        };
+        if state.restarting || state.status == "restarting" {
+            issues.push(ClusterIssue::Restarting { name: name.clone() });
+        } else if !state.running || state.status != "running" {
+            issues.push(ClusterIssue::NotRunning {
+                name: name.clone(),
+                status: if state.status.is_empty() {
                     "unknown".to_owned()
                 } else {
-                    container.state.status.clone()
+                    state.status.clone()
                 },
             });
         }
-        let Some(attachment) = container.network_settings.networks.get(network) else {
+        let Some(network_settings) = &container.network_settings else {
+            issues.push(ClusterIssue::NetworkAbsent {
+                name,
+                network: network.to_owned(),
+            });
+            continue;
+        };
+        let Some(attachment) = network_settings.networks.get(network) else {
             issues.push(ClusterIssue::NetworkAbsent {
                 name,
                 network: network.to_owned(),
@@ -274,18 +295,49 @@ pub(crate) fn assess_cluster(
             });
         }
     }
-    if !api_ready {
-        issues.push(ClusterIssue::ApiNotReady {
-            detail: api_detail.into(),
-        });
+    if let ApiHealth::NotReady(detail) = api {
+        issues.push(ClusterIssue::ApiNotReady { detail });
     }
-    ClusterHealth { issues }
+    let expected_nodes = summary.servers_count + summary.agents_count;
+    let all_expected_nodes_stopped = expected_nodes > 0
+        && node_containers.len() as u64 >= expected_nodes
+        && node_containers.iter().all(|container| {
+            container
+                .state
+                .as_ref()
+                .is_some_and(|state| !state.running && !state.restarting)
+        });
+    ClusterHealth {
+        issues,
+        all_expected_nodes_stopped,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ApiHealth {
+    Ready,
+    NotReady(String),
+}
+
+fn node_role(container: &DockerContainer) -> Option<K3dNodeRole> {
+    let role = container
+        .config
+        .as_ref()?
+        .labels
+        .as_ref()?
+        .get("k3d.role")?;
+    match role.as_str() {
+        "server" => Some(K3dNodeRole::Server),
+        "agent" => Some(K3dNodeRole::Agent),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RecoveryDecision {
     Ready,
     Wait,
+    Start,
     StopStart,
     Fail,
 }
@@ -295,9 +347,12 @@ pub(crate) fn recovery_decision(
     health: &ClusterHealth,
     spontaneous_deadline_reached: bool,
     recovery_attempted: bool,
+    start_attempted: bool,
 ) -> RecoveryDecision {
     if health.is_ready() {
         RecoveryDecision::Ready
+    } else if health.all_expected_nodes_stopped && !start_attempted && !recovery_attempted {
+        RecoveryDecision::Start
     } else if !spontaneous_deadline_reached {
         RecoveryDecision::Wait
     } else if !recovery_attempted {
@@ -305,6 +360,155 @@ pub(crate) fn recovery_decision(
     } else {
         RecoveryDecision::Fail
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ClusterPresence {
+    Absent,
+    Existing,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LifecycleAction {
+    Create,
+    Start,
+    Stop,
+    ApplyBootstrap,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LifecycleFailure {
+    pub(crate) detail: String,
+    pub(crate) manual_recovery: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RecoveryConfig {
+    pub(crate) spontaneous_window: Duration,
+    pub(crate) restart_window: Duration,
+    pub(crate) manual_recovery: String,
+}
+
+impl fmt::Display for LifecycleFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}\n\n{}", self.detail, self.manual_recovery)
+    }
+}
+
+pub(crate) fn orchestrate_cluster<P, A, S, C, D>(
+    presence: ClusterPresence,
+    mut probe: P,
+    mut action: A,
+    mut sleep: S,
+    mut clock: C,
+    mut diagnose: D,
+    config: RecoveryConfig,
+) -> Result<(), LifecycleFailure>
+where
+    P: FnMut() -> ClusterHealth,
+    A: FnMut(LifecycleAction) -> Result<(), String>,
+    S: FnMut(),
+    C: FnMut() -> Duration,
+    D: FnMut(&ClusterHealth),
+{
+    if presence == ClusterPresence::Absent
+        && let Err(detail) = action(LifecycleAction::Create)
+    {
+        return Err(lifecycle_failure(
+            format!("k3d cluster creation failed: {detail}"),
+            config.manual_recovery,
+        ));
+    }
+    let mut recovery_attempted = false;
+    let mut start_attempted = false;
+    let mut deadline = clock() + config.spontaneous_window;
+    loop {
+        let health = probe();
+        match recovery_decision(
+            &health,
+            clock() >= deadline,
+            recovery_attempted,
+            start_attempted,
+        ) {
+            RecoveryDecision::Ready => {
+                if let Err(detail) = action(LifecycleAction::ApplyBootstrap) {
+                    return Err(lifecycle_failure(
+                        format!(
+                            "kubectl bootstrap apply failed: {detail}; observed state: {}",
+                            format_health(&health)
+                        ),
+                        config.manual_recovery,
+                    ));
+                }
+                return Ok(());
+            }
+            RecoveryDecision::Wait => {
+                diagnose(&health);
+                sleep();
+            }
+            RecoveryDecision::Start => {
+                if let Err(detail) = action(LifecycleAction::Start) {
+                    return Err(lifecycle_failure(
+                        format!(
+                            "k3d cluster start failed while nodes were stopped: {detail}; observed state: {}",
+                            format_health(&health)
+                        ),
+                        config.manual_recovery,
+                    ));
+                }
+                start_attempted = true;
+                deadline = clock() + config.restart_window;
+            }
+            RecoveryDecision::StopStart => {
+                diagnose(&health);
+                if let Err(detail) = action(LifecycleAction::Stop) {
+                    return Err(lifecycle_failure(
+                        format!(
+                            "k3d cluster stop failed during non-destructive recovery: {detail}; observed state: {}",
+                            format_health(&health)
+                        ),
+                        config.manual_recovery,
+                    ));
+                }
+                if let Err(detail) = action(LifecycleAction::Start) {
+                    return Err(lifecycle_failure(
+                        format!(
+                            "k3d cluster start failed during non-destructive recovery: {detail}; observed state: {}",
+                            format_health(&health)
+                        ),
+                        config.manual_recovery,
+                    ));
+                }
+                recovery_attempted = true;
+                deadline = clock() + config.restart_window;
+            }
+            RecoveryDecision::Fail => {
+                return Err(lifecycle_failure(
+                    format!(
+                        "k3d cluster remains unhealthy after spontaneous recovery and one non-destructive stop/start: {}",
+                        format_health(&health)
+                    ),
+                    config.manual_recovery,
+                ));
+            }
+        }
+    }
+}
+
+fn lifecycle_failure(detail: String, manual_recovery: String) -> LifecycleFailure {
+    LifecycleFailure {
+        detail,
+        manual_recovery,
+    }
+}
+
+fn format_health(health: &ClusterHealth) -> String {
+    health
+        .issues
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 #[cfg(test)]
@@ -335,15 +539,16 @@ mod tests {
 
     #[test]
     fn healthy_nodes_and_api_are_ready() {
-        assert!(assess_cluster(&summary(), &[node()], "k3d-example", true, "ok").is_ready());
+        assert!(assess_cluster(&summary(), &[node()], "k3d-example", ApiHealth::Ready).is_ready());
     }
 
     #[test]
     fn restarting_node_is_reported() {
         let mut container = node();
-        container.state.restarting = true;
-        container.state.status = "restarting".to_owned();
-        let health = assess_cluster(&summary(), &[container], "k3d-example", true, "ok");
+        let state = container.state.as_mut().expect("state fixture");
+        state.restarting = true;
+        state.status = "restarting".to_owned();
+        let health = assess_cluster(&summary(), &[container], "k3d-example", ApiHealth::Ready);
         assert!(
             health
                 .issues
@@ -357,12 +562,14 @@ mod tests {
         let mut container = node();
         let attachment = container
             .network_settings
+            .as_mut()
+            .expect("network settings")
             .networks
             .get_mut("k3d-example")
             .expect("network fixture");
         attachment.endpoint_id.clear();
         attachment.ip_address = "not-an-ip".to_owned();
-        let health = assess_cluster(&summary(), &[container], "k3d-example", true, "ok");
+        let health = assess_cluster(&summary(), &[container], "k3d-example", ApiHealth::Ready);
         assert!(
             health
                 .issues
@@ -376,7 +583,7 @@ mod tests {
                 .any(|issue| matches!(issue, ClusterIssue::IpInvalid { .. }))
         );
         assert_eq!(
-            recovery_decision(&health, false, false),
+            recovery_decision(&health, false, false, false),
             RecoveryDecision::Wait,
             "an invalid node endpoint must not reach bootstrap apply"
         );
@@ -387,19 +594,21 @@ mod tests {
         let mut container = node();
         container
             .network_settings
+            .as_mut()
+            .expect("network settings")
             .networks
             .get_mut("k3d-example")
             .expect("network fixture")
             .ip_address
             .clear();
-        let health = assess_cluster(&summary(), &[container], "k3d-example", true, "ok");
+        let health = assess_cluster(&summary(), &[container], "k3d-example", ApiHealth::Ready);
         assert!(
             health
                 .issues
                 .iter()
                 .any(|issue| matches!(issue, ClusterIssue::IpAbsent { .. }))
         );
-        let health = assess_cluster(&summary(), &[node()], "k3d-missing", true, "ok");
+        let health = assess_cluster(&summary(), &[node()], "k3d-missing", ApiHealth::Ready);
         assert!(
             health
                 .issues
@@ -409,8 +618,40 @@ mod tests {
     }
 
     #[test]
+    fn helper_containers_and_null_docker_sections_do_not_block_node_health() {
+        let helper: DockerContainer = serde_json::from_value(serde_json::json!({
+            "Name": "/k3d-example-serverlb",
+            "Config": {"Labels": {"k3d.role": "serverlb"}},
+            "State": {"Status": "exited", "Running": false},
+            "NetworkSettings": null
+        }))
+        .expect("helper fixture");
+        let health = assess_cluster(
+            &summary(),
+            &[node(), helper],
+            "k3d-example",
+            ApiHealth::Ready,
+        );
+        assert!(health.is_ready());
+        let null_sections: DockerContainer = serde_json::from_value(serde_json::json!({
+            "Name": "/k3d-example-tools",
+            "Config": null,
+            "State": null,
+            "NetworkSettings": null
+        }))
+        .expect("null Docker sections are valid inspect output");
+        assert!(null_sections.config.is_none());
+        assert!(null_sections.network_settings.is_none());
+    }
+
+    #[test]
     fn api_not_ready_blocks_a_nominal_k3d_one_of_one() {
-        let health = assess_cluster(&summary(), &[node()], "k3d-example", false, "EOF");
+        let health = assess_cluster(
+            &summary(),
+            &[node()],
+            "k3d-example",
+            ApiHealth::NotReady("EOF".to_owned()),
+        );
         assert!(
             health
                 .issues
@@ -421,39 +662,72 @@ mod tests {
 
     #[test]
     fn policy_waits_then_restarts_once_then_fails() {
-        let unhealthy = assess_cluster(&summary(), &[], "k3d-example", false, "timeout");
+        let unhealthy = assess_cluster(
+            &summary(),
+            &[],
+            "k3d-example",
+            ApiHealth::NotReady("timeout".to_owned()),
+        );
         assert_eq!(
-            recovery_decision(&unhealthy, false, false),
+            recovery_decision(&unhealthy, false, false, false),
             RecoveryDecision::Wait
         );
         assert_eq!(
-            recovery_decision(&unhealthy, true, false),
+            recovery_decision(&unhealthy, true, false, false),
             RecoveryDecision::StopStart
         );
         assert_eq!(
-            recovery_decision(&unhealthy, false, true),
+            recovery_decision(&unhealthy, false, true, true),
             RecoveryDecision::Wait
         );
         assert_eq!(
-            recovery_decision(&unhealthy, true, true),
+            recovery_decision(&unhealthy, true, true, true),
             RecoveryDecision::Fail
         );
     }
 
     #[test]
-    fn spontaneous_recovery_and_stop_start_recovery_reach_ready() {
-        let unhealthy = assess_cluster(&summary(), &[], "k3d-example", false, "503");
+    fn fully_stopped_nodes_use_supported_start_but_restarting_nodes_wait() {
+        let mut container = node();
+        let state = container.state.as_mut().expect("state fixture");
+        state.running = false;
+        state.status = "exited".to_owned();
+        let stopped = assess_cluster(
+            &summary(),
+            &[container],
+            "k3d-example",
+            ApiHealth::NotReady("connection refused".to_owned()),
+        );
         assert_eq!(
-            recovery_decision(&unhealthy, false, false),
+            recovery_decision(&stopped, false, false, false),
+            RecoveryDecision::Start
+        );
+        let restarting = restarting();
+        assert_eq!(
+            recovery_decision(&restarting, false, false, false),
             RecoveryDecision::Wait
         );
-        let healthy = assess_cluster(&summary(), &[node()], "k3d-example", true, "ok");
+    }
+
+    #[test]
+    fn spontaneous_recovery_and_stop_start_recovery_reach_ready() {
+        let unhealthy = assess_cluster(
+            &summary(),
+            &[],
+            "k3d-example",
+            ApiHealth::NotReady("503".to_owned()),
+        );
         assert_eq!(
-            recovery_decision(&healthy, false, false),
+            recovery_decision(&unhealthy, false, false, false),
+            RecoveryDecision::Wait
+        );
+        let healthy = assess_cluster(&summary(), &[node()], "k3d-example", ApiHealth::Ready);
+        assert_eq!(
+            recovery_decision(&healthy, false, false, false),
             RecoveryDecision::Ready
         );
         assert_eq!(
-            recovery_decision(&healthy, true, true),
+            recovery_decision(&healthy, true, true, true),
             RecoveryDecision::Ready
         );
     }
@@ -472,7 +746,174 @@ mod tests {
         starting.servers_running = 0;
         assert_eq!(
             cluster_lifecycle_decision(Some(&starting)),
-            ClusterLifecycleDecision::Start
+            ClusterLifecycleDecision::Inspect
         );
+    }
+
+    fn healthy() -> ClusterHealth {
+        assess_cluster(&summary(), &[node()], "k3d-example", ApiHealth::Ready)
+    }
+
+    fn restarting() -> ClusterHealth {
+        let mut container = node();
+        let state = container.state.as_mut().expect("state fixture");
+        state.running = false;
+        state.restarting = true;
+        state.status = "restarting".to_owned();
+        assess_cluster(
+            &summary(),
+            &[container],
+            "k3d-example",
+            ApiHealth::NotReady("EOF".to_owned()),
+        )
+    }
+
+    fn endpoint_lost() -> ClusterHealth {
+        let mut container = node();
+        container
+            .network_settings
+            .as_mut()
+            .expect("network settings")
+            .networks
+            .get_mut("k3d-example")
+            .expect("network fixture")
+            .endpoint_id
+            .clear();
+        assess_cluster(&summary(), &[container], "k3d-example", ApiHealth::Ready)
+    }
+
+    fn run_script(
+        presence: ClusterPresence,
+        probes: Vec<ClusterHealth>,
+    ) -> (Vec<LifecycleAction>, Result<(), LifecycleFailure>) {
+        use std::cell::Cell;
+
+        let mut probes = probes.into_iter();
+        let mut events = Vec::new();
+        let now = Cell::new(Duration::ZERO);
+        let result = orchestrate_cluster(
+            presence,
+            || probes.next().expect("probe fixture"),
+            |action| {
+                events.push(action);
+                Ok(())
+            },
+            || now.set(now.get() + Duration::from_secs(2)),
+            || now.get(),
+            |_| {},
+            RecoveryConfig {
+                spontaneous_window: Duration::from_secs(1),
+                restart_window: Duration::from_secs(1),
+                manual_recovery: "cargo xtask smoke profile-cluster-delete --profile test.json\nWARNING: PVC data may be lost".to_owned(),
+            },
+        );
+        (events, result)
+    }
+
+    #[test]
+    fn lifecycle_healthy_does_not_restart_and_applies_once() {
+        let (events, result) = run_script(ClusterPresence::Existing, vec![healthy()]);
+        assert_eq!(events, vec![LifecycleAction::ApplyBootstrap]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn lifecycle_absent_creates_then_applies_after_ready() {
+        let (events, result) = run_script(ClusterPresence::Absent, vec![healthy()]);
+        assert_eq!(
+            events,
+            vec![LifecycleAction::Create, LifecycleAction::ApplyBootstrap]
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn lifecycle_restarting_waits_then_stop_starts_once_before_apply() {
+        let (events, result) = run_script(
+            ClusterPresence::Existing,
+            vec![restarting(), restarting(), healthy()],
+        );
+        assert_eq!(
+            events,
+            vec![
+                LifecycleAction::Stop,
+                LifecycleAction::Start,
+                LifecycleAction::ApplyBootstrap
+            ]
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn lifecycle_lost_endpoint_waits_then_stop_starts_once_before_apply() {
+        let (events, result) = run_script(
+            ClusterPresence::Existing,
+            vec![endpoint_lost(), endpoint_lost(), healthy()],
+        );
+        assert_eq!(
+            events,
+            vec![
+                LifecycleAction::Stop,
+                LifecycleAction::Start,
+                LifecycleAction::ApplyBootstrap
+            ]
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn lifecycle_spontaneous_recovery_never_stop_starts() {
+        let (events, result) = run_script(ClusterPresence::Existing, vec![restarting(), healthy()]);
+        assert_eq!(events, vec![LifecycleAction::ApplyBootstrap]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn lifecycle_failure_never_applies_and_preserves_manual_warning() {
+        let (events, result) = run_script(
+            ClusterPresence::Existing,
+            vec![restarting(), restarting(), restarting(), restarting()],
+        );
+        assert_eq!(events, vec![LifecycleAction::Stop, LifecycleAction::Start]);
+        let failure = result.expect_err("unhealthy fixture must fail");
+        assert!(failure.to_string().contains("profile-cluster-delete"));
+        assert!(failure.to_string().contains("PVC"));
+        assert!(!events.contains(&LifecycleAction::ApplyBootstrap));
+    }
+
+    #[test]
+    fn lifecycle_stop_failure_keeps_state_and_manual_recovery_diagnostics() {
+        use std::cell::Cell;
+
+        let now = Cell::new(Duration::ZERO);
+        let mut probes = vec![restarting(), restarting()].into_iter();
+        let mut events = Vec::new();
+        let result = orchestrate_cluster(
+            ClusterPresence::Existing,
+            || probes.next().expect("probe fixture"),
+            |action| {
+                events.push(action);
+                if action == LifecycleAction::Stop {
+                    Err("stop unavailable".to_owned())
+                } else {
+                    Ok(())
+                }
+            },
+            || now.set(now.get() + Duration::from_secs(2)),
+            || now.get(),
+            |_| {},
+            RecoveryConfig {
+                spontaneous_window: Duration::from_secs(1),
+                restart_window: Duration::from_secs(1),
+                manual_recovery:
+                    "profile-cluster-delete --profile test.json\nWARNING: PVC data may be lost"
+                        .to_owned(),
+            },
+        );
+        assert_eq!(events, vec![LifecycleAction::Stop]);
+        let failure = result.expect_err("stop failure must abort");
+        assert!(failure.to_string().contains("stop unavailable"));
+        assert!(failure.to_string().contains("profile-cluster-delete"));
+        assert!(failure.to_string().contains("PVC"));
     }
 }
