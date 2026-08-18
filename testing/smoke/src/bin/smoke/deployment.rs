@@ -43,6 +43,8 @@ const GATEWAY_VALIDATION_REVISION: &str =
 const GIT_SKIP_LFS_SMUDGE: &[(&str, &str)] = &[("GIT_LFS_SKIP_SMUDGE", "1")];
 const LOCAL_CLUSTER_SPONTANEOUS_RECOVERY: Duration = Duration::from_secs(45);
 const LOCAL_CLUSTER_RESTART_RECOVERY: Duration = Duration::from_secs(120);
+const LOCAL_CLUSTER_DIAGNOSTIC_INTERVAL: Duration = Duration::from_secs(5);
+const KUBECTL_READY_REQUEST_TIMEOUT: &str = "5s";
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -244,6 +246,7 @@ fn ensure_local_cluster_ready(
         RecoveryConfig {
             spontaneous_window: LOCAL_CLUSTER_SPONTANEOUS_RECOVERY,
             restart_window: LOCAL_CLUSTER_RESTART_RECOVERY,
+            diagnostic_interval: LOCAL_CLUSTER_DIAGNOSTIC_INTERVAL,
             manual_recovery,
         },
     )
@@ -337,12 +340,24 @@ fn docker_cluster_containers(cluster_name: &str) -> Result<Vec<DockerContainer>>
 fn kubernetes_api_ready(context: &str) -> Result<()> {
     let output = output_checked(
         "kubectl",
-        ["--context", context, "get", "--raw=/readyz"],
+        [
+            "--context",
+            context,
+            "--request-timeout",
+            KUBECTL_READY_REQUEST_TIMEOUT,
+            "get",
+            "--raw=/readyz",
+        ],
         None,
     )?;
+    validate_readyz_body(&output)
+}
+
+fn validate_readyz_body(output: &[u8]) -> Result<()> {
+    let body = std::str::from_utf8(output)?.trim();
     ensure!(
-        !output.is_empty(),
-        "kubectl /readyz returned an empty response for context {context}"
+        body == "ok",
+        "kubectl /readyz returned unexpected body {body:?}; expected exactly `ok`"
     );
     Ok(())
 }
@@ -2058,7 +2073,7 @@ mod tests {
         PreparedGatewayActivation, ReleaseValueContext, append_release_values, gateway_mount_key,
         locked_image_digests_for_registry, normalize_origin, ordered_release_values,
         prepare_gateway_activation_for_validation, release_image_digests,
-        validate_gateway_public_file,
+        validate_gateway_public_file, validate_readyz_body,
     };
 
     const DIGEST_A: &str =
@@ -2265,5 +2280,13 @@ mod tests {
         );
         assert!(gateway_mount_key("/tmp/ca.pem").is_err());
         assert!(gateway_mount_key("/etc/veoveo/gateway/trust/ca.pem").is_err());
+    }
+
+    #[test]
+    fn readyz_requires_exact_ok_body_after_trimming() {
+        assert!(validate_readyz_body(b"ok\n").is_ok());
+        assert!(validate_readyz_body(b"ok\n\n").is_ok());
+        assert!(validate_readyz_body(b"OK\n").is_err());
+        assert!(validate_readyz_body(b"ok\nwarning").is_err());
     }
 }

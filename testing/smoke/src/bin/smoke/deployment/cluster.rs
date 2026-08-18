@@ -298,14 +298,25 @@ pub(crate) fn assess_cluster(
     if let ApiHealth::NotReady(detail) = api {
         issues.push(ClusterIssue::ApiNotReady { detail });
     }
-    let expected_nodes = summary.servers_count + summary.agents_count;
-    let all_expected_nodes_stopped = expected_nodes > 0
-        && node_containers.len() as u64 >= expected_nodes
-        && node_containers.iter().all(|container| {
-            container
-                .state
-                .as_ref()
-                .is_some_and(|state| !state.running && !state.restarting)
+    let all_expected_nodes_stopped = (summary.servers_count + summary.agents_count) > 0
+        && [
+            (K3dNodeRole::Server, summary.servers_count),
+            (K3dNodeRole::Agent, summary.agents_count),
+        ]
+        .into_iter()
+        .all(|(role, expected)| {
+            let role_nodes = node_containers
+                .iter()
+                .filter(|container| node_role(container) == Some(role))
+                .copied()
+                .collect::<Vec<_>>();
+            role_nodes.len() as u64 >= expected
+                && role_nodes.iter().all(|container| {
+                    container
+                        .state
+                        .as_ref()
+                        .is_some_and(|state| !state.running && !state.restarting)
+                })
         });
     ClusterHealth {
         issues,
@@ -386,6 +397,7 @@ pub(crate) struct LifecycleFailure {
 pub(crate) struct RecoveryConfig {
     pub(crate) spontaneous_window: Duration,
     pub(crate) restart_window: Duration,
+    pub(crate) diagnostic_interval: Duration,
     pub(crate) manual_recovery: String,
 }
 
@@ -422,6 +434,7 @@ where
     let mut recovery_attempted = false;
     let mut start_attempted = false;
     let mut deadline = clock() + config.spontaneous_window;
+    let mut next_diagnostic = clock();
     loop {
         let health = probe();
         match recovery_decision(
@@ -443,7 +456,11 @@ where
                 return Ok(());
             }
             RecoveryDecision::Wait => {
-                diagnose(&health);
+                let now = clock();
+                if now >= next_diagnostic {
+                    diagnose(&health);
+                    next_diagnostic = now + config.diagnostic_interval;
+                }
                 sleep();
             }
             RecoveryDecision::Start => {
@@ -458,6 +475,7 @@ where
                 }
                 start_attempted = true;
                 deadline = clock() + config.restart_window;
+                next_diagnostic = clock();
             }
             RecoveryDecision::StopStart => {
                 diagnose(&health);
@@ -481,6 +499,7 @@ where
                 }
                 recovery_attempted = true;
                 deadline = clock() + config.restart_window;
+                next_diagnostic = clock();
             }
             RecoveryDecision::Fail => {
                 return Err(lifecycle_failure(
@@ -710,6 +729,35 @@ mod tests {
     }
 
     #[test]
+    fn stopped_role_duplicate_does_not_replace_a_missing_expected_role() {
+        let mut expected = summary();
+        expected.agents_count = 1;
+        let mut server = node();
+        let state = server.state.as_mut().expect("state fixture");
+        state.running = false;
+        state.status = "exited".to_owned();
+        let duplicate_server = server.clone();
+        let health = assess_cluster(
+            &expected,
+            &[server, duplicate_server],
+            "k3d-example",
+            ApiHealth::NotReady("connection refused".to_owned()),
+        );
+        assert!(health.issues.iter().any(|issue| matches!(
+            issue,
+            ClusterIssue::MissingNodes {
+                role: K3dNodeRole::Agent,
+                ..
+            }
+        )));
+        assert!(!health.all_expected_nodes_stopped);
+        assert_eq!(
+            recovery_decision(&health, false, false, false),
+            RecoveryDecision::Wait
+        );
+    }
+
+    #[test]
     fn spontaneous_recovery_and_stop_start_recovery_reach_ready() {
         let unhealthy = assess_cluster(
             &summary(),
@@ -804,6 +852,7 @@ mod tests {
             RecoveryConfig {
                 spontaneous_window: Duration::from_secs(1),
                 restart_window: Duration::from_secs(1),
+                diagnostic_interval: Duration::from_secs(5),
                 manual_recovery: "cargo xtask smoke profile-cluster-delete --profile test.json\nWARNING: PVC data may be lost".to_owned(),
             },
         );
@@ -869,6 +918,31 @@ mod tests {
     }
 
     #[test]
+    fn lifecycle_diagnostics_are_interval_limited() {
+        use std::cell::Cell;
+
+        let now = Cell::new(Duration::ZERO);
+        let mut probes = vec![restarting(), restarting(), healthy()].into_iter();
+        let diagnostics = Cell::new(0u32);
+        let result = orchestrate_cluster(
+            ClusterPresence::Existing,
+            || probes.next().expect("probe fixture"),
+            |_| Ok(()),
+            || now.set(now.get() + Duration::from_secs(1)),
+            || now.get(),
+            |_| diagnostics.set(diagnostics.get() + 1),
+            RecoveryConfig {
+                spontaneous_window: Duration::from_secs(10),
+                restart_window: Duration::from_secs(10),
+                diagnostic_interval: Duration::from_secs(5),
+                manual_recovery: "manual recovery".to_owned(),
+            },
+        );
+        assert!(result.is_ok());
+        assert_eq!(diagnostics.get(), 1);
+    }
+
+    #[test]
     fn lifecycle_failure_never_applies_and_preserves_manual_warning() {
         let (events, result) = run_script(
             ClusterPresence::Existing,
@@ -905,6 +979,7 @@ mod tests {
             RecoveryConfig {
                 spontaneous_window: Duration::from_secs(1),
                 restart_window: Duration::from_secs(1),
+                diagnostic_interval: Duration::from_secs(5),
                 manual_recovery:
                     "profile-cluster-delete --profile test.json\nWARNING: PVC data may be lost"
                         .to_owned(),
