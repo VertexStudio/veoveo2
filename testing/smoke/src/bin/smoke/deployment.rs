@@ -422,8 +422,9 @@ pub(crate) fn profile_up(path: &Path, lock_path: &Path) -> Result<()> {
     validate_locked_images(&profile, &lock, &sources, &selected_images)?;
     let synthetic_activation = prepare_gateway_activation_for_validation(&profile)?;
     validate_helm_releases(&profile, &sources, synthetic_activation.as_ref())?;
-    let generated_public_files = keycloak::ensure_generated_public_files(&profile)?;
-    let gateway_activation = prepare_gateway_activation(&profile, &generated_public_files)?;
+    let keycloak_session = keycloak::Session::prepare(&profile)?;
+    let gateway_activation =
+        prepare_gateway_activation(&profile, keycloak_session.generated_public_files())?;
     let platform = profile.resolved_platform()?;
     let context = profile.definition.kubernetes.context.as_str();
     let secret_closure = prepare_secret_closure(
@@ -443,6 +444,8 @@ pub(crate) fn profile_up(path: &Path, lock_path: &Path) -> Result<()> {
         } else {
             wait_for_cluster_gpu(context, Duration::from_secs(120))?;
         }
+
+        keycloak_session.reconcile(&profile)?;
 
         kubectl_apply_value(
             context,
@@ -2227,13 +2230,14 @@ mod tests {
     };
 
     use veoveo_deploy_contract::{
-        DeploymentSourceRole, LoadedProfile, LockedImage, LockedSource, ReleaseSpec,
-        ReleaseValuesContract, SecretClosure, SecretClosureStatus, SecretObjectKey,
-        SecretObservationStatus,
+        DeploymentSourceRole, FirstPartyMcpServer, LoadedProfile, LockedImage, LockedSource,
+        PlatformComponent, ReleaseSpec, ReleaseValuesContract, SecretClosure, SecretClosureStatus,
+        SecretObjectKey, SecretObservationStatus,
     };
 
     use super::{
-        after_secret_closure, decode_secret_observation, gateway_mount_key,
+        PreparedGatewayActivation, ReleaseValueContext, after_secret_closure,
+        append_release_values, decode_secret_observation, gateway_mount_key,
         locked_image_digests_for_registry, normalize_origin, ordered_release_values,
         prepare_gateway_activation_for_validation, release_image_digests,
         validate_gateway_public_file, validate_readyz_body,
@@ -2380,6 +2384,79 @@ mod tests {
                 .required_secret_keys
                 .contains("oidc-client-secret")
         );
+    }
+
+    #[test]
+    fn locked_render_and_install_use_the_same_real_gateway_activation_values() {
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let profile = LoadedProfile::load(
+            &repository.join("showcase/sumo/deploy/deployment.json"),
+            &repository,
+        )
+        .unwrap();
+        let activation = PreparedGatewayActivation {
+            config_map_name: "veoveo-gateway-real".to_owned(),
+            revision: "a".repeat(64),
+            confidential_secret: "real-existing-secret".to_owned(),
+            required_secret_keys: Default::default(),
+            data: BTreeMap::new(),
+        };
+        let release = ReleaseSpec {
+            name: "platform".to_owned(),
+            chart: PathBuf::from("chart"),
+            source_values: vec![],
+            installation_values: vec![],
+            values_contract: ReleaseValuesContract::Platform,
+            create_namespace: false,
+            timeout_seconds: 60,
+        };
+        let components = std::collections::BTreeSet::<PlatformComponent>::new();
+        let servers = std::collections::BTreeSet::<FirstPartyMcpServer>::new();
+        let mut locked = Vec::new();
+        let mut install = Vec::new();
+        append_release_values(
+            &mut locked,
+            &profile,
+            &release,
+            "revision",
+            ReleaseValueContext {
+                image_digests: None,
+                components: &components,
+                mcp_servers: &servers,
+                gateway_activation: Some(&activation),
+            },
+        )
+        .unwrap();
+        append_release_values(
+            &mut install,
+            &profile,
+            &release,
+            "revision",
+            ReleaseValueContext {
+                image_digests: None,
+                components: &components,
+                mcp_servers: &servers,
+                gateway_activation: Some(&activation),
+            },
+        )
+        .unwrap();
+        for args in [&locked, &install] {
+            assert!(
+                args.iter()
+                    .any(|arg| arg == "gateway.existingControlPlaneConfigMap=veoveo-gateway-real")
+            );
+            assert!(
+                args.iter()
+                    .any(|arg| arg
+                        == &format!("gateway.controlPlaneRevision={}", activation.revision))
+            );
+            assert!(
+                args.iter()
+                    .any(|arg| arg == "global.existingSecret=real-existing-secret")
+            );
+            assert!(!args.iter().any(|arg| arg.contains("000000000000")));
+        }
+        assert_eq!(locked, install);
     }
 
     #[test]

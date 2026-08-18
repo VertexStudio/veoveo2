@@ -17,7 +17,7 @@ use veoveo_deploy_contract::{
 use super::{
     CERT_MOUNT_DESTINATION, KEY_MOUNT_DESTINATION, KEYCLOAK_ENV_VARS, KEYCLOAK_IMAGE,
     LOCAL_KEYCLOAK_CONFIG_DIGEST_LABEL, LOCAL_KEYCLOAK_RESTART_POLICY, REALM_MOUNT_DESTINATION,
-    ensure_generated_public_files_with, profile_requires_local_keycloak, startup_args,
+    Session, ensure_generated_public_files, profile_requires_local_keycloak, startup_args,
 };
 use super::{
     container::{
@@ -145,24 +145,88 @@ fn generated_keycloak_ca_requires_local_identity_metadata() {
     )
     .unwrap();
 
-    let error = ensure_generated_public_files_with(&fixture.profile, |_, _| {
-        panic!("metadata mismatch must fail before reconciliation")
-    })
-    .err()
-    .expect("missing local identity metadata must fail closed");
+    let error = ensure_generated_public_files(&fixture.profile)
+        .err()
+        .expect("missing local identity metadata must fail closed");
     assert!(
         error
             .to_string()
-            .contains("does not declare the local-development Keycloak")
+            .contains("local Keycloak metadata and generated local_keycloak_ca")
     );
+    assert!(!state_dir(&fixture.profile.repository).exists());
+}
+
+#[test]
+fn local_metadata_without_generated_files_fails_validation() {
+    let mut fixture = fixture();
+    fixture
+        .profile
+        .definition
+        .gateway_activation
+        .as_mut()
+        .unwrap()
+        .generated_public_files
+        .clear();
+    let error = super::validate_profile(&fixture.profile)
+        .expect_err("metadata must require generated files");
+    assert!(
+        error
+            .to_string()
+            .contains("local Keycloak metadata and generated local_keycloak_ca")
+    );
+    assert!(!state_dir(&fixture.profile.repository).exists());
+}
+
+#[test]
+fn production_like_profile_without_local_metadata_is_a_noop() {
+    let mut fixture = fixture();
+    let control_plane_path = fixture.profile.resolve(
+        &fixture
+            .profile
+            .definition
+            .gateway_activation
+            .as_ref()
+            .unwrap()
+            .control_plane,
+    );
+    let mut control_plane: Value =
+        serde_json::from_slice(&fs::read(&control_plane_path).unwrap()).unwrap();
+    control_plane["identity_providers"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|provider| {
+            let metadata = provider.get("metadata").and_then(Value::as_object);
+            !metadata.is_some_and(|metadata| {
+                metadata.get("provider").and_then(Value::as_str) == Some("keycloak")
+                    && metadata.get("purpose").and_then(Value::as_str)
+                        == Some("local_development_identity")
+            })
+        });
+    fs::write(
+        &control_plane_path,
+        serde_json::to_vec_pretty(&control_plane).unwrap(),
+    )
+    .unwrap();
+    fixture
+        .profile
+        .definition
+        .gateway_activation
+        .as_mut()
+        .unwrap()
+        .generated_public_files
+        .clear();
+
+    super::validate_profile(&fixture.profile).unwrap();
+    let session = Session::prepare(&fixture.profile).unwrap();
+    assert!(session.generated_public_files().is_empty());
+    assert!(session.generated_public_files().path("ca.pem").is_none());
     assert!(!state_dir(&fixture.profile.repository).exists());
 }
 
 #[test]
 fn generated_ca_is_held_consistent_through_activation_preparation() {
     let fixture = fixture();
-    let generated =
-        ensure_generated_public_files_with(&fixture.profile, |_, _| Ok(())).expect("generate CA");
+    let generated = ensure_generated_public_files(&fixture.profile).expect("generate CA");
     let activation = prepare_gateway_activation(&fixture.profile, &generated)
         .expect("prepare activation")
         .expect("activation exists");
@@ -173,23 +237,6 @@ fn generated_ca_is_held_consistent_through_activation_preparation() {
         activation.data["ca.pem"],
         fs::read_to_string(generation.ca_path).unwrap()
     );
-}
-
-#[test]
-fn generated_public_files_reconcile_keycloak_before_returning() {
-    use std::cell::Cell;
-
-    let fixture = fixture();
-    let reconciled = Cell::new(0_u8);
-    let generated = ensure_generated_public_files_with(&fixture.profile, |profile, _lock| {
-        assert!(std::ptr::eq(profile, &fixture.profile));
-        reconciled.set(reconciled.get() + 1);
-        Ok(())
-    })
-    .expect("materialize and reconcile local Keycloak");
-
-    assert_eq!(reconciled.get(), 1);
-    assert!(generated.path("ca.pem").is_some());
 }
 
 #[test]

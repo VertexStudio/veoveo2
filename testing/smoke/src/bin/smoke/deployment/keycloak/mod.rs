@@ -71,13 +71,31 @@ fn profile_requires_local_keycloak(profile: &LoadedProfile) -> Result<bool> {
             control_plane_path.display()
         )
     })?;
-    if !control_plane_declares_local_keycloak(&control_plane) {
+    let local_metadata = control_plane_declares_local_keycloak(&control_plane);
+    let generated = activation
+        .generated_public_files
+        .values()
+        .any(|file| matches!(file.kind, GeneratedPublicFileKind::LocalKeycloakCa));
+    ensure!(
+        local_metadata == generated,
+        "local Keycloak metadata and generated local_keycloak_ca must be declared together"
+    );
+    if !local_metadata {
         return Ok(false);
     }
     ensure!(
         profile.definition.kubernetes.local_cluster.is_some(),
         "deployment profile {} configures a local-development Keycloak identity provider but does not manage a local k3d cluster; local Keycloak is confined to disposable local-cluster profiles",
         profile.definition.name
+    );
+    let generated_count = activation
+        .generated_public_files
+        .values()
+        .filter(|file| matches!(file.kind, GeneratedPublicFileKind::LocalKeycloakCa))
+        .count();
+    ensure!(
+        generated_count == 1,
+        "local Keycloak metadata requires exactly one generated local_keycloak_ca file"
     );
     Ok(true)
 }
@@ -92,11 +110,8 @@ fn control_plane_declares_local_keycloak(control_plane: &GatewayControlPlane) ->
 }
 
 pub(super) fn ensure(profile: &LoadedProfile) -> Result<()> {
-    if !profile_requires_local_keycloak(profile)? {
-        return Ok(());
-    }
-    let lock = StateLock::acquire()?;
-    container::ensure(profile, &lock)
+    let session = Session::prepare(profile)?;
+    session.reconcile(profile)
 }
 
 pub(super) fn stop(profile: &LoadedProfile) -> Result<()> {
@@ -124,7 +139,38 @@ pub(super) struct GeneratedPublicFiles {
     _lock: Option<StateLock>,
 }
 
+/// Runtime-scoped local identity preparation. The generated material keeps its
+/// state lock alive until the deployment caller drops the session.
+pub(super) struct Session {
+    generated: GeneratedPublicFiles,
+}
+
+impl Session {
+    pub(super) fn prepare(profile: &LoadedProfile) -> Result<Self> {
+        Ok(Self {
+            generated: ensure_generated_public_files(profile)?,
+        })
+    }
+
+    pub(super) fn generated_public_files(&self) -> &GeneratedPublicFiles {
+        &self.generated
+    }
+
+    pub(super) fn reconcile(&self, _profile: &LoadedProfile) -> Result<()> {
+        if let Some(lock) = self.generated._lock.as_ref() {
+            container::ensure(_profile, lock)
+        } else {
+            Ok(())
+        }
+    }
+}
+
 impl GeneratedPublicFiles {
+    #[cfg(test)]
+    pub(super) fn is_empty(&self) -> bool {
+        self.paths.is_empty() && self._lock.is_none()
+    }
+
     pub(super) fn path(&self, key: &str) -> Option<&PathBuf> {
         self.paths.get(key)
     }
@@ -133,16 +179,10 @@ impl GeneratedPublicFiles {
 pub(super) fn ensure_generated_public_files(
     profile: &LoadedProfile,
 ) -> Result<GeneratedPublicFiles> {
-    ensure_generated_public_files_with(profile, container::ensure)
+    prepare_generated_public_files(profile)
 }
 
-fn ensure_generated_public_files_with<F>(
-    profile: &LoadedProfile,
-    reconcile: F,
-) -> Result<GeneratedPublicFiles>
-where
-    F: FnOnce(&LoadedProfile, &StateLock) -> Result<()>,
-{
+fn prepare_generated_public_files(profile: &LoadedProfile) -> Result<GeneratedPublicFiles> {
     let Some(activation) = &profile.definition.gateway_activation else {
         return Ok(GeneratedPublicFiles {
             paths: BTreeMap::new(),
@@ -177,9 +217,6 @@ where
             }
         };
         paths.insert(key.clone(), path);
-    }
-    if requires_local_keycloak {
-        reconcile(profile, &lock)?;
     }
     Ok(GeneratedPublicFiles {
         paths,
