@@ -39,12 +39,14 @@ reconciliation and do not operate the same resources concurrently with another p
 
 | Path | Use when | Operational owner |
 |---|---|---|
-| GitOps | The organization already reconciles Kubernetes desired state from Git | Argo CD, Flux, or the organization's equivalent controller |
+| GitOps | The organization already reconciles Kubernetes desired state from Git | Flux or the organization's equivalent controller |
 | Direct Helm | The organization has another controlled release process or performs an operator-managed installation | The installation release process invoking Helm |
 | Offline | The target cannot reach connected registries or package services | Connected bundle builder and offline installation operator |
 
-GitOps is the maintained reference. Argo CD is not a Veoveo runtime dependency, and
-Veoveo does not install or manage the organization's controller.
+Flux 2.9.4 is the maintained GitOps reference. Flux is not a Veoveo runtime dependency,
+and Veoveo does not install or manage the organization's controller. Another controller
+must preserve the same Helm, immutable source, ordering, readiness, and ownership
+boundaries.
 
 ## Ownership Before Installation
 
@@ -160,7 +162,7 @@ described in [Enterprise deployment](ENTERPRISE_DEPLOYMENT.md#configuration-repo
 and separates:
 
 - cluster prerequisites and controller configuration;
-- root and child application definitions;
+- Git sources, root Kustomizations, OCI sources, and release definitions;
 - platform, extension, and immutable image values;
 - selected release manifests;
 - gateway base, bindings, locked fragments, composed output, and public trust files.
@@ -175,8 +177,8 @@ roles, scopes, and application selection are not neutral defaults.
 ## Secrets
 
 Provision every referenced Kubernetes Secret before starting application workloads.
-Secret bytes never belong in Helm values, Git, Argo CD Applications, generated
-ConfigMaps, deployment locks, or acceptance evidence.
+Secret bytes never belong in Helm values, Git, Flux Kustomizations or HelmReleases,
+generated ConfigMaps, deployment locks, or acceptance evidence.
 
 The platform's default Secret names and key contracts are listed in
 [Enterprise deployment](ENTERPRISE_DEPLOYMENT.md#secrets). Selected extensions add
@@ -216,7 +218,18 @@ The installation must provide:
 - public JWKS and any required public CA material;
 - the existing confidential Secret and its required keys;
 - a content-addressed ConfigMap or equivalent immutable activation input consumed by
-  the chart bootstrap path.
+  the chart bootstrap path;
+- one unauthenticated `health_url` for every hosted-server and Recording upstream.
+
+The Gateway probes each declared health endpoint with `GET` and accepts only a success
+status. An MCP response, authentication failure, or method rejection is not a health
+signal. A fragment without `health_url` fails control-plane validation before rollout.
+
+The Gateway may run multiple replicas because durable authority lives in the platform
+store. Its Kubernetes Service uses client-IP affinity to keep each active MCP transport,
+subscription, and notification stream attached to one Gateway process. Hosted MCP
+server workloads retain their single-active-process lifecycle where required by their
+runtime and storage contracts.
 
 The profile-based repository workflow can prepare this activation for its supported
 profiles. A normal enterprise controller may generate the ConfigMap from committed
@@ -231,7 +244,8 @@ Before the first mutation in an environment, verify:
 - cluster nodes can authenticate to and pull from the selected registry;
 - all chart values render against the selected chart versions;
 - every referenced Secret and required key is present;
-- the gateway control plane validates and its installation-owned files exist;
+- the gateway control plane validates, every upstream declares `health_url`, and its
+  installation-owned files exist;
 - ingress, DNS, certificates, OIDC callbacks, and protected-resource origins agree;
 - required storage classes and capacity exist;
 - required NVIDIA GPU resources and runtime classes are allocatable;
@@ -246,14 +260,16 @@ replace an existing enterprise controller.
 ## GitOps Installation
 
 Provision the organization's controller and its repository credentials outside the
-Veoveo application lifecycle. Then reconcile installation desired state in this order:
+Veoveo application lifecycle. The maintained Flux reference reconciles installation
+desired state in this order:
 
 1. Namespace and installation-owned non-secret resources.
 2. Secret projections and their readiness.
-3. Root application and project boundary.
-4. Veoveo platform child application.
-5. Independently deployed extension child applications.
-6. Installation-owned gateway activation and bindings as declared by the selected
+3. Git source and root Kustomization.
+4. Immutable OCI chart sources.
+5. Veoveo platform HelmRelease.
+6. Independently deployed extension HelmReleases.
+7. Installation-owned gateway activation and bindings as declared by the selected
    configuration layout.
 
 The exact dependency expression belongs to the selected controller. Routine releases
@@ -262,8 +278,25 @@ apply`, direct `helm upgrade`, and GitOps reconciliation as concurrent owners of
 same resources.
 
 Use [Bioma enterprise GitOps reference](../examples/bioma/README.md) as an executable
-Argo CD example while substituting the installation's own origins, identity, secrets,
-capacity, extensions, and acceptance.
+Flux example while substituting the installation's own origins, identity, secrets,
+capacity, extensions, and acceptance. Its typed convergence command observes the exact
+Git artifact, root Kustomization, Helm release inventories, changed Deployments, and
+readiness:
+
+```bash
+cargo xtask smoke gitops-converge \
+  --context <kubernetes-context> \
+  --source <namespace/git-repository> \
+  --root <namespace/root-kustomization> \
+  --release <namespace/platform-helm-release> \
+  --release <namespace/extension-helm-release> \
+  --revision <full-git-revision> \
+  --deployment <namespace/changed-deployment> \
+  --evidence-output <new-evidence-path>
+```
+
+Pass every selected release and every Deployment changed by the rollout. The evidence
+path is create-only.
 
 ## Direct Helm Installation
 
@@ -307,12 +340,14 @@ Helm or controller readiness is necessary but not sufficient. The existing enter
 gate checks:
 
 - controller health and exact desired-state revision;
-- child application sync or Helm release status;
+- Git source and root Kustomization readiness at the same revision;
+- every selected HelmRelease Ready with a non-empty inventory;
 - pod and container readiness;
 - persistent storage attachment;
 - ingress and TLS at the canonical origin;
 - OIDC discovery and an authenticated browser or machine-client flow;
 - MCP capability discovery through the gateway;
+- successful health probes for every hosted-server and Recording upstream;
 - required GPU allocation and hardware execution;
 - domain acceptance for every installed workload.
 
