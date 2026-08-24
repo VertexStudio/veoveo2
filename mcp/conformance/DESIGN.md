@@ -6,12 +6,12 @@
 |---|---|
 | Model Context Protocol | negotiated Streamable HTTP protocol plus the hosted-server requirements selected by a typed profile |
 | JSON-RPC 2.0 | MCP request and response envelopes |
-| JSON Schema 2020-12 | self-contained tool input schemas and generated profile/report schemas |
+| JSON Schema 2020-12 | bounded tool input schemas with same-document references and composition, plus generated profile/report schemas |
 | OAuth 2.0 protected-resource metadata | unauthenticated Bearer rejection checks selected by the profile |
 | `veoveo.io/mcp-conformance-profile/v1` | domain-neutral declaration of applicable hosted-server checks |
 | `veoveo.io/mcp-conformance-report/v1` | machine-readable implementation identity, capabilities, requirement results, and evidence |
 | `veoveo.io/hosted-mcp/v3` | Veoveo hosted-server contract revision for MCP `2026-07-28` |
-| `veoveo.io/live-view/v2` | optional provider-neutral authoritative camera, bounded viewer-product, actor/browser lease, signaling, and redaction profile layered on a domain-owned simulation server |
+| `veoveo.io/live-view/v4` | optional provider-neutral authoritative cameras, typed camera regions in shared encoded products, actor/browser authorization, Annex B H.264 WebSocket fanout, and redaction profile layered on a domain-owned simulation server |
 
 ## Boundary
 
@@ -22,6 +22,11 @@ typed report. The CLI reads and writes the same JSON contracts.
 The crate depends on shared MCP protocol and Veoveo contract infrastructure. It does
 not depend on a domain server, showcase, example, extension implementation, or client
 repository. Domain lifecycle smoke remains with the component that owns the domain.
+
+Tool input schemas retain the ordinary SDK representation. Conformance permits
+same-document references and composition, rejects external references without fetching
+them, and applies per-document limits of 1 MiB, depth 64, 50,000 nodes, 4,096 references,
+and 4,096 composition branches before meta-schema validation.
 
 ## Profile
 
@@ -45,14 +50,14 @@ without that credential.
 
 A simulation profile may require `list_live_cameras`, `open_live_view`,
 `renew_live_view`, and `close_live_view` plus domain-owned camera, product, and
-redacted lease resources. The profile verifies strict schemas, stable physical-slot identity,
-actor and browser-instance isolation, token rotation, credential redaction, typed
-capacity rejection, App declaration, and authenticated signaling. Resource URIs retain
+redacted authorization resources. The profile verifies strict schemas, stable per-camera
+product identity, actor and browser-instance isolation, token rotation, credential
+redaction, App declaration, and authenticated shared-stream admission. Resource URIs retain
 the simulation server's own scheme; conformance never requires a shared renderer URI.
 
 The anonymous external simulation fixture exercises this public contract without
-claiming visual or GPU acceptance. Hardware RTX rendering, one isolated NVENC session
-and native WebRTC peer per active viewer lease, frame freshness, and headed-browser
+claiming visual or GPU acceptance. Hardware RTX rendering, declared tiled-product and
+NVENC topology, exact bitstream fanout, frame freshness, and headed-browser
 playback remain implementation-owned evidence. The first-party UAV simulation
 acceptance supplies that evidence for the NVIDIA runtime.
 

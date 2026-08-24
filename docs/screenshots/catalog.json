@@ -77,7 +77,6 @@
       "rendering": {
         "surface": "embedded Rerun Web Viewer",
         "backend": "WebGPU",
-        "adapter": "NVIDIA Lovelace",
         "theme": "dark",
         "softwareFallbackAllowed": false
       }
@@ -188,6 +187,17 @@
       }
     },
     {
+      "id": "console-agents",
+      "title": "Durable agent conversations",
+      "category": "console",
+      "purpose": "Show registered agents staying addressable across episodes, with actor-attributed conversation, durable message submission, and pending input-request decisions.",
+      "output": "gallery/console-agents.png",
+      "captureMode": "console",
+      "recipe": "agents",
+      "requires": ["authenticated-console", "registered-agents"],
+      "redaction": "identity"
+    },
+    {
       "id": "console-access",
       "title": "Work Context access",
       "category": "governance",
@@ -267,7 +277,6 @@
       "rendering": {
         "surface": "full-screen governed Rerun Web Viewer",
         "backend": "WebGPU",
-        "adapter": "NVIDIA Lovelace",
         "theme": "dark",
         "softwareFallbackAllowed": false
       }
@@ -285,7 +294,6 @@
       "rendering": {
         "surface": "Rerun Web Viewer",
         "backend": "WebGPU",
-        "adapter": "NVIDIA Lovelace",
         "theme": "dark",
         "softwareFallbackAllowed": false
       }

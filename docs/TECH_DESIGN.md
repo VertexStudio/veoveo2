@@ -38,6 +38,18 @@ The gateway discovers these surfaces from upstream servers and projects them int
 profile. It prefixes tool names only at the aggregation boundary, for example local
 `run` becomes `media__run`. Resource URIs keep their owning scheme.
 
+Discovery failure has a profile-selected mode. The default isolates the failing
+server: it drops out of the aggregated projection and typed degradation metadata
+reports the gap. A profile may instead declare `fail_closed` discovery, where any
+unavailable hosted server fails the whole tool list, so an autonomous client can
+never retain a silently incomplete toolset.
+
+Each catalog entry declares two typed upstream URLs: the MCP endpoint and a
+required health endpoint. The gateway probes `health_url` with an unauthenticated
+GET and treats only a success status as healthy; it never reads an MCP request, an
+authentication failure, or a method rejection as a health signal. Health state
+feeds the Console without entering discovery for failure-isolating profiles.
+
 ### Tool input schemas
 
 The canonical schema profile is normative in
@@ -190,7 +202,8 @@ to the frame.
 
 ## Durable Platform Store
 
-SurrealDB `3.2.3` is the only platform coordination store. The canonical release uses
+SurrealDB `3.2.3` is the only platform coordination store; the Rust client pins the
+compatible `3.2.4` release. The canonical release uses
 one RocksDB-backed node. Installation bootstrap connects at root scope, applies ordered
 migrations, creates or rotates the database runtime user, and publishes the initial
 gateway control revision. Long-running services connect at database scope and never run
@@ -452,9 +465,11 @@ that bootstrap succeeds. Every unauthorized response enters one shared, non-retr
 login transition, which prevents parallel API failures from starting competing OAuth
 flows.
 
-The snapshot always includes the signed-in display label. The Console topbar renders it
-directly and keeps the canonical principal id in the account tooltip for operational
-diagnostics.
+The snapshot carries a trusted display name for every principal it projects, with
+authenticated identity metadata taking precedence over the store projection. The
+Console renders those labels across the topbar, access, agents, and artifact views,
+keeps the canonical principal id in tooltips for operational diagnostics, and
+compacts an unresolved principal's identifier rather than inventing a name.
 
 Recording playback remains inside this boundary. The BFF exposes authorized same-origin
 manifest and bounded-live routes, while the gateway evaluates the canonical
@@ -499,6 +514,12 @@ consumed, acknowledges the wakes, and writes the outbox receipt in one SurrealDB
 transaction. Outbox/changefeed events wake the next episode. DuckDB and RRD are
 analytical memory planes; chat history is not the source of truth.
 
+The periodic scheduler heartbeat proves that the durable wake path is alive. A
+heartbeat-only batch is acknowledged under the agent lease without starting an LLM
+episode. Operator messages, task results, resource changes, answered input requests,
+and explicit timers remain actionable wakes; if one coalesces with a heartbeat, the
+batch runs an ordinary bounded episode.
+
 Agent manifests separate the Gateway's canonical public origin from its physical
 HTTP transport origin. OAuth audience and protected-resource identity use the
 canonical origin, while an in-cluster agent may connect through a private service
@@ -517,12 +538,13 @@ bounded text and JSON under episode-local read, family, byte, wall-time, and pag
 limits, and it projects only fixed correction fields for invalid input. Protocol,
 authorization, transport, and storage details do not enter model context.
 
-Authenticated human control stays available through the gateway and Console BFF; the
-agent pod is never an ingress service. An operator message is committed as a
-UUIDv7-idempotent durable wake inside the caller's exact tenant, Work Context, and
-tenant-unique public agent key, so it may arrive while an episode or detached task is
-running. The agent record's profile governs its own MCP tool session; the human caller's
-administrative profile never replaces it during target resolution.
+Authenticated user and service control stays available through the gateway, while the
+Console BFF carries the signed-in browser path; the agent pod is never an ingress
+service. Every caller must pass the selected profile's action policy. An operator
+message is committed as a UUIDv7-idempotent durable wake inside the caller's exact
+tenant, Work Context, and tenant-unique public agent key, so it may arrive while an
+episode or detached task is running. The agent record's profile governs its own MCP tool
+session; the caller's administrative profile never replaces it during target resolution.
 Console snapshots and change events identify that target by its tenant-scoped symbolic
 `agent_key`, which is the same identifier accepted by every control route; internal
 SurrealDB record keys never become public control identities. The snapshot also carries

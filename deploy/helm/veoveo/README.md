@@ -66,28 +66,28 @@ host-limited token and server-side recording session protect the route; the
 general Rerun catalog and mutation methods are unavailable.
 
 Simulation live views belong to each simulation application's release. The
-application owns one authoritative simulator GPU, its logical cameras, bounded physical
-viewer slots, isolated Hydra/NVENC/WebRTC products, signaling proxy, media ports, cache,
+application owns one authoritative simulator GPU, its logical cameras, continuous
+camera-owned Hydra/NVENC products, authenticated H.264 WebSocket fan-out, cache,
 and MCP App. The platform chart does not
 install a shared renderer, pose ingress, mirror cache, or reconciliation controller.
-Viewer leases remain ephemeral in the domain server. A simulator restart recreates its
-configured logical cameras and preallocated viewer slots through ordinary runtime startup,
-and browsers open fresh
-leases.
+Viewer authorizations remain ephemeral in the domain server. A simulator restart
+recreates its configured logical cameras and continuous products through ordinary runtime
+startup, and browsers open fresh authorizations.
 
 A deployment profile may bind an application-owned GPU container to a named DRA
 request. The allocator supplies the selected UUID; no chart may set
 `NVIDIA_VISIBLE_DEVICES`. Required driver capabilities remain explicit. Use
 `gpu-allocation-verify` to prove exclusive device-plugin isolation, and use the
-application's hardware acceptance to prove isolated per-viewer RTX, NVENC, and native
-WebRTC products.
+application's hardware acceptance to prove shared camera RTX/NVENC products and browser
+H.264 delivery.
 
-Every MCP workload has one active pod and uses `Recreate`. This includes the
-gateway MCP endpoint, domain servers, GPU servers, and the stdio bridge that
-owns its child process. The chart does not expose replica or rollout controls
-for those workloads. Sessions, subscriptions, notifications, and task links
-remain attached to one process. Artifact byte delivery and the Console BFF are
-outside the MCP boundary and keep independent replica settings.
+Every hosted MCP server workload has one active pod and uses `Recreate`. This
+includes domain servers, GPU servers, and the stdio bridge that owns its child
+process. The gateway can run multiple replicas because its durable authority
+lives in the platform store. Its Service uses client-IP affinity because each
+active MCP transport, subscription, and notification stream remains attached to
+one gateway process. Artifact byte delivery and the Console BFF are outside the
+MCP boundary and keep independent replica settings.
 
 `duckdb-mcp` has a persistent `ReadWriteOnce` workspace. It provides
 owner-scoped mutable analytical databases and arbitrary sandboxed SQL, so it

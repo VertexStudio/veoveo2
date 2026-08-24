@@ -11,11 +11,13 @@ const LARGE_ARTIFACT_ROWS: u64 = 200_000;
 const LARGE_ARTIFACT_MINIMUM_BYTES: usize = 8 * 1024 * 1024;
 const OPERATOR_PROFILE_SCOPES: &[&str] = &[
     "operator:use",
+    "uav-sim:control",
     "uav-sim:stream",
     "view:read",
     "view:write",
     "view:capture",
     "map:dataset:read",
+    "map:route",
     "time:read",
 ];
 const BIOMA_DEPLOYMENTS: &[&str] = &[

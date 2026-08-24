@@ -49,7 +49,13 @@ mod tests {
     #[test]
     fn preview_app_speaks_the_bridge_protocol() {
         let html = preview_app_html();
-        for needle in ["ui/initialize", "tools/call", "resources/read", "tasks/get"] {
+        for needle in [
+            "ui/initialize",
+            "tools/call",
+            "resources/read",
+            "tasks/get",
+            "applyHostContext(initialized && initialized.hostContext)",
+        ] {
             assert!(html.contains(needle), "app must contain {needle}");
         }
     }
@@ -100,6 +106,18 @@ mod tests {
             "view://layers",
             "create_scene_composition",
             "scene_time",
+        ] {
+            assert!(html.contains(needle), "app must contain {needle}");
+        }
+    }
+
+    #[test]
+    fn preview_app_hydrates_and_reuses_initial_compositions() {
+        let html = preview_app_html();
+        for needle in [
+            "app.composition = record",
+            "composition ready",
+            "app.composition.base_layer === selectedLayer",
         ] {
             assert!(html.contains(needle), "app must contain {needle}");
         }

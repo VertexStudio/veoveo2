@@ -27,20 +27,27 @@ complies with in its crate documents and in its contract resource.
 | `veoveo.io/gateway-server-fragment/v1` | extension-owned server capabilities and platform requirements |
 | `veoveo.io/gateway-binding/v1` | installation-owned exposure, policy, artifact audience, and recording producer declarations |
 | `veoveo.io/gateway-composition-provenance/v1` | exact input/output SHA-256 identities and contributed-object summaries |
-| `veoveo.io/live-view/v2` | provider-neutral authoritative camera descriptions, bounded viewer-product slots, actor-and-browser viewer leases, hardware encode identity, endpoint metadata, capacity, and redacted connection tokens |
+| `veoveo.io/live-view/v4` | provider-neutral authoritative camera descriptions, typed camera regions in shared encoded products, actor-and-browser authorizations, hardware encode identity, WebSocket H.264 endpoints, and redacted connection tokens |
 | `io.veoveo/app-resource-dependencies` | deterministic gateway projection of exact cross-server App resource-read requirements admitted under active profile and actor authority |
+
+Each hosted server manifest declares separate typed upstream URLs for MCP and
+health traffic. The health URL is an unauthenticated HTTP `GET` endpoint whose
+successful response means the process can serve traffic. The gateway never
+uses an MCP request, an authentication failure, or a method rejection as a
+health signal.
 
 ## Live View Extension
 
 The live-view extension describes cameras rendered by the authoritative domain
-runtime. A simulation server owns its shared logical camera rigs and a bounded pool
-of physical viewer-product slots. Each viewer lease identifies both the gateway actor
-and browser instance and reserves one isolated render, encode, and WebRTC product.
-Viewer leases remain ephemeral and never become renderer desired state.
+runtime. A simulation server owns its logical camera rigs and persistent stream
+products whose typed regions map one or more cameras into encoded frames. A live-view
+authorization identifies the gateway
+actor and browser instance, but it never allocates rendering or encoding state. Any
+number of authorized viewers may consume the same encoded product within the host's
+ordinary network and process limits.
 
 The shared types define camera poses, optics, smoothing, health, stream policy,
-physical product slots, NVIDIA NVENC metadata, signaling endpoints, and separate
-capacity accounting for cameras and viewers. Product state reports a bounded
+typed product regions, NVIDIA NVENC metadata, and WebSocket H.264 endpoints. Product state reports a bounded
 authoritative-source-to-render sample count and p95 in integer microseconds; the
 implementation defines the exact source and render events that bracket that measurement.
 Domain-owned resource URIs use the
@@ -55,10 +62,13 @@ deployed extension whose gateway entry joins an installation's catalog.
 Checks are generic over a discovered catalog and never enumerate servers by
 hand:
 
-- In the repository, a server is any cargo workspace member under `servers/`
-  whose crate name ends in `-mcp`.
+- In the repository, a server is any directory under `servers/` whose name
+  ends in `-mcp`, regardless of implementation language.
 - Against an installation, the server set is the gateway control-plane
   catalog.
+- Transport-invariant checks additionally name the known MCP endpoints that
+  live outside `servers/`: the gateway itself, the bridges, and showcase
+  extensions such as `showcase/sumo/sumo-mcp`.
 
 Adding a server means the checks find it. No conformance manifest, Console
 page, or documentation index requires editing when a server is added.
@@ -122,6 +132,14 @@ same typed models, policy checks, audit paths, task state, artifact
 identities, and resource URIs. Hidden fallbacks, alternate completion paths,
 unaudited content URLs, and second sources of truth are prohibited.
 
+The gateway records authorization and execution as separate audit facts. A
+policy event reports whether `tools/call` was admitted. After an admitted call
+returns, a tool-call event reports `succeeded` or `failed`, the bounded result
+kind, duration, and the JSON-RPC error code when the failure crossed that
+boundary. It never records tool arguments, provider payloads, credentials, or
+an upstream error message. Both records carry the same trace identity, which
+keeps policy admission distinct from domain or protocol completion.
+
 Every tool declares its exact MCP task support as `required`, `optional`, or
 `forbidden`. A full-MCP client receives that declaration unchanged. A
 `tools_compat` registration may explicitly enable the direct task-call
@@ -164,14 +182,17 @@ Capability declarations name the exact signal a server can produce.
 `tools.listChanged`, `prompts.listChanged`, and `resources.listChanged` are
 independent claims. The gateway merges and forwards only the declared claims.
 
-Federated list discovery isolates an unavailable hosted server. The gateway
-returns authorized results from healthy servers and attaches a typed
+Federated list discovery isolates an unavailable hosted server by default. The
+gateway returns authorized results from healthy servers and attaches a typed
 `veoveo.io/gateway-discovery-degradation` result metadata document naming only
-the server, surface, and bounded failure code. Successful per-server results
-are cached for the exact catalog generation and invocation authority. A failed
-server is never cached. Its next explicit list request retries discovery, while
-the matching MCP `listChanged` notification invalidates successful cache state
-without polling. Direct resource reads and tool calls remain fail closed.
+the server, surface, and bounded failure code. A profile whose work requires a
+complete tool catalog sets `discovery_failure_mode` to `fail_closed`; its tool
+list fails until every exposed server is reachable, which prevents an autonomous
+client from retaining a silently incomplete toolset. Successful per-server
+results are cached for the exact catalog generation and invocation authority. A
+failed server is never cached. Its next explicit list request retries discovery,
+while the matching MCP `listChanged` notification invalidates successful cache
+state without polling. Direct resource reads and tool calls remain fail closed.
 
 ## Schemas And Types
 

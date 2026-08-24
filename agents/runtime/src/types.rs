@@ -93,6 +93,19 @@ pub struct ClaimedWake {
     pub attempts: i64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WakeAckReason {
+    NoActionableChange,
+}
+
+impl WakeAckReason {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NoActionableChange => "no_actionable_change",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EpisodeHandle {
     pub episode_id: AgentEpisodeId,
@@ -136,6 +149,7 @@ pub struct ClaimedAgentTask {
 pub struct AgentTaskResult {
     pub task_id: CanonicalTaskId,
     pub tool_name: String,
+    pub started_by_episode: AgentEpisodeId,
     pub result: OpenObject,
     pub is_error: bool,
 }

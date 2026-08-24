@@ -24,7 +24,7 @@ boundary is the compatibility profile and immutable image digest.
 
 ## Compatibility Release
 
-`2026.07.0` selects one tuple:
+`2026.08.0` selects one tuple:
 
 | Component | Selected identity |
 |---|---|
@@ -32,20 +32,30 @@ boundary is the compatibility profile and immutable image digest.
 | Kit | `110.1.2` |
 | Python | CPython 3.12 |
 | Isaac Lab | tag `v3.0.0-beta2.patch1`, revision `ffff603eafc6b74264a5261cc0183d6a65390d78` |
-| Warp | `1.15.0`, revision `ffa038b1adf3927a8e893d4536f1a7562f17d749` |
-| Newton | `1.4.0`, revision `0597c719e345b4457bf698ca24faad3fd418452d` |
-| MuJoCo | `3.10.0`, revision `28009f9105cd92784b7b0b30c0605a5e29107a77` |
-| MuJoCo Warp | `3.10.0.3`, revision `710c34ca96745a44bfb701cdbda89e1434845728` |
+| Warp | `1.16.0`, revision `86ec8b78cbef8bb570a9877e351ac0f365718e30` |
+| Newton | `1.5.0`, revision `cca3bb8a17a3620a1343df3cf12c625e4161b317` |
+| MuJoCo | `3.11.0`, revision `b85fdca54f0e0038b804af146a0b4e94199e00d0` |
+| MuJoCo Warp | `3.11.0`, revision `dbc52e3ea69a63e14026e969cb055e0c3c2f0c83` |
 | Torch | `2.12.0+cu130` |
 | Isaac RTX NVRTC builtins | `12.8.61`, retained from the pinned Isaac Sim image |
 | NVIDIA AOV live stream | `10.2.0+110.1.2.lx64.r.cp312` |
-| NVIDIA WebRTC live stream | `10.3.2+110.0.0.lx64.r.cp312` from Isaac Sim |
+| NVIDIA RTSP live stream | `10.2.0+110.1.2.lx64.r.cp312` from Isaac Sim |
 
 Isaac Lab `v3.0.0-beta2.patch1` is a deliberate pre-release dependency. It is
 the latest published release with explicit Isaac Sim 6.0.1 support, and no stable
-Isaac Lab 3.0 release exists. Veoveo qualifies its source revision with the newer
-stable Warp 1.15.0 and Newton 1.4.0 tuple rather than inheriting Isaac Lab's older
-declared pair.
+Isaac Lab 3.0 release exists. Veoveo qualifies its source revision with Warp 1.16.0,
+Newton 1.5.0, and Newton's required MuJoCo 3.11 line. A narrow source patch replaces
+Newton's removed `SolverNotifyFlags` import with `ModelFlags`; the build rejects the
+old import after applying that patch. The image also removes Isaac Sim's obsolete
+`ls_parallel` MuJoCo solver field because Newton 1.5 no longer accepts that constructor
+argument. The live Isaac adapter therefore initializes the pinned GPU solver without
+retaining the removed configuration surface. A second pinned patch routes
+`SimulationManager` tensor views through Newton's native tensor factory. Isaac Sim
+6.0.1 otherwise asks the legacy tensor plugin for an unregistered `newton` backend.
+Applications enable `isaacsim.physics.newton` in Kit's initial arguments and set
+`SimulationManager`'s default engine to `newton`. Newton registration therefore exists
+before any physics-backed application state is created; a later engine assertion fails
+closed if Kit did not retain that selection.
 
 The supported Isaac Lab surface contains the core, PhysX, Newton, OV, OVPhysX,
 camera-render specification, and frame-view packages. Training environments, policy
@@ -99,17 +109,17 @@ Isaac Sim driver `595.58.03`.
 
 A domain simulator overlay renders operator cameras inside the same authoritative Isaac
 process that owns physics and the USD/Cesium world. Logical cameras own the final
-authoritative poses. A bounded preallocated viewer slot copies one selected pose into an
-isolated camera clone and activates one RTX render product, NVENC H.264 encode, and native
-WebRTC peer. Viewer count never creates another scene or Cesium consumer, but each admitted
-viewer deliberately consumes one measured render-and-encode slot.
+authoritative poses. Each streamable camera owns one continuous camera, RTX render product,
+and NVENC H.264 encode. Every authorized viewer receives the exact same camera bitstream
+through WebSocket fanout. Viewer count creates no camera, scene, Cesium consumer, render
+product, or encoder session.
 
 Operator-camera smoothing consumes the current authoritative entity transform on every
 render tick and changes only the camera pose. It never buffers, interpolates, or delays
 simulation state. Physical sensor capture retains its own declared cadence and exact
 mount, independent of the operator-camera cadence. The reusable base supplies GPU,
-camera, RTX, and NVENC compatibility; camera rigs, product admission, governance, and
-signaling remain the domain overlay's responsibility.
+camera, RTX, and NVENC compatibility; camera rigs, stream authorization, governance,
+and fanout remain the domain overlay's responsibility.
 
 ## Build And Publication
 
@@ -140,7 +150,10 @@ acceptance.
 - CUDA driver initialization and a visible hardware device;
 - the NVENC API version and session entrypoint;
 - Torch and Warp kernels on `cuda:0`;
-- Newton `SensorTiledCamera` output resident on `cuda:0`;
+- a Newton `SolverMuJoCo` rigid-body step and `SensorTiledCamera` output on `cuda:0`;
+- `SimulationManager` initialization, a playing externally stepped Newton timeline, and
+  an Experimental `RigidPrim` that rises under a CUDA-resident applied force through
+  Newton's native tensor view;
 - one authoritative Torch, Warp, Newton, and Isaac Lab module graph after Kit startup;
 - a CUDA-resident Isaac Lab RTX RGB batch with nonblank, distinct cameras.
 

@@ -12,7 +12,7 @@
 | Rerun 0.36.0 RRD | bounded live history and governed archive playback |
 | `veoveo.io/image-affected-plan/v1` | repository-owned affected-surface closure |
 | `veoveo.io/development-image-lock/v1` | repository-owned non-release deployment closure |
-| `veoveo.io/gitops-convergence-evidence/v1` | repository-owned exact-revision fetch, render, apply, rollout, and readiness evidence |
+| `veoveo.io/gitops-convergence-evidence/v2` | repository-owned exact Flux source revision, root apply, Helm inventory, rollout, and readiness evidence |
 | `veoveo.io/uav-live-view-browser-evidence/v8` | focused authoritative-camera pixels, event-derived source-to-render and motion-to-photon p95, cadence, isolated-viewer products, sensor separation, and simulation real-time-factor evidence over a running simulation |
 | `veoveo.io/uav-recording-browser-evidence/v2` | source-clock and camera-pane evidence for one live governed recording |
 
@@ -90,29 +90,26 @@ cargo xtask smoke profile-gpu-verify --profile <profile.json>
 These commands compile `veoveo-deployment-smoke`, not the broad protocol and visual
 smoke graph.
 
-Observe a GitOps rollout with the same focused harness. The parent revision is the
-commit rendered by the root Application. The configuration revision is the earlier
-immutable commit selected by each child source, since a commit cannot select itself.
+Observe a GitOps rollout with the same focused harness. The expected revision is the
+complete Git object fetched by the source and applied by the root Kustomization.
 
 ```bash
 cargo xtask smoke gitops-converge \
   --context <kubernetes-context> \
-  --control-namespace <gitops-namespace> \
-  --parent <root-application> \
-  --child <platform-application> \
-  --child <extension-application> \
-  --source-ref configuration \
-  --parent-revision <full-parent-commit> \
-  --configuration-revision <full-configuration-commit> \
+  --source <namespace/git-source> \
+  --root <namespace/root-kustomization> \
+  --release <namespace/platform-helm-release> \
+  --release <namespace/extension-helm-release> \
+  --revision <full-git-commit> \
   --deployment <namespace/platform-deployment> \
   --deployment <namespace/extension-deployment> \
   --evidence-output output/development/gitops-convergence.json
 ```
 
-The command requests hard refreshes, then consumes Kubernetes watch events. It does not
-sleep between status reads. Parent fetch, child render, controller apply, Deployment
-rollout, and readiness retain separate elapsed times. A timeout writes failed evidence
-for the exact phase that did not converge.
+The command requests reconciliation, then consumes Kubernetes watch events. It does
+not sleep between status reads. Source fetch, desired-state apply, Helm release,
+Deployment rollout, and readiness retain separate elapsed times. A timeout writes
+failed evidence for the exact phase that did not converge.
 
 ## Acceptance Checkpoints
 
@@ -173,7 +170,7 @@ should not infer producer health from browser latency.
 | Hub authenticated ingest | accepted batches, messages, and bytes; duplicate batches; materialization backlog batches and bytes; last successful append |
 | Hub materialization | opened/frozen segments, quarantine, Blueprint publication and rejection |
 | Live Recording playback | current live segment bytes, bounded history seconds, video preroll seconds, canceled and failed browser requests |
-| Authoritative live view | logical-camera revision, encoded-product identity, hardware encoder, frame age, connected viewer leases, capacity denials |
+| Authoritative live view | logical-camera revision, shared encoded-product identity, hardware encoder, frame age, connected viewers, stream-delivery failures |
 | Browser | hardware adapter, video advance, decode identity, Rerun network mode, request cancellation, screenshot digest |
 
 The forwarder uploader is event-driven. Durable enqueue wakes it immediately, and a
@@ -182,12 +179,10 @@ retain bounded exponential backoff because no local event can make the remote en
 healthy.
 
 Authoritative live view is event-driven. A logical-camera mutation activates or replaces
-one simulator-hosted camera definition. A viewer operation atomically assigns one
-preallocated native viewer slot to that logical camera and browser instance. The slot
-owns its camera clone, RTX render product, NVENC session, WebRTC endpoint, and exact
-release lifecycle. Product state changes and WebRTC signaling wake their consumers
-directly. No controller polls or replays a healthy simulator, camera, product, or
-browser lease.
+one simulator-hosted camera definition and continuous RTX/NVENC product. A viewer
+operation authorizes one browser instance to consume that camera's exact H.264 access
+units. Product state and WebSocket delivery wake their consumers directly. No controller
+polls or replays a healthy simulator, camera, product, or browser authorization.
 
 Recording live playback watches filesystem changes and transmits only static context,
 one live-profile-compacted recent-history bootstrap, and newly durable data. It does not
@@ -218,7 +213,7 @@ than a general request to make builds faster.
 | Selected Rust build closure | image planner and Rust builder families | a selected target builds only its declared package and binary instead of every member of the compatible family | current plans for Console BFF, Map MCP, and UAV MCP each contain one package and one binary and resolve in 3.24-4.49 s |
 | UAV dependency boundary | UAV image graph | pinned simulator, PX4, Cesium, native, and Python payload work lives in `uav-sim-dependencies`; runtime source is a thin overlay | the runtime plan selects the dependency and runtime Bake targets without introducing a Rust build unit |
 | Long-running build visibility | BuildKit evidence adapter | bounded phase and vertex transitions stream while Bake runs; the complete machine event trace remains in immutable evidence | formatter and image-orchestration tests cover progress reduction and bounded emission |
-| Deterministic GitOps convergence | focused deployment harness | the harness requests hard refresh, consumes Kubernetes watch events, verifies exact parent and configuration commits, then attributes render, apply, rollout, and readiness time | a healthy fixture converged in under one second; an unavailable application wrote failed rollout evidence instead of hiding the phase |
+| Deterministic GitOps convergence | focused deployment harness | the harness requests Flux reconciliation, consumes Kubernetes watch events, verifies the exact source and applied revision plus populated Helm inventories, then attributes fetch, apply, release, rollout, and readiness time | typed unit tests reject stale generations, wrong revisions, and empty inventories; failed phases still produce create-only evidence |
 | Recording ingress visibility | Recording Hub | the authenticated ingest path exposes accepted traffic, duplicates, materialization backlog, and last-success state without logging identities or secrets | all 32 Hub unit tests, five spool integration tests, and strict Clippy pass; the focused diagnostics test completes in 4.11 s |
 
 ### Active Follow-Ups Worth Fixing Next
@@ -337,7 +332,7 @@ useful when a similar boundary regresses:
 | Separate reverse-dependent stages repeat overlapping optimized Rust compilation | about 40 s per cold target cache | execute one exact multi-target Bake stage and emit per-target evidence from the shared invocation |
 | Image staging accepts a cluster-internal registry authority that the host BuildKit worker cannot reach and infers TLS from its non-loopback name | 6 min 55 s of simulator and Rust compilation completed before the first push request failed against the unreachable host port | model build/push and cluster-pull registry authorities with an explicit transport, validate the push endpoint before starting Bake, and preserve the same cache identity across those aliases |
 | Recording Hub periodic counters describe its local proxy but not authenticated forwarder ingest | healthy uploads required durable-queue inspection while Hub counters remained zero | expose accepted-message, accepted-byte, backlog, and last-success counters at authenticated ingest |
-| Full UAV acceptance sent an already-looping vehicle back toward one fixed low-speed waypoint | 1,223.52 s ended at the 20-minute task-token boundary because the fleet had moved far from the fixture origin | derive one nearby bounded maneuver from the current authorized pose, preserve its current authorized altitude, and cap that task at 120 s; observed under source revision `ee4ace35fc8e055b72134902f3948fd2522f6e8c` in the full UAV gate |
+| Full UAV acceptance sent an already-looping vehicle back toward one fixed low-speed waypoint | 1,223.52 s ended at the 20-minute task-token boundary because the fleet had moved far from the fixture origin | derive one nearby maneuver from the current authorized pose, preserve its authorized altitude, fly at the governed profile's 20 m/s cruise speed, and derive a bounded deadline from the returned Map cost; observed under source revision `ee4ace35fc8e055b72134902f3948fd2522f6e8c` in the full UAV gate |
 | Warm `showcase-uav-sim` group staging still rewrites and pushes most of the image lineage | 145.530 s total; BuildKit 143.168 s, provenance 139.423 s, timestamp normalization 139.614 s, export 140.680 s, and push 111.351 s; only 35 of 69 vertices were cached | preserve normalized parent layers across source-only overlays and emit a byte/layer breakdown for the export and push tail; measured by the canonical `image stage` command for revision `da70aa968b9a8017d25cefac88cb53c9b90df936`, with phase evidence in `target/veoveo-xtask/evidence/da70aa968b9a8017d25cefac88cb53c9b90df936/stage-group-showcase-uav-sim-1786132506798538397-3968604/run.json` |
 | Focused composed browser acceptance assumed that Stream already owned a processing session after a simulator rollout | 180 s spent waiting for a session while the loaded App already exposed an admitted pipeline and `Start live session` action | start one admitted pipeline immediately when no session exists, leave an existing session untouched, and emit partial evidence before a later checkpoint fails; observed with `cargo xtask smoke uav-showcase-browser-verify --public-base-url https://installation.example --chrome-cdp-url http://127.0.0.1:9222` under source revision `82aff1c37124624b37c10241683c74c36786cac9` |
 | Task acceptance repeatedly creates short MCP clients and token exchanges while waiting for one task | repeated closed-listener warnings and avoidable request latency | retain one authorized task listener for the acceptance run |
@@ -357,7 +352,6 @@ useful when a similar boundary regresses:
 | Two fresh viewer windows start independent PKCE flows against one shared pending-authorization cookie | the first two-window retry reached the corrected OAuth scope set, then one callback failed when the concurrent login overwrote its pending state | establish one authenticated Console session before opening actor- and browser-instance-scoped viewer windows |
 | Viewer assignment returns before the native AOV signaling listener accepts connections | slot 0 succeeded after a prior preflight had warmed it, while the first slot 1 connection reached its assigned product and failed with a pod-local connection refusal | complete assignment only after render-frame and native-listener readiness events; return the slot immediately when bounded activation fails |
 | One failed viewer can strand its peer at an unbounded synchronization barrier | the failed slot 1 run held the healthy slot 0 window until the outer acceptance timeout and left cleanup to cancellation | bound the simultaneous-video barrier independently and close both dedicated targets through the ordinary release path |
-| The parent GitOps application waits for its repository refresh interval before advancing immutable child revisions | a pushed configuration correction left the child revision unchanged for more than 30 s; an explicit hard refresh advanced it on the next 5 s observation | expose a source-controlled deployment wait command that requests refresh and reports parent fetch, child render, apply, rollout, and readiness phases separately |
 | `image stage` reconciles the managed BuildKit worker before validating the requested immutable Git revision | an invalid revision spent 10.9 s inspecting and reconciling an already-ready builder before returning `Needed a single revision` | resolve the source revision and verify cleanliness before acquiring or inspecting the builder; observed while staging `uav-sim-mcp` at missing revision `104b4360d8e2a6ac703f848daf518708b27431f0` |
 | The live-view cadence gate used one fixed two-second sleep beginning at decoder startup | the first dual-view run measured 43 frames in 2.011 s, reported 21.39 fps, and ended the composed acceptance before steady-state sampling | warm on 12 `requestVideoFrameCallback` events, then measure 48 presented-frame intervals reactively; retain the declared-rate and dropped-frame gates without a polling timer |
 | The focused browser run validated unrelated visual consumers after live-view correctness | a 195.49 s run completed two simultaneous viewers, four additional cameras, Stream, and Recording before rejecting a 0.9795 simulation real-time factor; the late failure wrote no manifest and exceeded the three-minute warm budget by 15.49 s | keep native live-view acceptance independent, retain Recording in its dedicated command, and leave Stream verification with its owning server |

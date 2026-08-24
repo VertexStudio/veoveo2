@@ -23,6 +23,7 @@ their installation-owned containment boundary.
 | [`veoveo.io/gateway-binding/v1`](../mcp/composer/DESIGN.md) | Installation-owned capability exposure, authorization policy, tenant binding, artifact audiences, and data-label requirements. |
 | [Work Context governance](WORK_CONTEXT_GOVERNANCE.md) | Durable invocation authority, output ownership, membership, classification, data labels, and retained provenance. |
 | OCI, Helm, Kubernetes, and [`veoveo.io/deployment-lock/v6`](ENTERPRISE_DEPLOYMENT.md) | Digest-addressed software, installation-owned desired state, and immutable evidence for the selected runtime closure. |
+| [NVIDIA agent-stack security guidance](https://developer.nvidia.com/blog/where-security-fits-in-an-ai-agent-stack) | Independent corroboration of the boundary placement this harness enforces, and the lens for the open work recorded under Industry Alignment. |
 
 ## Security Objective
 
@@ -83,8 +84,8 @@ installation procedure cannot replace a missing product enforcement point.
 | System boundary | Publish component, trust, data-flow, and external-service boundaries. Expose the selected runtime graph through typed deployment material. | Identify the cluster, networks, providers, users, data stores, physical systems, and administrators inside the authorization boundary. | Approved boundary diagram and asset inventory match the rendered release. |
 | Mission owner | Retain Work Context ownership and invocation provenance with durable work. | Assign a named business owner who accepts the purpose, operating envelope, and consequences of autonomous action. | Owner approval names the exact agent and Work Context. |
 | Risk classification | Provide scopes, action targets, data labels, assurance requirements, and policy decisions. | Classify use cases by safety, privacy, security, financial, legal, and operational consequence. | Risk register maps each consequence to a preventive or recovery control. |
-| Action inventory | Make every callable tool, resource, task mode, and external dependency discoverable from the active catalog. | Review the resolved catalog and prohibit capabilities not required by the mission. | Catalog diff and approved allowlist contain no unexplained surface. |
-| Human authority | Support durable input requests, access review, administrative policy, and durable task cancellation through governed paths. | Define actions that carry standing autonomous authority and actions that require a distinct external authorization, including its owner and lifetime. | Positive and negative authorization tests exercise consequential actions while unrelated autonomous work continues. |
+| Action inventory | Make every callable tool, resource, task mode, and external dependency discoverable from the active catalog, and let a profile select fail-closed discovery so an autonomous client never retains a silently incomplete toolset. | Review the resolved catalog, prohibit capabilities not required by the mission, and choose the discovery failure mode each profile tolerates. | Catalog diff and approved allowlist contain no unexplained surface; a fail-closed profile refuses discovery when any hosted server is unavailable. |
+| Human authority | Support durable input requests, access review, administrative policy, and durable task cancellation through governed paths, with every agent-control action passing the selected profile's action policy. | Define actions that carry standing autonomous authority and actions that require a distinct external authorization, including its owner and lifetime, and decide which user and service principals policy admits to agent control. | Positive and negative authorization tests exercise consequential actions while unrelated autonomous work continues. |
 | Separation of duties | Keep release publication, installation policy, runtime identity, and audit projection as distinct responsibilities. | Separate policy approval, secret custody, release promotion, incident response, and audit review where risk requires it. | Access review proves no unauthorized single principal controls every layer. |
 | Exception control | Fail closed when required claims, policies, dependencies, or hardware are absent. | Time-bound every exception, identify its owner, record compensating controls, and remove it at expiry. | Exception register is empty or every entry is current and tested. |
 | Containment objective | Keep authority, data, network, compute, spend, and side effects bounded outside model reasoning. | Define the installation boundary, the impact allowed inside it, and the response for any attempted escape. | Red-team evidence covers every identified path across the boundary. |
@@ -140,7 +141,7 @@ installation procedure cannot replace a missing product enforcement point.
 | Wake routing | Persist, deduplicate, coalesce, lease, and consume wakes through the durable runtime. Restore every manifest-declared MCP resource subscription before a replacement gateway connection becomes active. | Configure wake sources, minimum intervals, and event-to-agent routing. | Duplicate events create one effective episode, stale leases recover once, and token rotation preserves event-driven wakes. |
 | Durable tasks | Detach long work into typed tasks that retain authority, recovery class, progress, cancellation, and result identity. Consume a terminal agent delivery in the same transaction that acknowledges its wake and releases any first-party Task retention pin. | Admit only task recovery semantics acceptable for the mission and capacity plan. | Settlement, wake-claim, and input-answer crash tests recover once without duplicate consumption or retained storage pins. |
 | Retry behavior | Retry only operations whose protocol contract makes the retry safe. Provider completion remains webhook-only. | Configure provider webhook delivery, idempotency identities, and incident handling for missing completion. | Transport failure cannot duplicate a non-idempotent action or introduce provider polling. |
-| Human interaction | Keep actor-attributed operator-message ingress available and persist each UUIDv7-idempotent message as a durable wake without granting it implicit authority. Persist input responses through the same tenant, Work Context, profile, and agent boundary; a late answer wakes a later bounded episode rather than disappearing. | Define response timeout, authenticated responder, approval meaning, and no-response behavior. | Missing responses fail closed; late responses remain durable; automated, cross-context, conflicting-retry, spoofed, and unauthorized responses are rejected while unrelated agent work continues. |
+| Human interaction | Keep actor-attributed operator-message ingress available and persist each UUIDv7-idempotent message as a durable wake without granting it implicit authority. Persist input responses through the same tenant, Work Context, profile, and agent boundary; a late answer wakes a later bounded episode rather than disappearing. | Define response timeout, the authenticated user and service principals that action policy admits as responders, approval meaning, and no-response behavior. | Missing responses fail closed; late responses remain durable; cross-context, conflicting-retry, spoofed, and policy-unauthorized responses are rejected while unrelated agent work continues, and automated responders act only where the installation's action policy admits them. |
 | Model and provider | Keep provider choice in the reviewed manifest and keep provider credentials outside agent-visible context. | Approve model, endpoint, residency, retention, safety configuration, contractual data use, and outage behavior. | Exact model identity is observable; an unapproved endpoint or fallback cannot run. |
 | Prompt and tool injection | Treat model-selected calls as untrusted requests and enforce schemas and policy after selection. | Red-team mission data, retrieved content, tool output, and operator messages for indirect instructions. | Injected content cannot expand scopes, choose another tenant, disclose secrets, or bypass approval. |
 | Memory integrity | Separate durable operational state, analytical memory, and decision evidence with bounded read/write tools. | Define trusted memory sources, correction authority, retention, and poisoning review. | One agent cannot alter another agent's memory; hostile memory remains unable to change authority. |
@@ -173,7 +174,7 @@ installation procedure cannot replace a missing product enforcement point.
 | Vulnerability management | Keep dependencies current when touched and publish fixed releases through the same immutable path. | Scan artifacts and nodes, monitor advisories, define severity SLAs, patch the cluster, and execute emergency promotion. | No unaccepted finding exceeds the installation's threshold or SLA. |
 | Extension release | Publish conformance tooling and typed contracts for independently owned servers. | Require extension image, chart, fragment, compatibility selection, conformance report, domain smoke, and provenance. | A clean external release passes composition, render, conformance, and least-privilege review. |
 | Configuration integrity | Validate gateway control data, server bootstrap documents, Helm values, and deterministic composition inputs. | Keep desired state in reviewed Git, separate secret bytes, and protect reconciliation credentials. | Drift is reconciled or alerted; an unreviewed policy change cannot reach the cluster. |
-| Readiness and health | Fail readiness when mandatory dependencies, GPU paths, storage, trust material, or protocol contracts are unavailable. | Configure disruption, capacity, maintenance, and escalation around declared singleton and RWO boundaries. | Dependency-loss drills remove the workload from service without selecting an unsafe fallback. |
+| Readiness and health | Fail readiness when mandatory dependencies, GPU paths, storage, trust material, or protocol contracts are unavailable. Probe every hosted server through its declared health endpoint; never read an MCP request, an authentication failure, or a method rejection as a health signal. | Configure disruption, capacity, maintenance, and escalation around declared singleton and RWO boundaries. | Dependency-loss drills remove the workload from service without selecting an unsafe fallback; a degraded hosted server surfaces in the Console without poisoning discovery for isolating profiles. |
 | Audit export | Emit identity-attributed policy, task, artifact, agent, and administration evidence. | Operate the SIEM or WORM sink, alerts, retention, access review, and time synchronization. | End-to-end audit export preserves identity, order, timestamp quality, and tamper controls. |
 | Usage monitoring | Attribute provider and capability usage to principals and operations. | Set thresholds for spend, call volume, data volume, denial spikes, and unusual destinations. | Alerts fire during a controlled anomaly and identify the containment owner. |
 | Clock quality | Provide Time MCP clock assessment and retain timestamps on durable evidence. | Operate approved time synchronization and define maximum offset and uncertainty. | Clock-loss or excessive-offset tests block time-sensitive acceptance. |
@@ -229,6 +230,44 @@ Fresh containment proof is produced after any change to:
 Routine credential rotation does not require a complete functional recertification when
 the key purpose and trust contract are unchanged, but rotation tests and evidence must
 pass before the old credential is retired.
+
+## Industry Alignment
+
+NVIDIA's [agent-stack security guidance](https://developer.nvidia.com/blog/where-security-fits-in-an-ai-agent-stack)
+reaches the boundary this harness already enforces: "The harness guides what an
+agent tries. The infrastructure controls what an agent can do. Both are
+necessary; only one is authoritative." The guidance's first design rule,
+"above proposes; below decides," is the construction of properties 1 and 2 in
+the security objective. Model-selected calls are untrusted requests, and
+schema, policy, budget, and audit enforcement applies after selection, below
+every harness.
+
+The guidance directs operators to "treat every component above the boundary as
+untrusted." Veoveo ships no privileged harness for that reason. Any compatible
+MCP host can drive an installation because no harness carries authority of its
+own. The guidance also requires that "every action that changes the external
+state must pass through the policy and enforcement layers below the boundary."
+The gateway is that layer, and this harness extends the rule past files,
+processes, and API calls to physical actuation behind command leases and an
+independent safety controller.
+
+Four items from the guidance sharpen existing open work:
+
+- Immutable audit export. Audit records should survive the installation's own
+  administrators. The WORM export path remains open in the
+  [regulated-work gap analysis](REGULATED_READINESS.md).
+- An owned inference plane. The model endpoint is the one externally operated
+  layer in the reference agent manifest. Local serving on installation GPUs
+  closes it.
+- Risk-tier profile presets. The guidance names isolated, connected,
+  production, and adversarial profiles over one stack. The control plane has
+  the ingredients and should ship the presets, together with an automatic
+  quarantine action that freezes a principal and revokes its leases.
+- Factory isolation. Coding agents that extend and operate installations run
+  outside the runtime boundary today. A kernel-isolated runtime such as
+  [NVIDIA OpenShell](https://github.com/NVIDIA/OpenShell) places the factory
+  loop under filesystem, network, process, and inference policy of its own.
+  The exploration is recorded in [`FACTORY_ISOLATION.md`](FACTORY_ISOLATION.md).
 
 ## Boundary Clarifications
 

@@ -13,13 +13,18 @@
   <a href="https://github.com/BiomaAI/veoveo/actions/workflows/local-test-report.yml"><img src="https://github.com/BiomaAI/veoveo/actions/workflows/local-test-report.yml/badge.svg?branch=main" alt="Build"></a>
 </p>
 
+<h3 align="center">Autonomous agents that run operations in the physical world.<br>
+On infrastructure you own.</h3>
+
 Veoveo is an operations platform for physical AI. Teams run agents that
 observe the physical world, rehearse in simulated worlds, act on real
 systems, and turn everything that happened into operational intelligence.
 The organization deploying Veoveo owns the whole installation: cluster,
 identity, storage, models, policies, domain name, and release process.
+What an engagement leaves behind is not a subscription. It is the factory.
 
 [Product tour](#product-tour) · [Agentic apps](#an-agentic-app-platform) ·
+[Compared to Palantir](#compared-to-palantir) ·
 [Executable showcases](#executable-showcases) ·
 [Connectors](#enterprise-connectors) ·
 [Deployment](#deploy-your-installation) ·
@@ -87,12 +92,47 @@ disconnects, and lands as recordings and artifacts with full provenance.
 Operators steer and audit the same state agents act on, from the same
 Console.
 
+The harness is deliberately unprivileged. NVIDIA's
+[agent-stack security guidance](https://developer.nvidia.com/blog/where-security-fits-in-an-ai-agent-stack)
+draws the boundary in the same place: "The harness guides what an agent
+tries. The infrastructure controls what an agent can do." In Veoveo,
+authority lives below every harness, so any compatible MCP host can drive
+an installation without carrying authority of its own, and the boundary
+extends past files and API calls to physical actuation behind command
+leases.
+
 <a href="docs/images/harness-poster.png">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/harness-poster-dark.png">
     <img src="docs/images/harness-poster.png" alt="The operational loop: live encoded media enters Stream directly, recording remains an independent governed evidence path, Reason grounds answers in Stream results and authorized recording snapshots, and agents act through the gateway's identity, policy, and audit boundary">
   </picture>
 </a>
+
+## Compared To Palantir
+
+**Palantir rents you an operational intelligence product. Veoveo is how
+you come to own one.** One installation covers the governed core of AIP,
+the operational ground of Gotham, and the delivery job of Apollo, with a
+working slice of Foundry beside them:
+
+| Palantir product | What it does | Where Veoveo stands |
+|---|---|---|
+| AIP | Governed AI agents acting on enterprise systems through a controlled action layer | The closest analog. Veoveo's gateway does the same job of identity, policy, durable tasks, and audit over the open Model Context Protocol, so any compatible host and any model can drive it. |
+| Gotham / Maven | Defense operational intelligence: sensor fusion, mission command, decision support | Shared domain, opposite approach. Veoveo comes at operations from the runtime side: rehearse the mission in simulation, act on real vehicles, and record everything that happened. |
+| Foundry | Enterprise data integration, ontology, and operational applications | A deliberate slice. Work Contexts, artifacts, and analytical stores form a governed data plane, and MCP Apps are operational interfaces shipped by the server that owns them. The ontology depth stays with Foundry. |
+| Apollo | Vendor-operated software delivery into customer environments | Inverted. Veoveo's GitOps factory does the same job, and the installation owner operates it. Nobody delivers into you. |
+
+What none of them carry is physical AI as a first-class citizen. Real
+simulator runtimes with real autopilot firmware, live video pipelines,
+vehicle actuation, and a world-state timeline that makes every mission
+replayable as evidence. Palantir integrates data about operations. Veoveo
+runs, rehearses, and records the operations themselves.
+
+Veoveo is the substrate for building an operational intelligence
+capability an organization owns outright: its sensors, its doctrine, its
+applications, inside its own boundary. A Foundry deployment can even sit beside it:
+Palantir appears in the [connector catalog](docs/connectors/README.md)
+like any other enterprise platform.
 
 ## An Agentic App Platform
 
@@ -206,7 +246,7 @@ or repeat the
 | A multirotor under PX4 control above the Jorge “Mágico” González stadium district | Dense New York photogrammetry around Times Square and Central Park |
 
 Both frames come from the live headless Isaac Sim RTX viewport. The showcase
-camera follows the Pegasus vehicle after PX4 reaches the configured flight
+camera follows the Newton-simulated vehicle after PX4 reaches the configured flight
 altitude. [Explore the complete UAV showcase](showcase/uav-sim/README.md).
 
 | Governed UAV recording | SUMO traffic world |
@@ -237,8 +277,11 @@ speaks the same protocol that agents use.
 
 An MCP server can deliver a self-contained interface with its protocol result.
 The host provides the sandbox and theme; Veoveo retains authorization, task,
-artifact, and audit semantics behind each action. The View app below was invoked
-from natural language and rendered by an external MCP host.
+artifact, and audit semantics behind each action. The Console also ships a
+standalone authenticated app host, so an installation can hand a single app
+to its users as a full-page surface without the rest of the Console around
+it. The View app below was invoked from natural language and rendered by an
+external MCP host.
 
 <p align="center">
   <a href="docs/screenshots/gallery/mcp-app-view-claude.png">
@@ -277,7 +320,7 @@ without changing the underlying server identities.
 | `stream` | Operator-admitted live and replay GStreamer pipelines, typed detection profiles, and an MCP App for encoded video with overlays. |
 | `time` | Authority-bound civil time, calendars, clocks, timelines, and event operations. |
 | `timeseries` | Forecasting, uncertainty output, governed artifacts, and an interactive forecast app. |
-| `uav-sim` | Authoritative multi-vehicle simulation, missions, datasets, simulator-hosted operator cameras, shared NVENC products, governed viewer leases, and a WebRTC App. |
+| `uav-sim` | Authoritative multi-vehicle simulation, missions, datasets, simulator-hosted operator cameras, shared NVENC products, governed stream authorization, and a WebCodecs App. |
 | `view` | 3D Tiles views rendered on cluster GPUs, camera control, and reproducible offscreen frame capture. |
 
 The runtime for autonomous agents adds durable episodes, detach and resume,
@@ -303,7 +346,10 @@ recipes let a coding agent install a vendor's MCP server beside the Veoveo
 connector and put both to work in one session, from lakehouse queries to
 satellite tasking to incident response. The
 [connector catalog](docs/connectors/README.md) records the verified install
-surface, auth model, and status for every platform.
+surface, auth model, and status for every platform. Systems that still speak
+the MCP `2025-11-25` revision join through an isolated
+[legacy bridge](mcp/bridges/legacy/DESIGN.md) that keeps the installation's
+own protocol surface uncompromised.
 
 <table align="center" aria-label="Enterprise connector logos">
   <tbody>
@@ -362,7 +408,7 @@ their respective owners.*
 <a href="docs/images/system-map.png">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/system-map-dark.png">
-    <img src="docs/images/system-map.png" alt="Live H.264 enters Stream directly while optional recording flows through a producer-local forwarder; Stream results and recording snapshots feed Reason, and agents reach 17 hosted servers through the governed gateway">
+    <img src="docs/images/system-map.png" alt="Live H.264 enters Stream directly while optional recording flows through a producer-local forwarder; Stream results and recording snapshots feed Reason, and agents reach 16 hosted servers through the governed gateway">
   </picture>
 </a>
 
@@ -419,7 +465,7 @@ repository.
 |---|---|---|
 | Local k3d | A real local Kubernetes cluster with registry-first image delivery and mandatory NVIDIA validation. | [`deploy/local/k3d`](deploy/local/k3d/README.md) |
 | Direct Helm | A connected cluster managed by an existing platform team. | [`deploy/helm/veoveo`](deploy/helm/veoveo/README.md) |
-| Enterprise GitOps | Immutable OCI charts and image digests reconciled by the installation owner's Argo CD, Flux, or equivalent controller. | [`docs/ENTERPRISE_DEPLOYMENT.md`](docs/ENTERPRISE_DEPLOYMENT.md) |
+| Enterprise GitOps | Immutable OCI charts and image digests reconciled by the installation owner's Flux or equivalent controller. | [`docs/ENTERPRISE_DEPLOYMENT.md`](docs/ENTERPRISE_DEPLOYMENT.md) |
 | Offline | A verified bundle containing runtime images, charts, schemas, checksums, image identities, and SPDX SBOMs. | [`deploy/offline`](deploy/offline/README.md) |
 
 Developers running the complete local SUMO installation should start with the
@@ -474,7 +520,7 @@ profile rather than support for every optional feature of each standard.
 | Recordings, data, and media | Rerun RRD and `VideoStream`; versioned protobuf recording ingest; S3-compatible object APIs; DuckDB SQL; Apache Parquet; and OTLP/HTTP telemetry. |
 | Geography and time | WGS84/EPSG identities; GeoJSON RFC 7946; OGC JSON-FG and CQL2; GeoParquet 1.0; Mapbox Vector Tile 2.1; MapLibre Style 8; RFC 3339; RFC 9557; IANA TZDB/TZif and leap-second data; TAI and GPS time. |
 | Optimization | NVIDIA cuOpt 26.06 on CUDA 13.2; `veoveo.io/travel-model-artifact/v1` for the Map handoff; and the private pod-local `veoveo.io/cuopt-executor/v1` adapter protocol. |
-| 3D and vehicles | OGC 3D Tiles 1.0/1.1; glTF/GLB 2.0; Draco geometry compression; MAVLink 2; and pod-private ROS 2 simulator paths. |
+| 3D and vehicles | OGC 3D Tiles 1.0/1.1; glTF/GLB 2.0; Draco geometry compression; OpenUSD; Newton and Warp CUDA; and MAVLink 2 HIL. |
 | Packaging and operations | Kubernetes resources, Helm charts, OCI images and charts, S3-compatible storage, and OpenTelemetry. |
 
 The exact supported subsets are collected in
@@ -575,7 +621,8 @@ cargo xtask smoke helm-config
 cargo xtask smoke sumo-push
 cargo test -p veoveo-uav-sim-mcp --all-targets
 PYTHONPATH=showcase/uav-sim/runtime:sdk/python/src \
-  uv run --with numpy==2.5.1 --with pymavlink==2.4.49 --python python3 \
+  uv run --with numpy==2.5.1 --with aiohttp==3.14.1 \
+  --with pymavlink==2.4.49 --with fastcrc==0.3.6 --python 3.13 \
   python -m unittest discover -s showcase/uav-sim/runtime/tests -v
 ```
 
@@ -606,11 +653,15 @@ planned dedicated GPU CI architecture are described in
 | [`mcp/`](mcp/) | Shared MCP contracts, task and app extensions, and bridges. |
 | [`platform/`](platform/) | Gateway, persistence, task, artifact, recording, and query runtimes. |
 | [`servers/`](servers/) | Hosted MCP servers and their domain designs. |
-| [`showcase/uav-sim/`](showcase/uav-sim/) | Isaac, Cesium, Pegasus, and PX4 UAV workload. |
+| [`extensions/`](extensions/) | Release, compatibility, and conformance contracts for externally owned extensions. |
+| [`sdk/`](sdk/) | Python SDK shared by showcase runtimes and external clients. |
+| [`templates/`](templates/) | Python MCP server template behind the datasheet server. |
+| [`showcase/uav-sim/`](showcase/uav-sim/) | Isaac, Cesium, Newton, CUDA Warp, and PX4 UAV workload. |
 | [`showcase/sumo/`](showcase/sumo/) | SUMO, LuST, TraCI, and the traffic world MCP server. |
 | [`deploy/`](deploy/) | Helm, local k3d, and offline installation material. |
 | [`examples/bioma/`](examples/bioma/) | Enterprise GitOps reference installation. |
 | [`testing/`](testing/) | Protocol conformance and multi-process smoke harnesses. |
+| [`tools/xtask/`](tools/xtask/) | Typed repository commands: doctor, enforce, image, release, smoke, test-report. |
 | [`tools/screenshots/`](tools/screenshots/) | Repeatable authenticated Console, MCP App, and Rerun captures. |
 | [`docs/`](docs/) | Architecture, governance, deployment, recording, and harness documentation. |
 

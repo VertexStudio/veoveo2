@@ -82,11 +82,23 @@ pub struct GatewayProfile {
     pub protected_resource: ProtectedResourceId,
     pub policy_version: PolicyVersion,
     pub auth_modes: BTreeSet<AuthMode>,
+    /// Whether federated list discovery may return a typed degraded catalog or
+    /// must fail until every server in this profile is reachable.
+    #[serde(default)]
+    pub discovery_failure_mode: DiscoveryFailureMode,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub required_scopes: Vec<ScopeName>,
     pub servers: Vec<ProfileServerExposure>,
     #[serde(default)]
     pub metadata: Value,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DiscoveryFailureMode {
+    #[default]
+    Isolate,
+    FailClosed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -635,6 +647,7 @@ impl From<ResourceUriTemplate> for String {
 pub struct UpstreamEndpoint {
     pub transport: UpstreamTransport,
     pub url: UpstreamUrl,
+    pub health_url: UpstreamUrl,
     pub security: UpstreamTransportSecurity,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub trusted_certificate_authorities: Vec<CertificateAuthoritySource>,

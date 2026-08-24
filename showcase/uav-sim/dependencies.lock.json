@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
-  "verified_at": "2026-08-18",
+  "verified_at": "2026-08-21",
   "architecture": "linux/amd64",
   "components": {
     "simulation_runtime": {
-      "compatibility_release": "2026.07.0",
-      "profile": "isaac-6.0.1-lab-3.0.0-beta2.patch1-warp-1.15.0-newton-1.4.0",
+      "compatibility_release": "2026.08.0",
+      "profile": "isaac-6.0.1-lab-3.0.0-beta2.patch1-warp-1.16.0-newton-1.5.0",
       "build_target": "simulation-runtime",
       "lock": "platform/runtimes/simulation/simulation-runtime.lock.json"
     },
@@ -34,13 +34,6 @@
       "index_digest": "sha256:1be55279f18a2fe1a74edf2664cac61c1bea305b7b4642dab412e7affdcb3e33",
       "source": "https://github.com/distribution/distribution/releases/tag/v3.1.1"
     },
-    "pegasus_simulator": {
-      "version": "5.1.0",
-      "commit": "644da37e9d5268e5f9a34e78bdcfd57a8bab82b4",
-      "repository": "https://github.com/PegasusSimulator/PegasusSimulator.git",
-      "compatibility_target": "Isaac Sim 6.0.1",
-      "source": "https://github.com/PegasusSimulator/PegasusSimulator/releases/tag/v5.1.0"
-    },
     "px4_autopilot": {
       "version": "1.17.0",
       "commit": "d6f12ad1c4f70ad3230afd7d86e971421e02fef4",
@@ -59,12 +52,6 @@
     "nvidia_gpu_operator": {
       "version": "26.3.3",
       "source": "https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/getting-started.html"
-    },
-    "ros_2": {
-      "distribution": "jazzy",
-      "required": false,
-      "reason": "Isaac Sim 6.0.1 recommends ROS 2 Jazzy on Ubuntu 24.04; Phase 1 vehicle control uses MAVLink.",
-      "source": "https://docs.isaacsim.omniverse.nvidia.com/latest/installation/install_ros.html"
     },
     "python_runtime": {
       "aiohappyeyeballs": "2.7.1",

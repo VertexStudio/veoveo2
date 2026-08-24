@@ -1,15 +1,5 @@
-use std::sync::OnceLock;
-
-const TEMPLATE: &str = include_str!("../assets/live-app.html");
-const CLIENT: &str = include_str!(concat!(env!("OUT_DIR"), "/ov-web-rtc.umd.cjs"));
-const MARKER: &str = "/*__NVIDIA_OV_WEB_RTC__*/";
-
 pub(crate) fn html() -> &'static str {
-    static HTML: OnceLock<String> = OnceLock::new();
-    HTML.get_or_init(|| {
-        assert_eq!(TEMPLATE.matches(MARKER).count(), 1);
-        TEMPLATE.replacen(MARKER, CLIENT, 1)
-    })
+    include_str!("../assets/live-app.html")
 }
 
 #[cfg(test)]
@@ -19,9 +9,11 @@ mod tests {
     #[test]
     fn app_is_self_contained_and_uses_only_simulator_live_view_tools() {
         let html = html();
-        assert!(!html.contains(MARKER));
         for expected in [
-            "OVWebRTC",
+            "VideoDecoder",
+            "EncodedVideoChunk",
+            "veoveo.h264.annexb.v1",
+            "avc1.4d4032",
             "list_live_cameras",
             "open_live_view",
             "renew_live_view",
@@ -29,20 +21,22 @@ mod tests {
             "subscriptions/listen",
             "resourceSubscriptions",
             "ui/resource-teardown",
+            "applyHostContext(initialized?.hostContext)",
             "navigator.mediaCapabilities.decodingInfo",
+            "hardwareAcceleration:\"prefer-hardware\"",
+            "hardwareAcceleration:\"no-preference\"",
             "section.dataset.viewerInstanceId",
             "section.dataset.streamProductId",
-            "section.dataset.capacitySlot",
-            "requestVideoFrameCallback",
-            "onStreamStats",
-            "event?.data?.stats",
+            "tiled H.264 live",
+            "stream.codedWidthPx",
+            "stream.sourceRegion",
             "camera.rig?.smoothing",
             "video pending",
             "font-variant-numeric:tabular-nums",
             "ui-monospace",
             "fixedFps",
             ".padStart(2,\"0\")",
-            "fixedFps(stats.fps)",
+            "fixedFps(player.presentedAt.length)",
             "Google Photorealistic 3D Tiles",
             "MAX_RECOVERY_BACKOFF_ATTEMPT=8",
             "Camera recovery is waiting for simulator readiness",
@@ -52,10 +46,22 @@ mod tests {
             "io.veoveo/agent-message-targets",
             "uuidV7",
             "Send instruction",
+            "if(!selected.size)",
+            "await open(camera)",
+            "views.get(camera.cameraId)!==view",
+            "section.querySelector(\".empty\")?.remove()",
         ] {
             assert!(html.contains(expected), "missing {expected}");
         }
-        for removed in ["reconciliation", "pose authorization", "set_camera"] {
+        for removed in [
+            "reconciliation",
+            "pose authorization",
+            "set_camera",
+            "OVWebRTC",
+            "AppStreamer",
+            "PressureObserver",
+            "avc1.42E01E",
+        ] {
             assert!(!html.contains(removed), "obsolete App surface {removed}");
         }
         assert!(html.contains("{session_id:sessionId}"));
@@ -65,16 +71,5 @@ mod tests {
         ));
         assert!(!html.contains("first.sessionId"));
         assert!(!html.contains("setInterval"));
-    }
-
-    #[test]
-    fn app_disables_optional_compute_pressure_before_native_client_initialization() {
-        let pressure_fence = TEMPLATE
-            .find("Object.defineProperty(globalThis,\"PressureObserver\"")
-            .expect("App disables the optional browser telemetry");
-        let client = TEMPLATE.find(MARKER).expect("native client marker exists");
-
-        assert!(pressure_fence < client);
-        assert!(TEMPLATE.contains("value:undefined"));
     }
 }

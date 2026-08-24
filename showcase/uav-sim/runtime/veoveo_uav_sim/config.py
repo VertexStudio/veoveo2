@@ -370,12 +370,8 @@ class RuntimeConfig:
             native_sensor_aov_signal_port(self.camera.rtsp_port),
         }
         operator_aov_ports = {
-            base + slot
-            for base in (
-                self.operator_live_view.signaling_port_base,
-                self.operator_live_view.media_port_base,
-            )
-            for slot in range(self.operator_live_view.viewer_slot_count)
+            self.operator_live_view.atlas_rtsp_port,
+            self.operator_live_view.atlas_rtsp_port + 1,
         }
         if overlap := sorted(sensor_aov_ports & operator_aov_ports):
             raise ValueError(
@@ -455,7 +451,7 @@ class RuntimeConfig:
             adapter_host=os.environ.get("UAV_SIM_ADAPTER_HOST", "0.0.0.0"),
             adapter_port=_int("UAV_SIM_ADAPTER_PORT", "8810", 1, 65_535),
             adapter_bearer_token=adapter_bearer_token,
-            physics_hz=_int("UAV_SIM_PHYSICS_HZ", "60", 30, 1_000),
+            physics_hz=_int("UAV_SIM_PHYSICS_HZ", "30", 30, 1_000),
             rendering_hz=_int("UAV_SIM_RENDERING_HZ", "2", 1, 120),
             tile_ready_frames=_int("UAV_SIM_TILE_READY_FRAMES", "30", 1, 600),
             px4_connect_timeout_seconds=_float(
@@ -470,22 +466,9 @@ class RuntimeConfig:
             camera=CameraConfig.from_environment(),
             operator_live_view=OperatorLiveViewRuntimeConfig.from_json(
                 _required("UAV_SIM_OPERATOR_CAMERAS_JSON"),
-                viewer_slot_count=_int(
-                    "UAV_SIM_LIVE_VIEWER_SLOTS", "2", 1, 32
+                rtsp_port_base=_int(
+                    "UAV_SIM_OPERATOR_RTSP_PORT_BASE", "8560", 1, 65_535
                 ),
-                activation_timeout_seconds=_float(
-                    "UAV_SIM_LIVE_ACTIVATION_TIMEOUT_SECONDS",
-                    "10.0",
-                    0.1,
-                    60.0,
-                ),
-                signaling_port_base=_int(
-                    "UAV_SIM_LIVE_SIGNALING_PORT_BASE", "49100", 1, 65_535
-                ),
-                media_port_base=_int(
-                    "UAV_SIM_LIVE_MEDIA_PORT_BASE", "47998", 1, 65_535
-                ),
-                public_media_ip=_required("UAV_SIM_LIVE_PUBLIC_MEDIA_IP"),
             ),
             fleet_loop=FleetLoopConfig.from_environment(),
             stream_publication=StreamPublicationConfig.from_environment(),

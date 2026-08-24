@@ -1,5 +1,6 @@
-use std::borrow::Cow;
+use std::{borrow::Cow, time::Instant};
 
+use chrono::Utc;
 use futures::{StreamExt, stream};
 use rmcp::{
     model::{
@@ -11,8 +12,9 @@ use rmcp::{
 };
 use serde_json::Value;
 use veoveo_mcp_contract::{
-    GatewayAction, GatewayDiscoverySurface, LocalToolName, TaskExposure, paginate,
-    related_task_meta, sanitized_request_meta,
+    DiscoveryFailureMode, GatewayAction, GatewayDiscoverySurface, LocalToolName,
+    PrincipalAuditAttributes, TaskExposure, TraceId, paginate, related_task_meta,
+    sanitized_request_meta,
 };
 use veoveo_platform_store::PrincipalKind as StorePrincipalKind;
 
@@ -22,7 +24,8 @@ use crate::{
         mcp_internal, mcp_invalid_params, parse_gateway_tool, project_call_tool_resource_uris,
         project_tool_resource_metadata, unexpected_upstream_response, upstream_error,
     },
-    state::GatewayTaskRouteDraft,
+    principal_audit_metadata,
+    state::{GatewayTaskRouteDraft, GatewayToolCallAuditEvent, GatewayToolCallResultKind},
 };
 
 use super::{
@@ -41,6 +44,10 @@ impl GatewayMcp {
         let snapshot = self.catalog.snapshot();
         let catalog = snapshot.catalog().clone();
         let catalog_generation = snapshot.generation();
+        let discovery_failure_mode = catalog
+            .profile(&self.profile_id)
+            .map(|profile| profile.discovery_failure_mode)
+            .unwrap_or(DiscoveryFailureMode::FailClosed);
         let authorization_fingerprint =
             invocation_authorization_fingerprint(&subject.actor, &subject.authority)?;
         let results = stream::iter(self.profile_servers().into_iter().map(|server_slug| {
@@ -114,9 +121,10 @@ impl GatewayMcp {
         .await;
         let (mut tools, degradation, errors) =
             isolate_discovery_failures(GatewayDiscoverySurface::Tools, results);
-        for (server, error) in errors {
+        for (server, error) in &errors {
             tracing::warn!(%server, %error, "isolated upstream tool discovery failure");
         }
+        enforce_complete_tool_discovery(discovery_failure_mode, &errors)?;
         tools.sort_by(|left, right| left.name.cmp(&right.name));
         let page = paginate(tools, request.as_ref(), GATEWAY_PAGE_SIZE)
             .map_err(|err| mcp_invalid_params(err.to_string()))?;
@@ -155,7 +163,7 @@ impl GatewayMcp {
             .await?;
             return Err(mcp_invalid_params("unknown tool"));
         }
-        let subject = self
+        let (subject, trace_id) = self
             .authorize_tool(
                 &context,
                 GatewayAction::ToolsCall,
@@ -163,105 +171,138 @@ impl GatewayMcp {
                 projection.tool.clone(),
             )
             .await?;
-        restore_request_meta(&mut request, &context.meta);
-        request.name = Cow::Owned(projection.tool.to_string());
+        let started = Instant::now();
+        let response = async {
+            restore_request_meta(&mut request, &context.meta);
+            request.name = Cow::Owned(projection.tool.to_string());
 
-        let downstream_tasks = context
-            .meta
-            .client_capabilities()
-            .is_some_and(|capabilities| capabilities.supports_tasks());
-        let project_tasks = downstream_tasks && self.client_allows_task_projection(&subject)?;
-        let direct_adapter = self.client_uses_direct_task_call_adapter(&subject)?;
-        let server_supports_tasks = catalog
-            .profile_server(&self.profile_id, &projection.server)
-            .is_some_and(|(_, exposure, manifest)| {
-                exposure.tasks == TaskExposure::Enabled && manifest.capabilities.tasks
-            });
-        let effective_tasks = server_supports_tasks && (project_tasks || direct_adapter);
-        let downstream_progress_token = context.meta.get_progress_token();
-        let upstream = self
-            .upstream_with_tasks(
-                &projection.server,
-                context.peer.clone(),
-                &subject,
-                effective_tasks,
-            )
-            .await?;
-        let handle = upstream
-            .peer
-            .send_cancellable_request(
-                ClientRequest::CallToolRequest(CallToolRequest::new(request)),
-                PeerRequestOptions::no_options(),
-            )
-            .await
-            .map_err(upstream_error)?;
-        if let Some(downstream_token) = downstream_progress_token {
+            let downstream_tasks = context
+                .meta
+                .client_capabilities()
+                .is_some_and(|capabilities| capabilities.supports_tasks());
+            let project_tasks = downstream_tasks && self.client_allows_task_projection(&subject)?;
+            let direct_adapter = self.client_uses_direct_task_call_adapter(&subject)?;
+            let server_supports_tasks = catalog
+                .profile_server(&self.profile_id, &projection.server)
+                .is_some_and(|(_, exposure, manifest)| {
+                    exposure.tasks == TaskExposure::Enabled && manifest.capabilities.tasks
+                });
+            let effective_tasks = server_supports_tasks && (project_tasks || direct_adapter);
+            let downstream_progress_token = context.meta.get_progress_token();
+            let upstream = self
+                .upstream_with_tasks(
+                    &projection.server,
+                    context.peer.clone(),
+                    &subject,
+                    effective_tasks,
+                )
+                .await?;
+            let handle = upstream
+                .peer
+                .send_cancellable_request(
+                    ClientRequest::CallToolRequest(CallToolRequest::new(request)),
+                    PeerRequestOptions::no_options(),
+                )
+                .await
+                .map_err(upstream_error)?;
+            if let Some(downstream_token) = downstream_progress_token {
+                self.progress_tokens
+                    .register(
+                        &self.profile_id,
+                        &subject.principal.id,
+                        &projection.server,
+                        handle.progress_token.clone(),
+                        downstream_token,
+                    )
+                    .await;
+            }
+            let upstream_token = handle.progress_token.clone();
+            let result = handle.await_response().await.map_err(upstream_error);
             self.progress_tokens
-                .register(
+                .remove_token(
                     &self.profile_id,
                     &subject.principal.id,
                     &projection.server,
-                    handle.progress_token.clone(),
-                    downstream_token,
+                    &upstream_token,
                 )
                 .await;
-        }
-        let upstream_token = handle.progress_token.clone();
-        let result = handle.await_response().await.map_err(upstream_error);
-        self.progress_tokens
-            .remove_token(
-                &self.profile_id,
-                &subject.principal.id,
-                &projection.server,
-                &upstream_token,
-            )
-            .await;
 
-        match result? {
-            ServerResult::CallToolResult(mut result) => {
-                let manifest = catalog.server(&projection.server).ok_or_else(|| {
-                    mcp_internal(format!("unknown tool server `{}`", projection.server))
-                })?;
-                project_call_tool_resource_uris(manifest, &mut result)?;
-                Ok(CallToolResponse::Complete(result))
-            }
-            ServerResult::InputRequiredResult(result) => {
-                Ok(CallToolResponse::InputRequired(result))
-            }
-            ServerResult::CreateTaskResult(created) if project_tasks => {
-                let created = self
-                    .project_created_task(&subject, &projection.server, created)
+            match result? {
+                ServerResult::CallToolResult(mut result) => {
+                    let manifest = catalog.server(&projection.server).ok_or_else(|| {
+                        mcp_internal(format!("unknown tool server `{}`", projection.server))
+                    })?;
+                    project_call_tool_resource_uris(manifest, &mut result)?;
+                    Ok(CallToolResponse::Complete(result))
+                }
+                ServerResult::InputRequiredResult(result) => {
+                    Ok(CallToolResponse::InputRequired(result))
+                }
+                ServerResult::CreateTaskResult(created) if project_tasks => {
+                    let created = self
+                        .project_created_task(&subject, &projection.server, created)
+                        .await?;
+                    Ok(CallToolResponse::Task(created))
+                }
+                ServerResult::CreateTaskResult(created) if direct_adapter => {
+                    let source_task_id = created.task.task_id.clone();
+                    let projected = self
+                        .project_created_task(&subject, &projection.server, created)
+                        .await?;
+                    let canonical_task_id = projected.task.task_id;
+                    let detailed = await_terminal_task(
+                        &upstream.peer,
+                        source_task_id,
+                        context.ct.clone(),
+                        projected.task.poll_interval_ms,
+                    )
                     .await?;
-                Ok(CallToolResponse::Task(created))
+                    let mut result = completed_tool_result(detailed)?;
+                    let manifest = catalog.server(&projection.server).ok_or_else(|| {
+                        mcp_internal(format!("unknown tool server `{}`", projection.server))
+                    })?;
+                    project_call_tool_resource_uris(manifest, &mut result)?;
+                    result.meta = Some(related_task_meta(canonical_task_id));
+                    Ok(CallToolResponse::Complete(result))
+                }
+                ServerResult::CreateTaskResult(_) => {
+                    Err(McpError::missing_required_client_capability(
+                        rmcp::model::ClientCapabilities::builder()
+                            .enable_tasks()
+                            .build(),
+                    ))
+                }
+                other => Err(unexpected_upstream_response("tools/call", other)),
             }
-            ServerResult::CreateTaskResult(created) if direct_adapter => {
-                let source_task_id = created.task.task_id.clone();
-                let projected = self
-                    .project_created_task(&subject, &projection.server, created)
-                    .await?;
-                let canonical_task_id = projected.task.task_id;
-                let detailed = await_terminal_task(
-                    &upstream.peer,
-                    source_task_id,
-                    context.ct.clone(),
-                    projected.task.poll_interval_ms,
-                )
-                .await?;
-                let mut result = completed_tool_result(detailed)?;
-                let manifest = catalog.server(&projection.server).ok_or_else(|| {
-                    mcp_internal(format!("unknown tool server `{}`", projection.server))
-                })?;
-                project_call_tool_resource_uris(manifest, &mut result)?;
-                result.meta = Some(related_task_meta(canonical_task_id));
-                Ok(CallToolResponse::Complete(result))
-            }
-            ServerResult::CreateTaskResult(_) => Err(McpError::missing_required_client_capability(
-                rmcp::model::ClientCapabilities::builder()
-                    .enable_tasks()
-                    .build(),
-            )),
-            other => Err(unexpected_upstream_response("tools/call", other)),
         }
+        .await;
+        let (result_kind, mcp_error_code) = tool_call_result_kind(&response);
+        let event_id = TraceId::new(uuid::Uuid::new_v4().to_string())
+            .map_err(|error| mcp_internal(format!("failed to create audit event id: {error}")))?;
+        self.state
+            .record_tool_call_audit_event(&GatewayToolCallAuditEvent {
+                event_id,
+                timestamp: Utc::now(),
+                trace_id,
+                profile: self.profile_id.clone(),
+                server: projection.server,
+                tool: projection.tool,
+                result_kind,
+                principal: subject.principal.id.clone(),
+                principal_attributes: PrincipalAuditAttributes::from(&subject.principal),
+                tenant: subject.principal.tenant.clone(),
+                token_issuer: subject.access_token.issuer.clone(),
+                latency_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                mcp_error_code,
+                metadata: principal_audit_metadata(&subject.principal),
+            })
+            .await
+            .map_err(|error| {
+                mcp_internal(format!(
+                    "failed to record gateway tool-call audit event: {error}"
+                ))
+            })?;
+        response
     }
 
     async fn project_created_task(
@@ -304,6 +345,39 @@ impl GatewayMcp {
         created.meta = Some(related_task_meta(canonical.to_string()));
         Ok(created)
     }
+}
+
+fn tool_call_result_kind(
+    response: &Result<CallToolResponse, McpError>,
+) -> (GatewayToolCallResultKind, Option<i32>) {
+    match response {
+        Ok(CallToolResponse::Complete(result)) if result.is_error == Some(true) => {
+            (GatewayToolCallResultKind::ErrorResult, None)
+        }
+        Ok(CallToolResponse::Complete(_)) => (GatewayToolCallResultKind::Complete, None),
+        Ok(CallToolResponse::InputRequired(_)) => (GatewayToolCallResultKind::InputRequired, None),
+        Ok(CallToolResponse::Task(_)) => (GatewayToolCallResultKind::TaskCreated, None),
+        Ok(_) => (GatewayToolCallResultKind::OtherResponse, None),
+        Err(error) => (GatewayToolCallResultKind::ProtocolError, Some(error.code.0)),
+    }
+}
+
+fn enforce_complete_tool_discovery<E>(
+    mode: DiscoveryFailureMode,
+    errors: &[(veoveo_mcp_contract::ServerSlug, E)],
+) -> Result<(), McpError> {
+    if mode != DiscoveryFailureMode::FailClosed || errors.is_empty() {
+        return Ok(());
+    }
+    let mut servers = errors
+        .iter()
+        .map(|(server, _)| server.to_string())
+        .collect::<Vec<_>>();
+    servers.sort();
+    Err(mcp_internal(format!(
+        "profile requires complete tool discovery; unavailable servers: {}",
+        servers.join(", ")
+    )))
 }
 
 fn restore_request_meta(
@@ -404,6 +478,39 @@ pub(super) fn rewrite_detailed_task_id(task: &mut DetailedTask, canonical_task_i
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fail_closed_profile_rejects_an_incomplete_tool_catalog() {
+        let errors = [
+            (veoveo_mcp_contract::ServerSlug::new("uav-sim").unwrap(), ()),
+            (veoveo_mcp_contract::ServerSlug::new("map").unwrap(), ()),
+        ];
+
+        assert!(enforce_complete_tool_discovery(DiscoveryFailureMode::Isolate, &errors).is_ok());
+        let error =
+            enforce_complete_tool_discovery(DiscoveryFailureMode::FailClosed, &errors).unwrap_err();
+        assert_eq!(
+            error.message,
+            "profile requires complete tool discovery; unavailable servers: map, uav-sim"
+        );
+    }
+
+    #[test]
+    fn tool_call_audit_distinguishes_domain_and_protocol_failures() {
+        let domain_failure = Ok(CallToolResponse::Complete(CallToolResult::error(vec![])));
+        assert_eq!(
+            tool_call_result_kind(&domain_failure),
+            (GatewayToolCallResultKind::ErrorResult, None)
+        );
+        let protocol_failure = Err(McpError::invalid_params("bad arguments", None));
+        assert_eq!(
+            tool_call_result_kind(&protocol_failure),
+            (
+                GatewayToolCallResultKind::ProtocolError,
+                Some(rmcp::model::ErrorCode::INVALID_PARAMS.0)
+            )
+        );
+    }
 
     #[test]
     fn request_context_metadata_is_restored_before_upstream_projection() {

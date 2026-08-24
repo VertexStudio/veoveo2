@@ -18,8 +18,19 @@ Before operating, diagnosing, or changing a fielded installation, read
 controls identity, Secrets, infrastructure, desired state, and recovery. Do not infer
 enterprise requirements from a local fixture or one reference installation.
 
-An MCP server's design document belongs at `servers/{server}-mcp/DESIGN.md` beside its
-crate. Repository-wide architecture stays under `docs/`.
+A design document belongs beside the code it governs: an MCP server's at
+`servers/{server}-mcp/DESIGN.md`, and other contract-bearing components (the
+gateway composer, conformance, extensions, deploy contract, simulation runtime,
+templates) keep a `DESIGN.md` in their own directory the same way.
+Repository-wide architecture stays under `docs/`.
+
+The active tree is wider than `servers/` and `docs/`: `platform/` holds the
+gateway and runtimes, `agents/` the kernel and durable runtime, `mcp/` shared
+contracts and bridges, `apps/console` the Console, `extensions/` external
+extension contracts, `examples/bioma` the enterprise GitOps reference,
+`showcase/` the simulator workloads, `testing/` conformance and smoke,
+`sdk/` and `templates/` the Python surface, `tools/` xtask and screenshots,
+and `deploy/` installation material. `docs/CODEMAP.md` indexes all of it.
 
 ## Worktrees and Commit Discipline
 
@@ -53,6 +64,11 @@ This means:
 
 If a change would break existing callers, that is acceptable by default. Document the new
 canonical path, update tests and examples to it, and delete the old path.
+
+The one admitted legacy boundary is `mcp/bridges/legacy`, an isolated external
+connector for systems still on MCP `2025-11-25`. It exists because its own
+`AGENTS.md` declares it; any other legacy boundary requires the same explicit
+declaration in the current request.
 
 ## Dependency Currency
 
@@ -165,6 +181,15 @@ or when server-specific behavior leaks into generic gateway modules.
 The repository has no Justfile. One-step Cargo, Helm, uv, Docker, and Kubernetes
 commands remain native. Repository-specific policy and multi-step coordination belong
 in `cargo xtask`.
+
+The xtask surface is `doctor`, `enforce rust|python`, `image`, `release`, `smoke`,
+and `test-report`. Before committing a build-input change, run the checks it touches
+through the evidence recorder
+(`cargo xtask test-report run --name <check> -- <command>`, then
+`cargo xtask test-report show`) and commit the updated
+`testing/local-test-report.json` with the change, since the GitHub workflow only
+displays that committed evidence. Documentation-only changes do not invalidate build
+evidence. Do not commit red or stale report entries.
 
 All smoke tests for this repository must be implemented in Rust. `cargo xtask smoke`
 may build the harness and its scenario-specific local binaries, then dispatch the

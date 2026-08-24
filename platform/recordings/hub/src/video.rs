@@ -23,7 +23,10 @@ use re_sdk_types::archetypes::VideoStream;
 use re_sdk_types::components::{IsKeyframe, VideoCodec, VideoSample};
 use re_sdk_types::external::arrow::array::{Array as _, ListArray};
 use re_sdk_types::external::re_types_core::Loggable;
-use veoveo_rrd::video::annex_b_nals;
+use veoveo_rrd::video::{annex_b_nals, h264_access_unit_is_decoder_reentrant};
+
+const NANOSECONDS_PER_SECOND: u128 = 1_000_000_000;
+const H264_MP4_TIMESCALE: u32 = 90_000;
 
 /// Veoveo's canonical encoded-video ingest profile.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -185,10 +188,10 @@ pub fn extract_video_clip_from_messages(
         &result_schema,
         &component_column(&request.entity_path, &VideoStream::descriptor_codec()),
     )?;
-    let keyframe_column = column_index(
-        &result_schema,
-        &component_column(&request.entity_path, &VideoStream::descriptor_is_keyframe()),
-    )?;
+    let keyframe_column = result_schema.fields().iter().position(|field| {
+        field.name()
+            == &component_column(&request.entity_path, &VideoStream::descriptor_is_keyframe())
+    });
 
     let mut samples = Vec::new();
     for batch in handle.batch_iter() {
@@ -209,12 +212,21 @@ pub fn extract_video_clip_from_messages(
                 codec == VideoCodec::H264,
                 "only H.264 VideoStream samples are supported"
             );
-            let is_keyframe = component_at::<IsKeyframe>(batch.column(keyframe_column), row)?
-                .is_some_and(|value| *value.0);
+            let bytes = sample.0.0.as_ref().to_vec();
+            let is_keyframe = h264_access_unit_is_decoder_reentrant(&bytes)?;
+            if let Some(keyframe_column) = keyframe_column {
+                let stored_keyframe =
+                    component_at::<IsKeyframe>(batch.column(keyframe_column), row)?
+                        .is_some_and(|value| *value.0);
+                ensure!(
+                    !stored_keyframe || is_keyframe,
+                    "stored H.264 keyframe marker does not identify a decoder-reentrant access unit"
+                );
+            }
             samples.push(EncodedVideoSample {
                 index: time_values[row],
                 is_keyframe,
-                bytes: sample.0.0.as_ref().to_vec(),
+                bytes,
             });
         }
     }
@@ -315,7 +327,7 @@ pub fn remux_h264_mp4(clip: &EncodedVideoClip) -> Result<Vec<u8>> {
     let mut writer = Mp4Writer::write_start(cursor, &config)?;
     writer.add_track(&TrackConfig {
         track_type: TrackType::Video,
-        timescale: 1_000_000_000,
+        timescale: H264_MP4_TIMESCALE,
         language: "und".to_owned(),
         media_conf: MediaConfig::AvcConfig(AvcConfig {
             width,
@@ -328,21 +340,29 @@ pub fn remux_h264_mp4(clip: &EncodedVideoClip) -> Result<Vec<u8>> {
     let fallback_duration = clip
         .samples
         .windows(2)
-        .map(|pair| pair[1].index - pair[0].index)
+        .filter_map(|pair| pair[1].index.checked_sub(pair[0].index))
         .find(|duration| *duration > 0)
         .unwrap_or(33_333_333);
     for (index, sample) in clip.samples.iter().enumerate() {
         let duration = clip
             .samples
             .get(index + 1)
-            .map_or(fallback_duration, |next| next.index - sample.index);
+            .map_or(Ok(fallback_duration), |next| {
+                next.index
+                    .checked_sub(sample.index)
+                    .context("video sample timestamp delta overflow")
+            })?;
         ensure!(duration > 0, "video sample timestamps must increase");
+        let start_nanoseconds = sample
+            .index
+            .checked_sub(clip.decode_start_index)
+            .context("video sample timestamp delta overflow")?;
         writer.write_sample(
             1,
             &Mp4Sample {
-                start_time: u64::try_from(sample.index - clip.decode_start_index)
-                    .context("video sample precedes decode start")?,
-                duration: u32::try_from(duration).context("video sample duration exceeds u32")?,
+                start_time: nanoseconds_to_h264_ticks(start_nanoseconds)?,
+                duration: u32::try_from(nanoseconds_to_h264_ticks(duration)?.max(1))
+                    .context("video sample duration exceeds the 90 kHz MP4 track")?,
                 rendering_offset: 0,
                 is_sync: sample.is_keyframe,
                 bytes: annex_b_to_avcc(&sample.bytes)?.into(),
@@ -351,6 +371,17 @@ pub fn remux_h264_mp4(clip: &EncodedVideoClip) -> Result<Vec<u8>> {
     }
     writer.write_end()?;
     Ok(writer.into_writer().into_inner())
+}
+
+fn nanoseconds_to_h264_ticks(nanoseconds: i64) -> Result<u64> {
+    let nanoseconds = u128::try_from(nanoseconds).context("video sample precedes decode start")?;
+    let ticks = nanoseconds
+        .checked_mul(u128::from(H264_MP4_TIMESCALE))
+        .context("video timestamp conversion overflow")?
+        .checked_add(NANOSECONDS_PER_SECOND / 2)
+        .context("video timestamp rounding overflow")?
+        / NANOSECONDS_PER_SECOND;
+    u64::try_from(ticks).context("video timestamp exceeds MP4 track range")
 }
 
 fn component_column(entity_path: &str, descriptor: &re_sdk_types::ComponentDescriptor) -> String {

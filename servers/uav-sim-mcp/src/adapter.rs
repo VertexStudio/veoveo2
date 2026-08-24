@@ -2,12 +2,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use reqwest::{Client, Method, StatusCode, Url};
+use reqwest::{Client, StatusCode, Url};
 use secrecy::{ExposeSecret as _, SecretString};
 use serde::Deserialize;
 use thiserror::Error;
 use tokio::sync::Mutex;
-use veoveo_mcp_contract::{LiveCameraDescriptor, LiveCameraId, LiveStreamProductState, LiveViewId};
+use veoveo_mcp_contract::{LiveCameraDescriptor, LiveStreamProductState};
 use veoveo_platform_store::{
     PlatformStore, RecordIdKey, RecordingId as PlatformRecordingId, TenantId,
     deterministic_tenant_id,
@@ -147,6 +147,15 @@ impl HttpAdapter {
 
     pub async fn state(&self) -> Result<SimulationState, AdapterError> {
         let state: AdapterSimulationState = self.get("v1/state").await?;
+        if state
+            .stream_products
+            .iter()
+            .any(|product| !product.validate())
+        {
+            return Err(AdapterError::InvalidState(
+                "simulator returned an invalid tiled stream product".to_owned(),
+            ));
+        }
         let mut recordings = Vec::with_capacity(state.recordings.len());
         for recording in state.recordings {
             if recording.application_id != RECORDING_APPLICATION_ID {
@@ -301,59 +310,6 @@ impl HttpAdapter {
                 })
             }
         })
-    }
-
-    pub async fn assign_live_product(
-        &self,
-        capacity_slot: u16,
-        camera_id: &LiveCameraId,
-        live_view_id: &LiveViewId,
-    ) -> Result<LiveStreamProductState, AdapterError> {
-        #[derive(serde::Serialize)]
-        #[serde(rename_all = "camelCase")]
-        struct Assignment<'a> {
-            camera_id: &'a LiveCameraId,
-            live_view_id: &'a LiveViewId,
-        }
-        let response = self
-            .client
-            .request(
-                Method::PUT,
-                self.endpoint(&format!("v1/live-products/{capacity_slot}/assignment"))?,
-            )
-            .bearer_auth(self.bearer_token.expose_secret())
-            .json(&Assignment {
-                camera_id,
-                live_view_id,
-            })
-            .send()
-            .await
-            .map_err(AdapterError::Transport)?;
-        decode(response).await
-    }
-
-    pub async fn release_live_product(
-        &self,
-        capacity_slot: u16,
-        live_view_id: &LiveViewId,
-    ) -> Result<LiveStreamProductState, AdapterError> {
-        #[derive(serde::Serialize)]
-        #[serde(rename_all = "camelCase")]
-        struct Release<'a> {
-            live_view_id: &'a LiveViewId,
-        }
-        let response = self
-            .client
-            .request(
-                Method::DELETE,
-                self.endpoint(&format!("v1/live-products/{capacity_slot}/assignment"))?,
-            )
-            .bearer_auth(self.bearer_token.expose_secret())
-            .json(&Release { live_view_id })
-            .send()
-            .await
-            .map_err(AdapterError::Transport)?;
-        decode(response).await
     }
 
     async fn resolve_recording_keys(
@@ -514,88 +470,15 @@ where
 
 pub struct FakeAdapter {
     state: SimulationState,
-    #[cfg(test)]
-    live_product_faults: FakeLiveProductFaults,
-}
-
-#[cfg(test)]
-#[derive(Default)]
-struct FakeLiveProductFaults {
-    state_calls: u64,
-    fail_state_calls: std::collections::BTreeSet<u64>,
-    fail_assignment_after_mutation: bool,
-    assignment_replacement_live_view_id: Option<LiveViewId>,
-    fail_release_before_mutation: bool,
-    fail_release_after_mutation: bool,
-    release_without_mutation: bool,
-    release_calls: Vec<(u16, LiveViewId)>,
 }
 
 impl FakeAdapter {
     pub fn new(state: SimulationState) -> Self {
-        Self {
-            state,
-            #[cfg(test)]
-            live_product_faults: FakeLiveProductFaults::default(),
-        }
+        Self { state }
     }
 
     pub fn state(&self) -> SimulationState {
         self.state.clone()
-    }
-
-    #[cfg(test)]
-    fn state_result(&mut self) -> Result<SimulationState, AdapterError> {
-        self.live_product_faults.state_calls += 1;
-        if self
-            .live_product_faults
-            .fail_state_calls
-            .remove(&self.live_product_faults.state_calls)
-        {
-            return Err(AdapterError::InvalidState(
-                "injected simulator state failure".to_owned(),
-            ));
-        }
-        Ok(self.state())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn fail_state_call(&mut self, call: u64) {
-        self.live_product_faults.fail_state_calls.insert(call);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn fail_assignment_after_mutation(
-        &mut self,
-        replacement_live_view_id: Option<LiveViewId>,
-    ) {
-        self.live_product_faults.fail_assignment_after_mutation = true;
-        self.live_product_faults.assignment_replacement_live_view_id = replacement_live_view_id;
-    }
-
-    #[cfg(test)]
-    pub(crate) fn fail_release_before_mutation(&mut self) {
-        self.live_product_faults.fail_release_before_mutation = true;
-    }
-
-    #[cfg(test)]
-    pub(crate) fn fail_release_after_mutation(&mut self) {
-        self.live_product_faults.fail_release_after_mutation = true;
-    }
-
-    #[cfg(test)]
-    pub(crate) fn release_without_mutation(&mut self) {
-        self.live_product_faults.release_without_mutation = true;
-    }
-
-    #[cfg(test)]
-    pub(crate) fn state_mut(&mut self) -> &mut SimulationState {
-        &mut self.state
-    }
-
-    #[cfg(test)]
-    pub(crate) fn release_calls(&self) -> &[(u16, LiveViewId)] {
-        &self.live_product_faults.release_calls
     }
 
     pub fn configure_world(
@@ -693,11 +576,6 @@ impl FakeAdapter {
             SimulationCommand::Takeoff(request) => {
                 self.require_session(&request.session_id)?;
                 let vehicle = self.vehicle_mut(&request.vehicle_id)?;
-                if vehicle.flight_state != VehicleFlightState::Armed {
-                    return Err(AdapterError::InvalidState(
-                        "vehicle must be armed before takeoff".to_owned(),
-                    ));
-                }
                 vehicle.flight_state = VehicleFlightState::Flying;
                 vehicle.enu.up_m = request.relative_altitude_m;
                 vehicle.ned.down_m = -request.relative_altitude_m;
@@ -779,94 +657,6 @@ impl FakeAdapter {
         }
     }
 
-    pub fn assign_live_product(
-        &mut self,
-        capacity_slot: u16,
-        camera_id: &LiveCameraId,
-        live_view_id: &LiveViewId,
-    ) -> Result<LiveStreamProductState, AdapterError> {
-        let product = self
-            .state
-            .stream_products
-            .iter_mut()
-            .find(|product| product.capacity_slot == capacity_slot)
-            .ok_or(AdapterError::UnknownViewerSlot(capacity_slot))?;
-        if product.lifecycle != veoveo_mcp_contract::LiveStreamProductLifecycle::Inactive {
-            if product.camera_id.as_ref() == Some(camera_id)
-                && product.live_view_id.as_ref() == Some(live_view_id)
-            {
-                return Ok(product.clone());
-            }
-            return Err(AdapterError::InvalidState(format!(
-                "viewer slot {capacity_slot} is already assigned"
-            )));
-        }
-        product.camera_id = Some(camera_id.clone());
-        product.live_view_id = Some(live_view_id.clone());
-        product.lifecycle = veoveo_mcp_contract::LiveStreamProductLifecycle::Ready;
-        product.active_viewer_leases = 1;
-        product.nvenc_sessions = 1;
-        #[cfg(test)]
-        if self.live_product_faults.fail_assignment_after_mutation {
-            self.live_product_faults.fail_assignment_after_mutation = false;
-            if let Some(replacement) = self
-                .live_product_faults
-                .assignment_replacement_live_view_id
-                .take()
-            {
-                product.live_view_id = Some(replacement);
-            }
-            return Err(AdapterError::InvalidState(
-                "injected assignment response loss".to_owned(),
-            ));
-        }
-        Ok(product.clone())
-    }
-
-    pub fn release_live_product(
-        &mut self,
-        capacity_slot: u16,
-        live_view_id: &LiveViewId,
-    ) -> Result<LiveStreamProductState, AdapterError> {
-        #[cfg(test)]
-        {
-            self.live_product_faults
-                .release_calls
-                .push((capacity_slot, live_view_id.clone()));
-            if self.live_product_faults.fail_release_before_mutation {
-                self.live_product_faults.fail_release_before_mutation = false;
-                return Err(AdapterError::InvalidState(
-                    "injected release failure".to_owned(),
-                ));
-            }
-        }
-        let product = self
-            .state
-            .stream_products
-            .iter_mut()
-            .find(|product| product.capacity_slot == capacity_slot)
-            .ok_or(AdapterError::UnknownViewerSlot(capacity_slot))?;
-        if product.live_view_id.as_ref() != Some(live_view_id) {
-            return Err(AdapterError::InvalidState(format!(
-                "viewer slot {capacity_slot} is not assigned to {live_view_id}"
-            )));
-        }
-        #[cfg(test)]
-        if self.live_product_faults.release_without_mutation {
-            self.live_product_faults.release_without_mutation = false;
-            return Ok(product.clone());
-        }
-        release_fake_product(product);
-        #[cfg(test)]
-        if self.live_product_faults.fail_release_after_mutation {
-            self.live_product_faults.fail_release_after_mutation = false;
-            return Err(AdapterError::InvalidState(
-                "injected release response loss".to_owned(),
-            ));
-        }
-        Ok(product.clone())
-    }
-
     fn require_session(&self, session_id: &crate::contract::SessionId) -> Result<(), AdapterError> {
         if &self.state.session_id == session_id {
             Ok(())
@@ -893,15 +683,6 @@ impl FakeAdapter {
             .filter_map(|recording| recording.recording_uri.clone())
             .collect()
     }
-}
-
-fn release_fake_product(product: &mut LiveStreamProductState) {
-    product.camera_id = None;
-    product.live_view_id = None;
-    product.lifecycle = veoveo_mcp_contract::LiveStreamProductLifecycle::Inactive;
-    product.active_viewer_leases = 0;
-    product.connected_viewers = 0;
-    product.nvenc_sessions = 0;
 }
 
 #[derive(Clone)]
@@ -938,16 +719,7 @@ impl Adapter {
     pub async fn state(&self) -> Result<SimulationState, AdapterError> {
         match self {
             Self::Http(adapter) => adapter.state().await,
-            Self::Fake(adapter) => {
-                #[cfg(test)]
-                {
-                    adapter.lock().await.state_result()
-                }
-                #[cfg(not(test))]
-                {
-                    Ok(adapter.lock().await.state())
-                }
-            }
+            Self::Fake(adapter) => Ok(adapter.lock().await.state()),
         }
     }
 
@@ -970,45 +742,6 @@ impl Adapter {
             Self::Fake(adapter) => adapter.lock().await.execute(operation),
         }
     }
-
-    pub async fn assign_live_product(
-        &self,
-        capacity_slot: u16,
-        camera_id: &LiveCameraId,
-        live_view_id: &LiveViewId,
-    ) -> Result<LiveStreamProductState, AdapterError> {
-        match self {
-            Self::Http(adapter) => {
-                adapter
-                    .assign_live_product(capacity_slot, camera_id, live_view_id)
-                    .await
-            }
-            Self::Fake(adapter) => {
-                adapter
-                    .lock()
-                    .await
-                    .assign_live_product(capacity_slot, camera_id, live_view_id)
-            }
-        }
-    }
-
-    pub async fn release_live_product(
-        &self,
-        capacity_slot: u16,
-        live_view_id: &LiveViewId,
-    ) -> Result<LiveStreamProductState, AdapterError> {
-        match self {
-            Self::Http(adapter) => {
-                adapter
-                    .release_live_product(capacity_slot, live_view_id)
-                    .await
-            }
-            Self::Fake(adapter) => adapter
-                .lock()
-                .await
-                .release_live_product(capacity_slot, live_view_id),
-        }
-    }
 }
 
 #[derive(Debug, Error)]
@@ -1029,8 +762,6 @@ pub enum AdapterError {
     UnknownVehicle(String),
     #[error("unknown live camera `{0}`")]
     UnknownCamera(String),
-    #[error("unknown live-view capacity slot `{0}`")]
-    UnknownViewerSlot(u16),
     #[error("invalid simulator state: {0}")]
     InvalidState(String),
     #[error("recording catalog failed: {0}")]
@@ -1108,6 +839,9 @@ mod tests {
                 resident_tiles: 20,
                 visible_tiles: 12,
                 loading_tiles: 0,
+                geometries_loaded: 20,
+                geometries_rendered: 12,
+                materials_loaded: 20,
                 provider_generation: 1,
                 event_sequence: 0,
                 refresh_count: 0,
@@ -1192,9 +926,9 @@ mod tests {
     }
 
     #[test]
-    fn fake_adapter_enforces_arm_before_takeoff() {
+    fn fake_adapter_takeoff_atomically_arms_and_launches() {
         let mut adapter = FakeAdapter::new(fake_state());
-        let error = adapter
+        adapter
             .command(&SimulationCommand::Takeoff(
                 crate::contract::TakeoffRequest {
                     session_id: SessionId::new("session-alpha").unwrap(),
@@ -1202,8 +936,11 @@ mod tests {
                     relative_altitude_m: 10.0,
                 },
             ))
-            .unwrap_err();
-        assert!(matches!(error, AdapterError::InvalidState(_)));
+            .unwrap();
+        assert_eq!(
+            adapter.state().vehicles[0].flight_state,
+            VehicleFlightState::Flying
+        );
     }
 
     #[test]
@@ -1267,6 +1004,29 @@ mod tests {
     }
 
     #[test]
+    fn private_adapter_tile_wire_requires_texture_proof_statistics() {
+        let tiles: TileState = serde_json::from_value(serde_json::json!({
+            "lifecycle": "ready",
+            "source": "google_photorealistic_3d_tiles",
+            "ion_asset_id": 2_275_207,
+            "resident_tiles": 526,
+            "visible_tiles": 18,
+            "loading_tiles": 0,
+            "geometries_loaded": 470,
+            "geometries_rendered": 29,
+            "materials_loaded": 470,
+            "provider_generation": 1,
+            "event_sequence": 1,
+            "refresh_count": 0
+        }))
+        .unwrap();
+
+        assert_eq!(tiles.geometries_loaded, 470);
+        assert_eq!(tiles.geometries_rendered, 29);
+        assert_eq!(tiles.materials_loaded, 470);
+    }
+
+    #[test]
     fn private_adapter_timing_wire_requires_render_cadence_measurements() {
         let timing: RuntimeTimingState = serde_json::from_value(serde_json::json!({
             "physics_hz": 60,
@@ -1317,12 +1077,18 @@ mod tests {
     #[test]
     fn private_adapter_product_wire_preserves_visibility() {
         let product: LiveStreamProductState = serde_json::from_value(serde_json::json!({
-            "streamProductId": "product-slot-0",
-            "capacitySlot": 0,
-            "cameraId": "follow",
-            "liveViewId": "view-019fdb63-e95e-7930-804c-47c8622d4160",
+            "streamProductId": "camera-atlas",
+            "cameraRegions": [{
+                "cameraId": "follow",
+                "xPx": 0,
+                "yPx": 0,
+                "widthPx": 1280,
+                "heightPx": 720
+            }],
+            "codedWidthPx": 1280,
+            "codedHeightPx": 720,
             "lifecycle": "ready",
-            "activeViewerLeases": 1,
+            "activeViewers": 1,
             "connectedViewers": 0,
             "nvencSessions": 1,
             "encodedFrames": 12,

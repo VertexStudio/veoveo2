@@ -38,7 +38,7 @@ profiles:
 | Veoveo extension Helm library API | delivered versioned chart-helper contract, packaged for authenticated OCI registry or offline-bundle distribution; consumer charts remain responsible for their values shape and installation policy |
 | OCI Distribution Specification, images, and registries | reproducible build, digest pinning, SBOM, provenance, and private release distribution through an installation-configured registry; OCI packaging does not require public availability |
 | `veoveo.io/simulation-runtime-build-lock/v1` | exact canonical-base record for Isaac Sim, Isaac Lab, Warp, Newton, MuJoCo, Kit/Python, CUDA, source archives, wheel digests, and NVIDIA runtime requirements |
-| `veoveo.io/simulation-conformance-result/v1` | hardware-backed result for one immutable first-party or anonymous external overlay against one base digest |
+| `veoveo.io/simulation-conformance-result/v2` | hardware-backed result for one immutable first-party or anonymous external overlay against one base digest, including native Newton motion |
 | `veoveo.io/simulation-runtime-release-evidence/v1` | immutable base, runtime tuple, paired result, and private OCI conformance-bundle release record |
 | Kubernetes and Helm | deployment rendering and workload security boundary, using the versions pinned by the repository when implemented |
 | SPDX license expressions | dependency-license policy input |
@@ -348,11 +348,11 @@ canonical tuple.
 | Isaac Sim | `6.0.1-rc.7+release.42383.32955d8d.gl` from the digest-pinned Isaac Sim 6.0.1 image |
 | Isaac Lab | `v3.0.0-beta2.patch1` at `ffff603eafc6b74264a5261cc0183d6a65390d78` |
 | Python | `3.12.13` |
-| Warp | `1.15.0` |
-| Newton | `1.4.0` |
-| MuJoCo | `3.10.0` |
-| MuJoCo Warp | `3.10.0.3` |
-| CUDA toolkit | `12.9` |
+| Warp | `1.16.0` |
+| Newton | `1.5.0` |
+| MuJoCo | `3.11.0` |
+| MuJoCo Warp | `3.11.0` |
+| CUDA toolkit | `13.0` |
 | Kit | `110.1.2` |
 
 Isaac Lab is pinned to a pre-release because it has no stable Isaac Sim 6.0-compatible
@@ -378,8 +378,8 @@ Kit cache and data paths, and a private memory-backed `/dev/shm`. The 20-camera 
 passed with a 2 GiB shared-memory limit. Shader-cache persistence remains configurable
 because cold RTX startup performs material compilation work.
 
-The shared base does not own one simulator domain. Cesium, Pegasus, PX4, UAV code,
-scenarios, and UAV environment conventions remain in the existing UAV overlay, where
+The shared base does not own one simulator domain. Cesium, PX4, the Warp UAV plant, UAV
+assets, scenarios, and UAV environment conventions remain in the existing overlay, where
 they can evolve without changing the shared runtime contract.
 
 An external repository may build its own simulator overlay from the exact base digest.
@@ -393,7 +393,7 @@ image inspection reject removal or reordering of platform-owned roots.
 
 `simulation-certify` accepts only digest-addressed base and overlay images. It inspects
 the canonical base's SBOM and provenance attestations and writes
-`veoveo.io/simulation-conformance-result/v1`. `cargo xtask release
+`veoveo.io/simulation-conformance-result/v2`. `cargo xtask release
 simulation-runtime` accepts one first-party and one anonymous result from the same
 source revision and base digest, publishes their private OCI evidence bundle, and writes
 `veoveo.io/simulation-runtime-release-evidence/v1`. Compatibility publication consumes

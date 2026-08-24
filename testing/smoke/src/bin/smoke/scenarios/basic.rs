@@ -184,14 +184,11 @@ pub(crate) async fn helm_config() -> Result<()> {
         "name: anonymous-simulation-mcp",
         "registry.example.internal/extensions/anonymous-simulation-mcp@sha256:1111111111111111111111111111111111111111111111111111111111111111",
         "veoveo.ai/simulator-hosted-live-view: \"true\"",
-        "name: ANONYMOUS_SIMULATION_PUBLIC_SIGNALING_URL",
-        "value: \"wss://simulation.example/anonymous-simulation/signaling\"",
-        "name: ANONYMOUS_SIMULATION_PUBLIC_MEDIA_HOST",
-        "value: \"192.0.2.10\"",
+        "name: ANONYMOUS_SIMULATION_PUBLIC_STREAM_URL",
+        "value: \"wss://simulation.example/anonymous-simulation/live\"",
         "runAsUser: 10001",
         "readOnlyRootFilesystem: true",
         "port: 8812",
-        "port: 48030",
     ] {
         contains(&external_simulation, expected)?;
     }
@@ -242,6 +239,14 @@ pub(crate) async fn helm_config() -> Result<()> {
             document.contains("kind: Deployment") && document.contains("name: mcp-gateway\n")
         })
         .context("finding rendered mcp-gateway deployment")?;
+    let gateway_service = platform
+        .split("\n---\n")
+        .find(|document| {
+            document.contains("kind: Service") && document.contains("name: mcp-gateway\n")
+        })
+        .context("finding rendered mcp-gateway service")?;
+    contains(gateway_service, "sessionAffinity: ClientIP")?;
+    contains(gateway_service, "timeoutSeconds: 10800")?;
     contains(gateway_deployment, "startupProbe:")?;
     contains(gateway_deployment, "failureThreshold: 24")?;
     for expected in [
@@ -599,24 +604,12 @@ pub(crate) async fn helm_config() -> Result<()> {
         "value: \"bioma\"",
         "veoveo.ai/simulator-hosted-live-view: \"true\"",
         "name: UAV_SIM_OPERATOR_CAMERAS_JSON",
-        "name: UAV_SIM_LIVE_VIEWER_SLOTS",
-        "name: UAV_SIM_LIVE_SIGNALING_PORT_BASE",
-        "name: UAV_SIM_LIVE_MEDIA_PORT_BASE",
-        "name: UAV_SIM_PUBLIC_SIGNALING_URL",
-        "value: \"wss://veoveo.bioma.ai/uav-sim/signaling\"",
-        "name: UAV_SIM_NATIVE_SIGNALING_URL",
-        "value: \"ws://uav-sim-runtime:49100/webrtc\"",
-        "name: UAV_SIM_LIVE_VIEW_MAXIMUM_VIEWERS",
-        "name: uav-sim-media",
-        "nodePort: 30998",
-        "nodePort: 30999",
-        "name: uav-sim-signaling",
-        "name: ROS_DISTRO",
-        "value: jazzy",
-        "name: RMW_IMPLEMENTATION",
-        "value: rmw_fastrtps_cpp",
-        "name: LD_LIBRARY_PATH",
-        "value: /isaac-sim/exts/isaacsim.ros2.core/jazzy/lib",
+        "name: UAV_SIM_OPERATOR_RTSP_PORT_BASE",
+        "name: UAV_SIM_PUBLIC_STREAM_URL",
+        "value: \"wss://veoveo.bioma.ai/uav-sim/live\"",
+        "name: UAV_SIM_RUNTIME_STREAM_URL",
+        "value: \"ws://uav-sim-runtime:8810/v1/live-streams\"",
+        "name: uav-sim-live-stream",
         "http://127.0.0.1:8810/healthz",
         "http://127.0.0.1:8810/readyz",
         "nvidia.com/gpu: 1",
@@ -635,6 +628,9 @@ pub(crate) async fn helm_config() -> Result<()> {
         "name: stream-signal",
         "name: stream-media",
         "UAV_SIM_RUNTIME_EVENT_SOCKET",
+        "name: ROS_DISTRO",
+        "name: RMW_IMPLEMENTATION",
+        "isaacsim.ros2.core",
     ] {
         if uav_sim.contains(forbidden) {
             bail!("UAV simulation render must not contain `{forbidden}`");
@@ -843,7 +839,7 @@ pub(crate) async fn helm_config() -> Result<()> {
         uav_dependencies
             .pointer("/components/simulation_runtime/compatibility_release")
             .and_then(Value::as_str)
-            == Some("2026.07.0")
+            == Some("2026.08.0")
             && uav_dependencies
                 .pointer("/components/simulation_runtime/build_target")
                 .and_then(Value::as_str)
@@ -852,10 +848,6 @@ pub(crate) async fn helm_config() -> Result<()> {
                 .pointer("/components/cesium_for_omniverse/version")
                 .and_then(Value::as_str)
                 == Some("0.29.0")
-            && uav_dependencies
-                .pointer("/components/pegasus_simulator/version")
-                .and_then(Value::as_str)
-                == Some("5.1.0")
             && uav_dependencies
                 .pointer("/components/px4_autopilot/version")
                 .and_then(Value::as_str)
@@ -945,8 +937,10 @@ pub(crate) async fn helm_config() -> Result<()> {
     for expected in [
         "nvcr.io/nvidia/isaac-sim:6.0.1@sha256:",
         "ISAAC_LAB_REVISION=ffff603eafc6b74264a5261cc0183d6a65390d78",
-        "WARP_WHEEL_SHA256=95c169f28bd7d6c78ac4ad62e2df1e61a096033748f757157fa4551aed80d010",
-        "NEWTON_WHEEL_SHA256=0e11343cc51b86647d9afcd191a21ca4d0d5e410d84072a60ef84af908c72577",
+        "WARP_WHEEL_SHA256=96449fc1e3b354185e2f09434fb794b5953ab2e8673b104d7e7f48d5d418bb35",
+        "NEWTON_WHEEL_SHA256=a9eef789e2e0f857e40df3382f101b5faadff5dd8a61cb86dd5ec5382dd27865",
+        "MUJOCO_WHEEL_SHA256=f40214fefc8c2fe0002a3c8abadf30de7a3330634f3c45cc29b407b40a0173fc",
+        "MUJOCO_WARP_WHEEL_SHA256=97e77e877c1c2ea064ae68eaace2333dec94f2d8984091ba7b383bc8c34958f6",
         "--require-hashes",
         "sha256sum --check --strict",
         "/isaac-sim/extscache/omni.warp.core-1.13.0+lx64",
@@ -971,13 +965,11 @@ pub(crate) async fn helm_config() -> Result<()> {
         fs::read_to_string("showcase/uav-sim/runtime/Dockerfile")?,
     );
     for expected in [
-        "ARG SIMULATION_RUNTIME_IMAGE=veoveo/simulation-runtime:2026.07.0",
+        "ARG SIMULATION_RUNTIME_IMAGE=veoveo/simulation-runtime:2026.08.0",
         "px4io/px4-dev:v1.17.0@sha256:",
         "PX4_COMMIT=d6f12ad1c4f70ad3230afd7d86e971421e02fef4",
-        "PEGASUS_COMMIT=644da37e9d5268e5f9a34e78bdcfd57a8bab82b4",
         "cesium-0.29.0-preinstalled-vendor.patch",
         "lxml-6.0.2-cp312-cp312",
-        "git -C pegasus apply --unidiff-zero --check",
         "ARG RERUN_SDK_VERSION=0.36.0",
         "rerun-sdk==${RERUN_SDK_VERSION}",
         "FROM --platform=${TARGETPLATFORM} ${SIMULATION_RUNTIME_IMAGE} AS uav-overlay",
@@ -988,7 +980,12 @@ pub(crate) async fn helm_config() -> Result<()> {
     ] {
         contains(&uav_runtime_dockerfile, expected)?;
     }
-    for removed in ["UAV_SIM_BASE_IMAGE", "ISAAC_SIM_IMAGE", "AS runtime-base"] {
+    for removed in [
+        "UAV_SIM_BASE_IMAGE",
+        "ISAAC_SIM_IMAGE",
+        "AS runtime-base",
+        "pegasus.simulator",
+    ] {
         not_contains(&uav_runtime_dockerfile, removed)?;
     }
     contains(
@@ -1075,12 +1072,8 @@ pub(crate) async fn helm_config() -> Result<()> {
     }
     not_contains(&anonymous_simulation_adapter, "veoveo-python-index")?;
     let workspace_builder = fs::read_to_string("tools/image-build/rust-workspace.Dockerfile")?;
-    for expected in [
-        "@nvidia/ov-web-rtc-6.6.0.tgz",
-        "77be78cd4799f797d320d386461834737f5a8368deacfb3b27ae26612f39c9a5",
-        "UAV_SIM_WEBRTC_CLIENT_BUNDLE=",
-    ] {
-        contains(&workspace_builder, expected)?;
+    for forbidden in ["@nvidia/ov-web-rtc", "UAV_SIM_WEBRTC_CLIENT_BUNDLE"] {
+        not_contains(&workspace_builder, forbidden)?;
     }
     let bake = fs::read_to_string("docker-bake.hcl")?;
     for expected in [
@@ -1179,73 +1172,64 @@ pub(crate) async fn helm_config() -> Result<()> {
     ))?;
     let bioma_root = fs::read_to_string("examples/bioma/gitops/bootstrap.yaml")?;
     for expected in [
-        "kind: Application",
-        "repoURL: https://github.com/BiomaAI/veoveo.git",
-        "path: examples/bioma",
-        "ServerSideApply=true",
+        "kind: GitRepository",
+        "url: ssh://git@github.com/BiomaAI/veoveo.git",
+        "kind: Kustomization",
+        "path: ./examples/bioma",
+        "deletionPolicy: Orphan",
+        "prune: true",
+        "wait: true",
     ] {
         contains(&bioma_root, expected)?;
     }
-    let bioma_platform = fs::read_to_string("examples/bioma/platform/argocd/kustomization.yaml")?;
-    contains(
-        &bioma_platform,
-        "argoproj/argo-cd/v3.4.5/manifests/install.yaml",
-    )?;
-    let mut chart_revision = None;
-    let mut configuration_revision = None;
-    for application in [
-        "examples/bioma/gitops/applications/veoveo.yaml",
-        "examples/bioma/gitops/applications/uav-sim.yaml",
+    let bioma_platform = fs::read_to_string("examples/bioma/platform/flux/kustomization.yaml")?;
+    for expected in [
+        "manifests/bases/source-controller?ref=v2.9.4",
+        "manifests/bases/kustomize-controller?ref=v2.9.4",
+        "manifests/bases/helm-controller?ref=v2.9.4",
     ] {
-        let application = fs::read_to_string(application)?;
-        contains(
-            &application,
-            "charts-registry.argocd.svc.cluster.local/charts",
-        )?;
-        contains(
-            &application,
-            "$configuration/examples/bioma/images.lock.yaml",
-        )?;
-        let revision = application
-            .lines()
-            .find_map(|line| {
-                line.trim()
-                    .strip_prefix("targetRevision: ")
-                    .filter(|value| value.starts_with("0.1.0-"))
-            })
-            .context("Bioma application omitted its immutable chart revision")?
-            .to_owned();
-        if let Some(expected) = &chart_revision {
-            ensure!(
-                &revision == expected,
-                "Bioma applications must use one chart revision: {expected} != {revision}"
-            );
-        } else {
-            chart_revision = Some(revision);
+        contains(&bioma_platform, expected)?;
+    }
+    not_contains(&bioma_platform, "notification-controller?ref=")?;
+    for source in [
+        "examples/bioma/gitops/sources/veoveo.yaml",
+        "examples/bioma/gitops/sources/uav-sim.yaml",
+    ] {
+        let source = fs::read_to_string(source)?;
+        for expected in [
+            "kind: OCIRepository",
+            "charts-registry.flux-system.svc.cluster.local:5000/charts/",
+            "insecure: true",
+            "application/vnd.cncf.helm.chart.content.v1.tar+gzip",
+            "operation: copy",
+        ] {
+            contains(&source, expected)?;
         }
-        let configuration_revision_value = application
-            .lines()
-            .filter_map(|line| line.trim().strip_prefix("targetRevision: "))
-            .find(|value| value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
-            .context("Bioma application omitted its immutable configuration revision")?
-            .to_owned();
-        if let Some(expected) = &configuration_revision {
-            ensure!(
-                &configuration_revision_value == expected,
-                "Bioma applications must use one configuration revision: \
-                 {expected} != {configuration_revision_value}"
-            );
-        } else {
-            configuration_revision = Some(configuration_revision_value);
+    }
+    for release in [
+        "examples/bioma/gitops/releases/veoveo.yaml",
+        "examples/bioma/gitops/releases/uav-sim.yaml",
+    ] {
+        let release = fs::read_to_string(release)?;
+        for expected in [
+            "kind: HelmRelease",
+            "targetNamespace: veoveo",
+            "storageNamespace: veoveo",
+            "chartRef:",
+            "serverSideApply: true",
+            "serverSideApply: enabled",
+            "driftDetection:",
+            "mode: enabled",
+            "valuesKey: images.lock.yaml",
+        ] {
+            contains(&release, expected)?;
         }
-        not_contains(&application, "targetRevision: main")?;
-        not_contains(&application, "ServerSideApply=true")?;
     }
     let uav_scenario: Value = serde_json::from_str(&fs::read_to_string(
         "showcase/uav-sim/scenarios/new-york-aerial.json",
     )?)?;
     ensure!(
-        uav_scenario.get("schema").and_then(Value::as_str) == Some("veoveo.uav-sim-acceptance/v10")
+        uav_scenario.get("schema").and_then(Value::as_str) == Some("veoveo.uav-sim-acceptance/v11")
             && uav_scenario
                 .pointer("/world/tree/frames/1/parent_transform/origin/latitude_degrees")
                 .and_then(Value::as_f64)
@@ -1257,11 +1241,15 @@ pub(crate) async fn helm_config() -> Result<()> {
             && uav_scenario
                 .pointer("/takeoff/relative_altitude_m")
                 .and_then(Value::as_f64)
-                == Some(300.0)
+                == Some(197.0)
             && uav_scenario
                 .pointer("/mission/speed_mps")
                 .and_then(Value::as_f64)
-                == Some(3.0)
+                == Some(20.0)
+            && uav_scenario
+                .pointer("/mission/task_timeout_seconds")
+                .and_then(Value::as_u64)
+                == Some(1_800)
             && uav_scenario
                 .pointer("/reason/maximum_frames")
                 .and_then(Value::as_u64)

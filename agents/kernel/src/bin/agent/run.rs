@@ -15,7 +15,8 @@ use veoveo_agent_kernel::{
     wake::{WakeBatch, WakeBus, WakeKindExt, WakeReceiver, heartbeat, is_priority},
 };
 use veoveo_agent_runtime::{
-    AgentInstanceId, AgentRuntime, AgentSpec, DEFAULT_AGENT_LEASE, DEFAULT_CLAIM_LEASE, json_object,
+    AgentInstanceId, AgentRuntime, AgentSpec, DEFAULT_AGENT_LEASE, DEFAULT_CLAIM_LEASE,
+    WakeAckReason, json_object,
 };
 use veoveo_platform_store::{
     AgentInputRequestId, AgentTaskId, PlatformStore, StoreConfig, StoreCredentials, WakeKind,
@@ -185,50 +186,81 @@ pub(crate) async fn cmd_run(args: RunArgs) -> Result<()> {
     }
 
     loop {
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
-                for (_, watcher) in watchers.drain() {
-                    watcher.abort();
-                }
-                runtime.release_lease().await?;
-                return Ok(());
-            }
-            changed = lease_lost_rx.changed() => {
-                if changed.is_err() || *lease_lost_rx.borrow() {
-                    for (_, watcher) in watchers.drain() {
-                        watcher.abort();
+        let batch = {
+            let next_batch = receiver.next_batch();
+            tokio::pin!(next_batch);
+            loop {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {
+                        for (_, watcher) in watchers.drain() {
+                            watcher.abort();
+                        }
+                        runtime.release_lease().await?;
+                        return Ok(());
                     }
-                    bail!("agent scheduler lease was lost");
-                }
-            }
-            _ = task_scan.tick() => {
-                arm_available_tasks(&runtime, &bus, &epoch_rx, &mut watchers, input_grace).await?;
-            }
-            batch = receiver.next_batch() => {
-                let batch = batch?;
-                if let Some(max) = budgets.hourly_max_episodes
-                    && !batch.wakes.iter().any(is_priority)
-                {
-                    let started = runtime
-                        .episodes_started_since(chrono::Utc::now() - chrono::TimeDelta::hours(1))
+                    changed = lease_lost_rx.changed() => {
+                        if changed.is_err() || *lease_lost_rx.borrow() {
+                            for (_, watcher) in watchers.drain() {
+                                watcher.abort();
+                            }
+                            bail!("agent scheduler lease was lost");
+                        }
+                    }
+                    _ = task_scan.tick() => {
+                        arm_available_tasks(
+                            &runtime,
+                            &bus,
+                            &epoch_rx,
+                            &mut watchers,
+                            input_grace,
+                        )
                         .await?;
-                    if started as u64 >= max {
-                        receiver
-                            .defer_batch(&batch, Duration::from_secs(30), "hourly episode budget reached")
-                            .await?;
-                        continue;
                     }
+                    batch = &mut next_batch => break batch?,
                 }
-                match run_batch_episode(&driver, &mut connection, &runtime, &batch).await {
-                    Ok(()) => receiver.note_episode_finished(),
-                    Err(error) => {
-                        tracing::error!(%error, "wake episode failed; durable wakes requeued");
-                        receiver.retry_batch(&batch, &error.to_string()).await?;
-                    }
+            }
+        };
+        if batch.is_heartbeat_only() {
+            match runtime
+                .acknowledge_wakes_without_episode(&batch.ids(), WakeAckReason::NoActionableChange)
+                .await
+            {
+                Ok(()) => tracing::info!(
+                    wake_count = batch.wakes.len(),
+                    "idle heartbeat acknowledged without LLM episode"
+                ),
+                Err(error) => {
+                    tracing::error!(%error, "idle heartbeat acknowledgement failed; durable wakes requeued");
+                    receiver.retry_batch(&batch, &error.to_string()).await?;
                 }
-                arm_available_tasks(&runtime, &bus, &epoch_rx, &mut watchers, input_grace).await?;
+            }
+            continue;
+        }
+        if let Some(max) = budgets.hourly_max_episodes
+            && !batch.wakes.iter().any(is_priority)
+        {
+            let started = runtime
+                .episodes_started_since(chrono::Utc::now() - chrono::TimeDelta::hours(1))
+                .await?;
+            if started as u64 >= max {
+                receiver
+                    .defer_batch(
+                        &batch,
+                        Duration::from_secs(30),
+                        "hourly episode budget reached",
+                    )
+                    .await?;
+                continue;
             }
         }
+        match run_batch_episode(&driver, &mut connection, &runtime, &batch).await {
+            Ok(()) => receiver.note_episode_finished(),
+            Err(error) => {
+                tracing::error!(%error, "wake episode failed; durable wakes requeued");
+                receiver.retry_batch(&batch, &error.to_string()).await?;
+            }
+        }
+        arm_available_tasks(&runtime, &bus, &epoch_rx, &mut watchers, input_grace).await?;
     }
 }
 
@@ -290,7 +322,14 @@ async fn run_batch_episode(
 async fn render_wake_body(runtime: &AgentRuntime, batch: &WakeBatch) -> Result<String> {
     let mut parts = Vec::new();
     let results = runtime.unconsumed_task_results().await?;
-    for wake in &batch.wakes {
+    let mut wakes = batch.wakes.iter().collect::<Vec<_>>();
+    wakes.sort_by_key(|wake| match wake.kind {
+        WakeKind::TaskResult => 0,
+        WakeKind::OperatorMessage | WakeKind::InputRequest => 1,
+        WakeKind::ResourceChanged => 2,
+        WakeKind::Timer => 3,
+    });
+    for wake in wakes {
         match wake.kind {
             WakeKind::TaskResult => {
                 let Some(task_id) = wake
@@ -307,17 +346,7 @@ async fn render_wake_body(runtime: &AgentRuntime, batch: &WakeBatch) -> Result<S
                 else {
                     continue;
                 };
-                parts.push(format!(
-                    "Background task update: `{}` task {} {} with result:\n\n{}",
-                    result.tool_name,
-                    result.task_id,
-                    if result.is_error {
-                        "failed"
-                    } else {
-                        "completed"
-                    },
-                    serde_json::to_string(&result.result)?,
-                ));
+                parts.push(render_task_result(result)?);
             }
             WakeKind::ResourceChanged => {
                 if let Some(uri) = wake
@@ -400,4 +429,27 @@ async fn render_wake_body(runtime: &AgentRuntime, batch: &WakeBatch) -> Result<S
         }
     }
     Ok(parts.join("\n\n"))
+}
+
+fn render_task_result(result: &veoveo_agent_runtime::AgentTaskResult) -> Result<String> {
+    let status = if result.is_error {
+        "failed"
+    } else {
+        "completed"
+    };
+    let continuation = if result.is_error {
+        "Handle this terminal failure directly and report or continue according to your workflow."
+    } else {
+        "Continue the workflow that dispatched this task using this terminal result directly."
+    };
+    Ok(format!(
+        "Authoritative background-task continuation: `{}` task {} {status}. It was dispatched by \
+         episode {}. {continuation} Do not call timeline_query or memory_query to rediscover this \
+         task or result, and do not repeat `{}`.\n\nTerminal result:\n\n{}",
+        result.tool_name,
+        result.task_id,
+        result.started_by_episode,
+        result.tool_name,
+        serde_json::to_string(&result.result)?,
+    ))
 }

@@ -19,7 +19,7 @@ artifactService:
 
 gateway:
   existingControlPlaneConfigMap: bioma-gateway-control-plane
-  controlPlaneRevision: e5064ee535e2e846b56f8882e7b0bc5bb591d9fc95968e7c08c1705c95302deb
+  controlPlaneRevision: 6330b589db8e8fb1814337a1ef3de6bc7027ea1dc9abfc30bdf0502e4d84e536
 
 consoleBff:
   oauthResource: https://veoveo.bioma.ai/mcp/admin

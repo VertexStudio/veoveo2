@@ -101,9 +101,9 @@ pub use gateway::{
     AuthOutcome, AuthReasonCode, AuthorizationServerEndpoint, AuthorizationServerId,
     CanonicalTaskId, CertificateAuthorityFilePath, CertificateAuthoritySource,
     CompatibilityHelperId, CompletionExposure, ComposedGatewayControlPlane, CompositionDigest,
-    DataLabelDefinition, DataLabelId, DelegationId, Exposure, GATEWAY_BINDING_SCHEMA,
-    GATEWAY_COMPOSITION_PROVENANCE_SCHEMA, GATEWAY_SERVER_FRAGMENT_SCHEMA, GatewayAction,
-    GatewayAuthorizationCodeRecord, GatewayAuthorizationRequest, GatewayBinding,
+    DataLabelDefinition, DataLabelId, DelegationId, DiscoveryFailureMode, Exposure,
+    GATEWAY_BINDING_SCHEMA, GATEWAY_COMPOSITION_PROVENANCE_SCHEMA, GATEWAY_SERVER_FRAGMENT_SCHEMA,
+    GatewayAction, GatewayAuthorizationCodeRecord, GatewayAuthorizationRequest, GatewayBinding,
     GatewayBindingSchema, GatewayCompositionContribution, GatewayCompositionError,
     GatewayCompositionInput, GatewayCompositionInputKind, GatewayCompositionProvenance,
     GatewayCompositionProvenanceSchema, GatewayCompositionRequirements, GatewayControlPlane,
@@ -152,14 +152,13 @@ pub use internal_auth::{
 };
 pub use live_view::{
     LIVE_VIEW_SCHEMA, LiveCameraContractError, LiveCameraDescriptor, LiveCameraHealth,
-    LiveCameraId, LiveCameraRig, LiveCameraSmoothing, LiveCameraSource, LiveCameraStreamPolicy,
-    LiveColorMatrix, LiveColorMetadata, LiveColorPrimaries, LiveColorRange, LiveColorTransfer,
-    LiveEntityId, LiveMediaEndpoint, LiveMediaTransport, LivePose, LiveQuaternionXyzw,
-    LiveSessionId, LiveStreamProductId, LiveStreamProductLifecycle, LiveStreamProductState,
-    LiveVector3, LiveViewAccessToken, LiveViewCapacityDimension, LiveViewCapacityProfile,
-    LiveViewCapacityState, LiveViewCapacityUsage, LiveViewCodec, LiveViewConnection,
+    LiveCameraId, LiveCameraRegion, LiveCameraRig, LiveCameraSmoothing, LiveCameraSource,
+    LiveCameraStreamPolicy, LiveColorMatrix, LiveColorMetadata, LiveColorPrimaries, LiveColorRange,
+    LiveColorTransfer, LiveEntityId, LiveMediaEndpoint, LiveMediaTransport, LivePose,
+    LiveQuaternionXyzw, LiveSessionId, LiveStreamProductId, LiveStreamProductLifecycle,
+    LiveStreamProductState, LiveVector3, LiveViewAccessToken, LiveViewCodec, LiveViewConnection,
     LiveViewHardwareEncoder, LiveViewId, LiveViewLifecycle, LiveViewOwner, LiveViewState,
-    LiveViewUri, LiveViewerInstanceId, is_valid_live_signaling_url,
+    LiveViewUri, LiveViewerInstanceId, is_valid_live_stream_url,
 };
 pub use pagination::{Page, PaginationError, paginate};
 pub use protocol::{

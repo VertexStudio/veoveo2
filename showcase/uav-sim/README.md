@@ -10,17 +10,30 @@ publishes their NVIDIA NVENC products to the governed live-view App.
 | Boundary | Supported profile |
 |---|---|
 | Isaac Sim | Marketing release `6.0.1`; internal build `6.0.1-rc.7+release.42383.32955d8d.gl`. |
+| Isaac Experimental API and Newton | Experimental prims and objects expose one Newton `1.5.0` CUDA rigid-body tensor state to the fleet. The classic Core API and PhysX UAV path are absent. |
+| Warp and MuJoCo | Warp `1.16.0`, MuJoCo `3.11.0`, and MuJoCo Warp `3.11.0` are one certified runtime tuple. Repository Warp kernels own UAV integration, launch contact, the plant, and HIL sensors; MuJoCo-Warp does not step the fleet. |
 | `veoveo.io/simulation-runtime-build-lock/v1` | Exact base inputs, immutable overlay components, and NVIDIA runtime requirements. |
-| `veoveo.io/live-view/v2` | Authoritative operator cameras, stable encoded products, ephemeral viewer leases, and typed capacity. |
+| `veoveo.io/live-view/v4` | Authoritative operator cameras, typed regions in one tiled encoded product, and ephemeral viewer authorizations without viewer quotas. |
 | `veoveo.io/uav-runtime-event/v2` | Private authenticated HTTP/1.1 NDJSON stream with an `adapter_ready` edge for immutable world-binding reapplication and a final `ready` edge for live-camera recovery. |
-| WebRTC and H.264 | One isolated native Omniverse WebRTC and NVIDIA NVENC product per active viewer lease. |
+| WebSocket and H.264 | One continuous tiled NVIDIA NVENC atlas for every operator camera, delivered as Annex B H.264 access units to every authenticated browser. |
 | Native sensor video | `omni.kit.livestream.aov` `10.2.0` and `omni.kit.livestream.rtsp` `10.2.3`, packaged by Isaac Sim `6.0.1`, for CUDA-AOV-to-NVENC H.264 output. |
 | RTSP, RTP, and H.264 | Pod-local RTSP 1.0 with interleaved RTP/RTCP and RFC 6184 single-NAL, STAP-A, and FU-A packetization. |
 | Rerun RRD | Version `0.36.0` telemetry, leader-camera video, and producer Blueprint publication. |
-| NVIDIA CUDA, Vulkan, RTX, and NVENC | Mandatory simulation, rendering, and server-side video encoding. |
-| MAVLink 2 and ROS 2 Jazzy | Pod-local PX4 command, telemetry, and simulator integration. |
+| NVIDIA CUDA, Vulkan, RTX, and NVENC | Mandatory simulation, low-latency RTX rendering, and server-side video encoding. |
+| MAVLink 2 | Pod-local PX4 `1.17.0` command, telemetry, actuator, and HIL sensor integration. |
 | OGC 3D Tiles | Cesium Omniverse `0.29.0` and its pinned Cesium Native revision stream photorealistic terrain and buildings. A repository-owned internal event extension reports redacted load lifecycle state. |
 | WGS 84, ECEF, ENU, NED, and FLU | Explicit Frames-governed world, physics, entity, sensor, and operator-camera mappings. |
+
+## Supporting Research
+
+Gao, Pagnucco, Bednarz, and Song survey Isaac Sim's architecture, GPU-accelerated
+physics and rendering, synthetic-data pipeline, application patterns, and practical
+limitations in [*NVIDIA Isaac Sim: Enabling Scalable, GPU-Accelerated Simulation for
+Robotics*](https://arxiv.org/html/2606.03551v1), arXiv:2606.03551v1 (2026). The survey
+provides background for this showcase's choice of an authoritative GPU simulator. It
+does not validate Veoveo's PX4, Warp plant, MCP, streaming, or acceptance
+implementation; those claims remain tied to the repository's pinned runtime and
+executable evidence.
 
 ## What Can This Do?
 
@@ -74,11 +87,11 @@ headless requests, pass criteria, and evidence record for another run.
 | Path | Responsibility |
 |---|---|
 | `../../platform/runtimes/simulation/` | Canonical Isaac, Isaac Lab, Warp, Newton, CUDA, and RTX lineage. |
-| `runtime/` | Cesium, Pegasus, PX4, fleet physics, domain sensors, authoritative operator cameras, Hydra/NVENC products, recording, and the cluster-private adapter. |
-| `../../servers/uav-sim-mcp/` | Domain tools, resources, tasks, subscriptions, camera/product projection, viewer leases, signaling, audit, and the live App. |
+| `runtime/` | Cesium, the repository-owned Warp UAV plant, PX4 HIL, Newton fleet state, domain sensors, authoritative operator cameras, Hydra/NVENC products, recording, and the cluster-private adapter. |
+| `../../servers/uav-sim-mcp/` | Domain tools, resources, tasks, subscriptions, camera/product projection, stream authorization, WebSocket delivery, audit, and the live App. |
 | `agents/` | Reviewed showcase packaging for isolated generic pilot agents. |
 | `map/` | Map-owned named places and operational air-network fixture used by the showcase. |
-| `deploy/helm/` | Independent GPU runtime and MCP Deployments, isolated agent Deployments, recording forwarder, stable media ports, cache, and NetworkPolicy. |
+| `deploy/helm/` | Independent GPU runtime and MCP Deployments, isolated agent Deployments, recording forwarder, shared-stream ingress, cache, and NetworkPolicy. |
 | `scenarios/` | Installation-independent Frames trees and acceptance parameters. |
 
 There is one stage, one Cesium world, one runtime cache, and one GPU allocation. No
@@ -115,16 +128,18 @@ cross-revision, or conflicting bindings fail startup directly. No controller pol
 replays renderer state. An installation that omits the ConfigMap admits the same binding
 once through `configure_world`.
 
-The selected revision determines the Cesium georeference, Pegasus coordinates, local
+The selected revision determines the Cesium georeference, Newton fleet coordinates, local
 geographic conversion, mission guard, recording metadata, sensor frames, and
 operator-camera world.
 
-The stage uses `RaytracedLighting` and the pinned Cesium extension. The headless runtime
-is the sole owner of Cesium's active viewport list. It submits every active domain
-sensor and operator camera during the same Kit update; the extension's interactive
+The stage uses Isaac 6's GPU-native `MinimalRendering` renderer in textured-diffuse mode
+with the pinned Cesium extension. This mode preserves Cesium's glTF imagery while it
+removes per-camera lighting rays from the five-product live path. The headless runtime is
+the sole owner of Cesium's active viewport list. It submits every active domain sensor
+and operator camera during the same Kit update; the extension's interactive
 viewport-window callback is disabled for this process because an empty window inventory
-would otherwise erase those authoritative viewports between frames. The runtime does
-not create another provider connection or tile cache for live views.
+would otherwise erase those authoritative viewports between frames. The runtime does not
+create another provider connection or tile cache for live views.
 
 Moving cameras use hole-free tile refinement. Cesium retains a loaded parent until its
 replacement children are ready, while ancestor and sibling preloading keep the next
@@ -134,29 +149,62 @@ during refinement instead of the renderer clear color.
 
 The image builds the exact Cesium Omniverse `0.29.0` source commit and exact upstream
 Cesium Native submodule revision in the digest-pinned upstream builder. Two reviewed
-patches add child-content failure delivery, load generations, and query-secret log
-redaction. Existing material, viewport-authority, and vendor-install patches apply to the
-resulting extension package. No runtime download or locally rebuilt installation is
-accepted.
+patches add child-content failure delivery, load generations, query-secret log redaction,
+and a fresh ion endpoint bootstrap for every native tileset generation. Existing
+material, viewport-authority, and vendor-install patches apply to the resulting extension
+package. No runtime download or locally rebuilt installation is accepted.
 
 Native message-bus events drive streamed-world recovery. A tile-content HTTP 400 marks
-the current provider generation rejected and requests one fresh generation. Hundreds of
-child failures from that generation remain one refresh. The replacement either reaches
-native load completion plus visible coverage or settles in a typed degraded state. Other
-HTTP and transport failures never trigger speculative reloads.
+the current provider generation rejected. The runtime keeps its resident geometry and
+materials mounted while a separately named tileset obtains a fresh root session. The
+endpoint bootstrap bypasses Cesium's in-memory and SQLite endpoint responses, while the
+persistent tile-content cache stays intact. Hundreds of child failures from the rejected
+generation remain one replacement action. Native load completion begins validation; it
+does not retire the resident tileset. Loaded material and geometry growth plus stable
+rendered coverage prove the replacement before promotion. A failed or unregistered
+replacement is removed after two minutes and settles in a typed degraded state. Other
+HTTP and transport failures never trigger speculative replacement. An isolated child
+transport or provider error remains recorded without withdrawing resident textured
+coverage. Loss of rendered geometry or loaded materials still removes visual readiness;
+Cesium can restore it by producing stable textured coverage again.
 
-The runtime projects `provider_generation`, `event_sequence`, `refresh_count`, and a
-typed `last_failure` without a URL or credential. Visibility counters remain render
-observations. They never start a timeout, poll a provider, or stop simulation. Existing
-operator streams may continue showing resident content while a replacement generation
-loads.
+The runtime projects `provider_generation`, `event_sequence`, `refresh_count`, loaded and
+rendered geometry counts, loaded material count, and a typed `last_failure` without a URL
+or credential. Visibility counters remain render observations. They never infer network
+failure, poll a provider, or stop simulation. Existing operator streams retain the
+resident generation while its replacement loads. Kubernetes visual readiness remains
+current during that overlap only while textured resident coverage is still present.
 
-Fleet dynamics use CUDA-backed PhysX tensor views. Elapsed monotonic time determines the
-number of authoritative fixed physics steps due on each scheduler pass. The clock retains
-bounded physics debt instead of dropping elapsed time. When rendering misses several
-visual deadlines, the runtime advances every due physics step and renders only the newest
-authoritative state. Rerun serialization, browser traffic, native encode, and recording
-retries remain outside that authority boundary and cannot slow the simulation timeline.
+PX4 remains the autopilot, estimator, mission executor, and MAVLink authority. Veoveo
+owns the vehicle asset, rotor model, aerodynamics, coordinate transforms, HIL sensor
+model, and process lifecycle. Every PX4 instance runs against an isolated writable root
+and one dedicated concurrent HIL transport.
+
+One Experimental `RigidPrim` resolves the whole fleet. A single Warp launch updates all
+motor states, integrates Newton's native `body_q` and `body_qd` arrays, applies the launch
+surface constraint, and samples every HIL sensor. The plant preserves the backend's native
+`xyzw` layout without adapter gathers or setter flushes.
+The only per-step device readback is one compact 30-float packet per vehicle for MAVLink.
+Controls cross back as one four-float packet per vehicle. Isaac's classic `World`, classic
+prim views, the PhysX UAV path, NumPy dynamics, and per-vehicle physics loops are absent.
+Sensor publication enters a bounded per-PX4 queue without waiting for transport or
+actuator arrival. Each worker preserves frame order, the next fixed step consumes the
+latest PX4 controls, and queue overflow is terminal instead of silently dropping HIL
+state or blocking the GPU simulation loop.
+
+The Isaac timeline remains playing because Newton gates its CUDA tensor and Fabric state,
+while app-driven and MuJoCo-Warp physics stepping are disabled. One batched repository
+Warp kernel advances force, torque, pose, velocity, gravity, and the launch-surface
+constraint at the exact 30 Hz dynamics cadence. It writes the resulting transforms and
+velocities into Newton's authoritative CUDA body arrays. Google tiles remain visual
+geometry and the airborne reference routes are separated. Each dynamics sample publishes
+two ordered HIL samples. PX4 receives IMU fields at 60 Hz,
+barometer and magnetometer fields at 30 Hz, and GPS fields at 10 Hz. Elapsed monotonic time
+determines the number of authoritative steps due on each scheduler pass. The clock retains
+bounded debt instead of dropping elapsed time. When rendering misses visual
+deadlines, the runtime advances every due physics step and renders only the newest state.
+Rerun serialization, browser traffic, native encode, and recording retries remain outside
+that authority boundary and cannot slow the simulation timeline.
 
 ## Always-On Fleet
 
@@ -172,31 +220,30 @@ reconstructs the default route from immutable configuration.
 ## Operator Cameras
 
 At startup the runtime creates a bounded logical-camera set under
-`/World/OperatorCameras` and a separate preallocated viewer-slot pool under
-`/World/OperatorViewerCameras`. Supported rigs are fixed, look-at, orbit, follow, chase,
-stabilized mounted, and formation overview. Every assigned viewer slot owns its camera
-clone, Hydra texture, product ID, native signaling port, UDP media port, RTX render, and
-NVENC session.
+`/World/OperatorCameras`. Supported rigs are fixed, look-at, orbit, follow, chase,
+stabilized mounted, and formation overview. Every streamable camera owns one typed
+region in a shared RTX tiled render. Isaac's Experimental Camera API batches the USD
+cameras and enforces their common optics. The atlas owns one Hydra texture,
+product ID, pod-loopback RTSP port pair, RTX render, NVENC session, and H.264 ring.
 
 The camera update reads current authoritative entity transforms directly. Its
 frame-rate-independent filter smooths only the final operator-camera position and
 orientation. Target changes, camera revisions, simulation generations, long gaps, and
 teleports reset the filter. No entity-pose history or visualization interpolation exists.
 
-Unassigned viewer products remain inactive. Assignment copies the chosen logical pose
-into one slot, enables its Hydra texture, and completes only after a drawable event
-proves the first assigned GPU frame and the native signaling socket is listening. The
-adapter uses a bounded event wait and releases the slot on activation failure. Multiple
-users, profiles, or tabs receive independent leases, camera clones, RTX renders, NVENC
-sessions, and peer state even when they select the same logical camera.
+The complete logical camera set owns one continuous Hydra texture, RTX render, NVENC
+session, and keyframe-aware H.264 ring. Multiple users, profiles, or tabs receive
+independent authorizations and cursors while sharing that exact atlas. Viewer count and
+camera selection never change GPU product count.
 
-The live App runs in an opaque-origin sandbox. It disables the pinned NVIDIA browser
-client's optional Compute Pressure telemetry before client initialization because that
-browser API is unavailable to an opaque origin. RTX rendering, NVENC encoding, and the
-native WebRTC data plane remain unchanged.
+The live App runs in an opaque-origin sandbox and decodes the shared Annex B atlas once
+with WebCodecs. It crops all selected camera regions into independent canvases. RTX
+rendering and NVENC encoding remain inside the authoritative simulator.
 
-The qualified one-GPU profile targets 16 FPS for each of two simultaneous 1280×720
-viewer products. Acceptance requires at least 12 delivered FPS, source-to-render p95
+The qualified one-GPU profile schedules 24 Kit presentation opportunities per second to
+sustain a 16 FPS target for each 1280×720 atlas region under continuous simulation work. Acceptance
+opens all five cameras for five simultaneous browser users and requires at least 12
+delivered FPS, source-to-render p95
 below 85 ms after the 256-event warm window, and a conservative composed
 motion-to-photon upper bound below 250 ms. These are measured product limits rather
 than adaptive downgrade rules; admission never rewrites a camera's requested optics or
@@ -208,7 +255,7 @@ server receives that edge on an authenticated HTTP stream, reapplies the binding
 waits for the runtime's final `ready` edge, emitted
 after physics, the streamed world, and logical cameras are current. The companion turns
 the final edge into a live-camera resource notification, and selected App tiles reconnect
-with fresh leases. No browser, MCP server, or disconnected event consumer can delay the
+with fresh authorizations. No browser, MCP server, or disconnected event consumer can delay the
 simulation loop.
 
 ## Domain Sensor And Recording
@@ -219,7 +266,7 @@ exact authoritative body-and-mount transform without operator smoothing. Cesium 
 the physical sensor viewport on every Kit update. Its Hydra product renders at the
 declared sensor rate and transfers the CUDA-resident `LdrColor` AOV directly into Isaac's
 native RTSP/NVENC extension. Replicator orchestration and CPU pixel capture are absent
-from this path.
+from both camera paths.
 
 The runtime consumes the pod-local encoded RTSP/RTP stream. It depacketizes H.264 without
 decoding or re-encoding, qualifies normal GOP access units, and fans those same bytes to
@@ -252,31 +299,26 @@ The chart requires:
 - one immutable Frames world and simulation frame, with an optional installation-owned
   startup binding ConfigMap for restart-stable always-on operation;
 - bounded fleet route, takeoff, vehicle, and PX4 parameters;
-- a strict logical operator-camera collection and a bounded physical viewer-slot pool;
-- stable native signaling and public media port ranges;
-- bounded live-view lease, viewer, frame-age, and product-activation limits;
+- a strict logical operator-camera collection and one continuous tiled product;
+- one pod-loopback RTSP port pair and one authenticated public WebSocket route;
+- expiring stream credentials with transparent renewal, without a viewer lease pool,
+  camera-selection limit, or viewer quota;
 - a leader identity and bounded recording cadence and queue;
 - platform database and recording-forwarder credentials;
 - `nvidia.com/gpu: 1`, the NVIDIA runtime class, and driver capabilities
   `compute,graphics,utility,video`;
 - digest-pinned images in production.
 
-The public signaling URL is credential-free. Provider and adapter credentials are
+The public stream URL is credential-free. Provider and adapter credentials are
 mounted from distinct Secrets and never enter ConfigMaps, MCP resources, logs,
 recordings, or evidence.
-
-`liveView.mediaService.nodePortBase` is required when an installation maps a fixed
-public UDP range through Kubernetes NodePorts. The chart assigns one contiguous
-NodePort per physical viewer slot and rejects a range that exceeds the Kubernetes
-NodePort boundary. A normal LoadBalancer installation leaves the value null and uses
-allocator-owned NodePorts.
 
 ## Credential-Free Verification
 
 ```sh
 cargo test -p veoveo-uav-sim-mcp --all-targets
 PYTHONPATH=showcase/uav-sim/runtime:sdk/python/src \
-  uv run --with numpy==2.5.1 --with aiohttp==3.14.1 \
+  uv run --with numpy==2.3.1 --with aiohttp==3.14.1 \
   --with pymavlink==2.4.49 --with fastcrc==0.3.6 --python 3.13 \
   python -m unittest discover -s showcase/uav-sim/runtime/tests -v
 helm lint showcase/uav-sim/deploy/helm
@@ -296,9 +338,9 @@ SBOM, and provenance.
 ## Hardware Acceptance
 
 The installation-owned acceptance deploys one simulator GPU workload. Live-view
-acceptance proves the always-on fleet, authoritative camera health, one isolated product
-per active viewer, RTX/NVENC/WebRTC playback, simultaneous same-camera viewer isolation,
-one-App multi-camera grid isolation, sensor separation, simulation real-time factor,
+acceptance proves the always-on fleet, authoritative camera health, one tiled product
+for all cameras, RTX/NVENC/WebCodecs playback, five users with all five camera canvases,
+same-camera fan-out, sensor separation, simulation real-time factor,
 source-to-render latency, and browser motion-to-photon latency. Stream, Recording, and
 mission acceptance remain independent consumer checkpoints.
 
@@ -338,5 +380,5 @@ SHA-256 evidence digests.
 Restart evidence is written beneath
 `output/acceptance/uav-live-restart/{source-revision}/{run-id}/`. It records the exact
 pod, immutable image, before-and-after container IDs and restart counts, the unchanged
-headed App document and viewer identity, fresh lease IDs, advancing video, hardware
+headed App document and viewer identity, fresh authorization IDs, advancing video, hardware
 graphics proof, screenshots, and digests.

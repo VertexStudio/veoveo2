@@ -9,7 +9,8 @@ from typing import Any, Callable
 from .config import RuntimeConfig
 from .geo import enu_to_geodetic
 from .operator_camera_config import live_camera_descriptor
-from .physics_batch import FleetPhysicsTiming
+from .operator_products import initial_operator_atlas_state
+from .fleet_runtime import FleetPhysicsTiming
 from .render_pose import RenderPoseAgreement
 from .tile_lifecycle import TileLifecycleSnapshot
 from .world_config import WorldConfiguration
@@ -73,6 +74,9 @@ class RuntimeState:
                 "resident_tiles": 0,
                 "visible_tiles": 0,
                 "loading_tiles": 0,
+                "geometries_loaded": 0,
+                "geometries_rendered": 0,
+                "materials_loaded": 0,
                 "provider_generation": 0,
                 "event_sequence": 0,
                 "refresh_count": 0,
@@ -101,19 +105,7 @@ class RuntimeState:
                 for camera in config.operator_live_view.cameras
             ],
             "stream_products": [
-                {
-                    "streamProductId": f"product-slot-{capacity_slot}",
-                    "capacitySlot": capacity_slot,
-                    "lifecycle": "inactive",
-                    "activeViewerLeases": 0,
-                    "connectedViewers": 0,
-                    "nvencSessions": 0,
-                    "encodedFrames": 0,
-                    "sourceToRenderSamples": 0,
-                }
-                for capacity_slot in range(
-                    config.operator_live_view.viewer_slot_count
-                )
+                initial_operator_atlas_state(config.operator_live_view)
             ],
             "vehicles": [],
             "recordings": [
@@ -159,6 +151,9 @@ class RuntimeState:
                 resident_tiles=snapshot.resident_tiles,
                 visible_tiles=snapshot.visible_tiles,
                 loading_tiles=snapshot.loading_tiles,
+                geometries_loaded=snapshot.geometries_loaded,
+                geometries_rendered=snapshot.geometries_rendered,
+                materials_loaded=snapshot.materials_loaded,
                 provider_generation=snapshot.provider_generation,
                 event_sequence=snapshot.event_sequence,
                 refresh_count=snapshot.refresh_count,
@@ -268,9 +263,12 @@ class RuntimeState:
     def update_stream_products(self, products: list[dict[str, object]]) -> None:
         by_camera: dict[str, list[dict[str, object]]] = {}
         for product in products:
-            camera_id = product.get("cameraId")
-            if camera_id is not None:
-                by_camera.setdefault(str(camera_id), []).append(product)
+            for region in product.get("cameraRegions", []):
+                if not isinstance(region, dict):
+                    continue
+                camera_id = region.get("cameraId")
+                if camera_id is not None:
+                    by_camera.setdefault(str(camera_id), []).append(product)
         with self._condition:
             self._state["stream_products"] = copy.deepcopy(products)
             for camera in self._state["live_cameras"]:
@@ -303,7 +301,9 @@ class RuntimeState:
 
     def update_vehicles(self, vehicles: list[VehicleTelemetry]) -> None:
         with self._condition:
-            self._state["vehicles"] = [self._vehicle_state(vehicle) for vehicle in vehicles]
+            self._state["vehicles"] = [
+                self._vehicle_state(vehicle) for vehicle in vehicles
+            ]
             self._touch()
 
     def set_recording_active(self, active: bool) -> None:
@@ -331,7 +331,9 @@ class RuntimeState:
                 recording.pop("diagnostic", None)
             self._touch()
 
-    def wait_for_simulation_delta(self, duration_seconds: float, timeout_seconds: float) -> float:
+    def wait_for_simulation_delta(
+        self, duration_seconds: float, timeout_seconds: float
+    ) -> float:
         with self._condition:
             start = float(self._state["simulation_time_s"])
             target = start + duration_seconds
@@ -340,12 +342,16 @@ class RuntimeState:
                 or self._state["lifecycle"] in {"failed", "stopped"},
                 timeout_seconds,
             ):
-                raise TimeoutError("simulation did not advance for the requested duration")
+                raise TimeoutError(
+                    "simulation did not advance for the requested duration"
+                )
             if self._state["lifecycle"] in {"failed", "stopped"}:
                 raise RuntimeError(f"simulation entered {self._state['lifecycle']}")
             return float(self._state["simulation_time_s"])
 
-    def mutate_vehicle(self, vehicle_id: str, callback: Callable[[dict[str, Any]], None]) -> None:
+    def mutate_vehicle(
+        self, vehicle_id: str, callback: Callable[[dict[str, Any]], None]
+    ) -> None:
         with self._condition:
             for vehicle in self._state["vehicles"]:
                 if vehicle["vehicle_id"] == vehicle_id:

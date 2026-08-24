@@ -7,7 +7,7 @@ installation recognizable to a Kubernetes platform team and prevents the product
 repository from becoming the owner of customer infrastructure.
 
 Helm is the package contract. GitOps is the recommended reconciliation model, with
-Argo CD as the maintained reference. An operator may use Flux or direct Helm without
+Flux as the maintained reference. An operator may use another controller or direct Helm without
 changing the chart, image, configuration, or Secret contracts.
 
 The ordered installation procedure for operators and agents is documented in the
@@ -20,6 +20,7 @@ and artifact contract.
 |---|---|
 | OCI Distribution Specification | authenticated private image, chart, SBOM, provenance, schema, and evidence distribution |
 | Helm and Kubernetes | separately reconciled platform and extension application charts |
+| Flux 2.9.4 / GitOps Toolkit | maintained reference using `source.toolkit.fluxcd.io/v1`, `kustomize.toolkit.fluxcd.io/v1`, and `helm.toolkit.fluxcd.io/v2`; other controllers consume the same Helm and configuration contract |
 | `veoveo.io/extension-release/v1` | independently published extension image, chart, fragment, conformance, and source identity |
 | `veoveo.io/deployment/v6` | optional repository-development publication profile with exact platform selection, installation-owned Helm values, and managed GPU allocator closure |
 | `veoveo.io/deployment-lock/v6` | immutable installation, source, and managed allocator evidence from the repository-development publication flow |
@@ -39,14 +40,15 @@ and artifact contract.
 | Installation configuration | Installation owner | Private Git repository |
 | Credentials and private keys | Installation owner | Secret manager and Kubernetes Secret projections |
 | Cluster prerequisites | Installation platform team | Cluster platform repository |
-| Application reconciliation | Installation GitOps controller | Declared Applications or equivalent release objects |
+| Application reconciliation | Installation GitOps controller | Declared source, Kustomization, and release objects |
 | Acceptance evidence | Installation release process | Rust smoke, conformance, and operational evidence |
 
 The [Autonomy Harness](AUTONOMY_HARNESS.md) defines the continuous containment boundary,
 complete shared-responsibility matrix, and end-to-end operating proof for agents that
 remain autonomous throughout the installation lifecycle. Helm readiness establishes
-workload health; the harness evidence proves that each effect stays inside its declared
-authority while agents keep running.
+workload health, and the gateway independently probes each hosted server's declared
+health endpoint so a degraded server surfaces in the Console; the harness evidence
+proves that each effect stays inside its declared authority while agents keep running.
 
 The build pipeline publishes artifacts. It does not connect to customer clusters.
 The configuration repository selects published artifacts. It does not compile
@@ -83,7 +85,7 @@ The installation release procedure follows the
 1. Verify the selected Veoveo compatibility manifest and extension-release manifests.
 2. Check that every extension selects the installed compatibility release.
 3. Pin image and chart digests in the installation's ordinary Helm values and GitOps
-   Applications.
+   release objects.
 4. Compose installation-owned bindings with the selected gateway fragments.
 5. Satisfy the generated typed platform requirements and render every chart.
 6. Commit the complete desired-state change for normal reconciliation.
@@ -170,7 +172,7 @@ data blocks the pod mount, while malformed trust material blocks BFF startup.
 ## Secrets
 
 Charts reference existing Kubernetes Secrets. Secret bytes never enter Helm values,
-Git, an Argo CD Application, or a generated ConfigMap. An enterprise may project those
+Git, a Flux Kustomization, or a generated ConfigMap. An enterprise may project those
 Secrets with External Secrets Operator, Secrets Store CSI Driver, Sealed Secrets, or
 its established platform mechanism.
 
@@ -186,7 +188,7 @@ An extension declares its own least-privilege Secret references. It does not add
 provider credentials to the platform Secret merely for convenience. Registry
 credentials use a Kubernetes image pull Secret selected through Helm values.
 
-Argo CD repository credentials are also platform Secrets. They authorize Argo to read
+Flux repository credentials are also platform Secrets. They authorize Flux to read
 the enterprise Git and OCI repositories; they are not application credentials.
 
 `recording-playback-token-key` is independent base64 text that decodes to exactly
@@ -197,12 +199,12 @@ gateway, refresh-delivery, Console session, object-store, or provider key.
 
 The enterprise owns the GitOps controller. Veoveo applications must not install,
 upgrade, configure, or delete that controller. A local reference environment may
-bootstrap a pinned Argo CD version as a platform fixture, but the root Veoveo
-Application begins only after the controller and its repository credentials exist.
+bootstrap a pinned Flux version as a platform fixture, but the root Veoveo
+Kustomization begins only after the controller and its repository credentials exist.
 
-A root application may create the installation namespace, non-secret ConfigMaps,
-ingress connectors, an AppProject, and child Applications. The platform chart is one
-child. Each optional private MCP extension is another child with its own chart version,
+A root Kustomization may create the installation namespace, non-secret ConfigMaps,
+ingress connectors, OCI sources, and HelmReleases. The platform chart is one release.
+Each optional private MCP extension is another release with its own chart version,
 values, health, rollback, and lifecycle.
 
 The controller reconciles drift continuously. Routine releases change Git and let the
@@ -212,16 +214,22 @@ not concurrent owners of the same application resources.
 ## Independently deployed MCP extensions
 
 An extension packages its Kubernetes workload in its own Helm chart. The installation
-adds a child application for that chart, selects its immutable release manifest, and
+adds a HelmRelease for that chart, selects its immutable release manifest, and
 binds its gateway fragment through installation-owned policy. The deterministic
 composer registers routes and capabilities in the complete control plane. This
 separates scheduling and rollout while preserving one MCP authority and one
 authorization boundary.
 
-An extension application normally selects two artifacts:
+An extension release normally selects two artifacts:
 
 - the immutable OCI chart version;
 - the installation Git repository containing values, bindings, and digest pins.
+
+Every fragment's upstream declares two typed URLs: the MCP endpoint and a required
+`health_url`. The gateway probes the health endpoint with an unauthenticated GET and
+treats only a success status as healthy; it never reads an MCP request, an
+authentication failure, or a method rejection as a health signal. A fragment without
+`health_url` fails control-plane validation before it can deploy.
 
 Private MCP servers follow the same pattern. They use their repository's native build
 system and do not join the Veoveo workspace. Their chart consumes the versioned
@@ -234,7 +242,7 @@ are in
 
 ## Direct Helm
 
-Argo CD is not a runtime dependency of Veoveo. An enterprise with another release
+Flux is not a runtime dependency of Veoveo. An enterprise with another release
 controller can render or install the same packages directly:
 
 ~~~bash
@@ -263,5 +271,6 @@ manifests and digests. Database migration compatibility belongs to release notes
 must be evaluated before promotion.
 
 A production gate checks controller health, application sync, pod readiness, persistent
-storage, ingress, OAuth discovery, MCP capability discovery, and required GPU capacity.
+storage, ingress, OAuth discovery, MCP capability discovery, hosted-server health
+endpoints, and required GPU capacity.
 Domain acceptance then exercises the installed workload through its public contract.

@@ -4,10 +4,11 @@ import concurrent.futures
 import logging
 import time
 from collections.abc import Callable
+from pathlib import Path
 
 from .config import RuntimeConfig
 from .hydra_camera import native_sensor_aov_arguments
-from .operator_products import livestream_aov_arguments
+from .operator_products import operator_aov_arguments
 from .physical_camera import physical_camera_product_name
 
 LOGGER = logging.getLogger("veoveo.uav_sim")
@@ -27,6 +28,15 @@ def kit_live_render_arguments() -> list[str]:
     return [f"--{path}={value}" for path, value in settings.items()]
 
 
+def kit_newton_arguments() -> list[str]:
+    """Register Newton before Kit creates any physics-backed application state."""
+    return [
+        "--enable",
+        "isaacsim.physics.newton",
+        "--/exts/isaacsim.core.simulation_manager/default_engine=newton",
+    ]
+
+
 def _cleanup(name: str, action: Callable[[], None]) -> None:
     try:
         action()
@@ -38,15 +48,20 @@ def run(config: RuntimeConfig) -> None:
     # Isaac requires SimulationApp to exist before importing Kit or simulator modules.
     from isaacsim import SimulationApp
 
-    physical_product_name = physical_camera_product_name(
-        config.camera.vehicle_id
-    )
+    physical_product_name = physical_camera_product_name(config.camera.vehicle_id)
     viewport_width = config.camera.width
     viewport_height = config.camera.height
     simulation_app = SimulationApp(
         {
             "headless": True,
-            "renderer": "RaytracedLighting",
+            # Live fleet cameras need textured geographic evidence, not a
+            # lighting simulation per view. Isaac's RTX minimal renderer mode
+            # 2 keeps Cesium's glTF textures and runs every Hydra product on
+            # the GPU without tracing lighting rays for the same world five
+            # times. FXAA keeps the post-process bounded at native 720p.
+            "renderer": "MinimalRendering",
+            "minimal_shading_mode": 2,
+            "anti_aliasing": 2,
             "width": viewport_width,
             "height": viewport_height,
             # A streamed 3D Tiles world never reaches a terminal "all assets
@@ -69,15 +84,18 @@ def run(config: RuntimeConfig) -> None:
                 "cesium.usd.plugins",
                 "--/exts/cesium.omniverse/externallyManagedViewports=true",
                 "--enable",
-                "omni.kit.livestream.webrtc",
-                "--enable",
                 "omni.kit.livestream.rtsp",
+                *kit_newton_arguments(),
                 *native_sensor_aov_arguments(
                     physical_product_name,
                     rtsp_port=config.camera.rtsp_port,
                     target_fps=config.camera.fps,
                 ),
-                *livestream_aov_arguments(config.operator_live_view),
+                *operator_aov_arguments(config.operator_live_view),
+                (
+                    "--/rtx/viewTile/limit="
+                    f"{len(config.operator_live_view.streamable_cameras)}"
+                ),
                 *kit_live_render_arguments(),
                 "--portable-root",
                 str(config.cache_directory / "kit-portable"),
@@ -85,12 +103,11 @@ def run(config: RuntimeConfig) -> None:
         }
     )
 
+    import isaacsim.physics.newton
     import omni.kit.app
     import omni.timeline
     import omni.usd
-    from isaacsim.core.api import World
-    from isaacsim.core.api.materials import PhysicsMaterial
-    from isaacsim.core.api.objects import GroundPlane
+    from isaacsim.core.simulation_manager import SimulationManager
     from pxr import Gf, Usd, UsdGeom, UsdLux
 
     extension_manager = omni.kit.app.get_app().get_extension_manager()
@@ -98,10 +115,13 @@ def run(config: RuntimeConfig) -> None:
     for extension in (
         "cesium.usd.plugins",
         "cesium.omniverse",
+        "isaacsim.physics.newton",
+        "isaacsim.core.simulation_manager",
         "isaacsim.core.experimental.prims",
+        "isaacsim.core.experimental.objects",
+        "isaacsim.core.experimental.materials",
+        "isaacsim.core.experimental.utils",
         "omni.kit.livestream.rtsp",
-        "omni.kit.livestream.webrtc",
-        "pegasus.simulator",
     ):
         extension_manager.set_extension_enabled_immediate(extension, True)
         if not extension_manager.is_extension_enabled(extension):
@@ -124,18 +144,12 @@ def run(config: RuntimeConfig) -> None:
     from cesium.usd.plugins.CesiumUsdSchemas import (
         Tileset as CesiumTileset,
     )
-    from pegasus.simulator.logic.backends.px4_mavlink_backend import (
-        PX4MavlinkBackend,
-        PX4MavlinkBackendConfig,
-    )
-    from pegasus.simulator.logic.interface.pegasus_interface import PegasusInterface
-    from pegasus.simulator.logic.sensors import GPS, IMU, Barometer, Magnetometer
-    from pegasus.simulator.logic.vehicles.multirotor import Multirotor, MultirotorConfig
-    from pegasus.simulator.params import ROBOTS
 
+    from .adapter_server import AdapterServer
     from .cesium_camera import current_pose_cesium_viewport
     from .command_queue import MainThreadQueue
     from .fleet_loop import FleetLoopController
+    from .fleet_runtime import WarpFleetRuntime
     from .hydra_camera import NativeH264CameraSensor
     from .operator_camera import (
         AuthoritativeOperatorCameraCollection,
@@ -147,8 +161,8 @@ def run(config: RuntimeConfig) -> None:
     )
     from .operator_products import OperatorProductCollection
     from .physical_camera import create_physical_rgb_camera, physical_camera_path
-    from .physics_batch import FleetPhysicsLifecycle
     from .px4 import Px4Commander
+    from .px4_hil import Px4HilFleet
     from .realtime import FixedStepCadenceGate, MonotonicPhysicsClock
     from .recording import ImuTelemetry, RecordingPublisher
     from .render_pose import rendered_pose_agreement
@@ -157,44 +171,50 @@ def run(config: RuntimeConfig) -> None:
         notify_adapter_ready,
         notify_runtime_ready,
     )
+    from .scene import create_fleet_scene
     from .server import (
         AdapterApplication,
-        AdapterServer,
         PreconfigurationApplication,
         TimelineControls,
     )
     from .state import RuntimeState, VehicleTelemetry
     from .stream_output import StreamPublicationWorker
-    from .tile_lifecycle import NativeTileEventBridge, TileLifecycleController
-    from .vehicle_model import PX4_IRIS_SENSOR_CADENCE, Px4IrisThrustCurve
+    from .tile_lifecycle import (
+        NativeTileEventBridge,
+        TileLifecycleController,
+        TileRenderStatistics,
+        begin_provider_session_replacement,
+        tile_content_ready,
+    )
     from .world_config import WorldConfiguration, WorldConfigurationSlot
 
     state: RuntimeState | None = None
     world_config: WorldConfiguration | None = None
     world_slot = WorldConfigurationSlot()
     command_queue = MainThreadQueue()
-    timeline = omni.timeline.get_timeline_interface()
     recording: RecordingPublisher | None = None
     stream_publication: StreamPublicationWorker | None = None
     server: AdapterServer | None = None
     connection_executor: concurrent.futures.ThreadPoolExecutor | None = None
     tileset_path: str | None = None
-    world: World | None = None
+    tileset_paths: set[str] = set()
     physics_step = 0
     simulation_time_s = 0.0
     commanders: dict[str, Px4Commander] = {}
-    vehicles: dict[str, Multirotor] = {}
-    vehicle_callback_prefixes: dict[str, str] = {}
+    vehicle_ids = tuple(f"uav-{index + 1}" for index in range(config.vehicle_count))
     camera_sensors: dict[str, NativeH264CameraSensor] = {}
     camera_sensor_sequences: dict[str, int] = {}
     camera_frames_observed: dict[str, int] = {}
-    physics_lifecycle: FleetPhysicsLifecycle | None = None
+    fleet_runtime: WarpFleetRuntime | None = None
+    hil_fleet: Px4HilFleet | None = None
+    simulation_running = True
     fleet_loop: FleetLoopController | None = None
     operator_cameras: AuthoritativeOperatorCameraCollection | None = None
     operator_products: OperatorProductCollection | None = None
     simulation_generation = 1
     tile_event_bridge: NativeTileEventBridge | None = None
     tile_controller: TileLifecycleController | None = None
+    physics_timeline = None
     runtime_events = RuntimeEventPublisher()
 
     try:
@@ -222,50 +242,41 @@ def run(config: RuntimeConfig) -> None:
         state = RuntimeState(config, world_config)
         recording = RecordingPublisher(config, world_config)
         if config.stream_publication is not None:
-            stream_publication = StreamPublicationWorker(
-                config.stream_publication
-            )
-        world = World(
-            physics_dt=1.0 / config.physics_hz,
-            rendering_dt=1.0 / config.rendering_hz,
-            stage_units_in_meters=1.0,
-            backend="warp",
-            device="cuda:0",
-        )
-        # This standalone process owns Kit updates through world.step(). Keep
-        # the loop in manual mode as required by SimulationContext instead of
-        # mixing an automatic Kit run loop with an external update caller.
-        # Native AOV/WebRTC otherwise takes automatic loop ownership when a
-        # product activates and blocks the authoritative simulation caller.
+            stream_publication = StreamPublicationWorker(config.stream_publication)
+        if not SimulationManager.switch_physics_engine("newton", verbose=True):
+            raise RuntimeError("Isaac Sim did not activate the Newton physics engine")
+        if SimulationManager.get_active_physics_engine() != "newton":
+            raise RuntimeError("Newton is not the active Isaac Sim physics engine")
+        SimulationManager.setup_simulation(dt=1.0 / config.physics_hz, device="cuda:0")
+        newton_stage = isaacsim.physics.newton.acquire_stage()
+        if newton_stage is None:
+            raise RuntimeError("Isaac Sim did not expose the active Newton stage")
+        newton_stage.cfg.time_step_app = False
+        if newton_stage.cfg.solver_cfg.solver_type != "mujoco":
+            raise RuntimeError("UAV fleet requires the MuJoCo-Warp Newton solver")
+        newton_stage.cfg.num_substeps = 1
+        newton_stage.cfg.use_cuda_graph = False
+        newton_stage.cfg.solver_cfg.iterations = 1
+        newton_stage.cfg.solver_cfg.ls_iterations = 1
+        newton_stage.cfg.solver_cfg.integrator = "euler"
+        newton_stage.cfg.solver_cfg.disable_contacts = True
+        newton_stage.cfg.solver_cfg.use_mujoco_contacts = False
+        newton_stage.cfg.solver_cfg.njmax = 1
+        newton_stage.cfg.solver_cfg.nconmax = 0
+        physics_timeline = omni.timeline.get_timeline_interface()
+        # Newton owns the authoritative clock. Kit remains in manual mode and
+        # advances only render products and extension work.
         from omni.kit.loop import _loop as omni_loop
 
         loop_runner = omni_loop.acquire_loop_interface()
         loop_runner.set_manual_mode(True)
-        launch_surface_material = PhysicsMaterial(
-            prim_path="/World/Physics_Materials/uav_launch_surface",
-            static_friction=1.0,
-            dynamic_friction=0.8,
-            restitution=0.0,
-        )
-        world.scene.add(
-            GroundPlane(
-                prim_path="/World/uav_launch_surface",
-                name="uav_launch_surface",
-                size=40.0,
-                z_position=0.0,
-                visible=False,
-                physics_material=launch_surface_material,
-            )
-        )
-        pegasus = PegasusInterface()
-        pegasus._world = world
-        pegasus.set_global_coordinates(
-            world_config.georeference_origin.latitude_degrees,
-            world_config.georeference_origin.longitude_degrees,
-            world_config.georeference_origin.ellipsoid_height_m,
-        )
 
         stage = omni.usd.get_context().get_stage()
+        fleet_scene = create_fleet_scene(
+            stage,
+            Path("/opt/veoveo/uav-sim/assets/iris.usda"),
+            config.vehicle_count,
+        )
         stage.DefinePrim("/World/Environment", "Xform")
         sky = UsdLux.DomeLight.Define(stage, "/World/Environment/Sky")
         sky.CreateIntensityAttr(1000.0)
@@ -306,34 +317,60 @@ def run(config: RuntimeConfig) -> None:
             georeference.GetGeoreferenceOriginHeightAttr().Set(
                 world_config.georeference_origin.ellipsoid_height_m
             )
-            tileset_path = add_tileset_ion(
-                "Google_Photorealistic_3D_Tiles",
-                config.cesium_ion_asset_id,
-                config.cesium_ion_access_token,
-            )
-            tileset = CesiumTileset.Get(stage, tileset_path)
-            if not tileset.GetPrim().IsValid():
-                raise RuntimeError("Cesium did not create the governed tileset prim")
-            tileset.GetMaximumScreenSpaceErrorAttr().Set(
-                config.tile_streaming.maximum_screen_space_error
-            )
-            tileset.GetMaximumSimultaneousTileLoadsAttr().Set(
-                config.tile_streaming.maximum_simultaneous_loads
-            )
-            tileset.GetMaximumCachedBytesAttr().Set(
-                config.tile_streaming.maximum_cached_bytes
-            )
-            tileset.GetPreloadAncestorsAttr().Set(
-                config.tile_streaming.preload_ancestors
-            )
-            tileset.GetPreloadSiblingsAttr().Set(
-                config.tile_streaming.preload_siblings
-            )
-            tileset.GetForbidHolesAttr().Set(
-                config.tile_streaming.forbid_holes
-            )
         finally:
             stage.SetEditTarget(previous_target)
+
+        def author_google_tileset(name: str) -> str:
+            previous_author_target = stage.GetEditTarget()
+            stage.SetEditTarget(Usd.EditTarget(stage.GetSessionLayer()))
+            try:
+                authored_path = add_tileset_ion(
+                    name,
+                    config.cesium_ion_asset_id,
+                    config.cesium_ion_access_token,
+                )
+                tileset = CesiumTileset.Get(stage, authored_path)
+                if not tileset.GetPrim().IsValid():
+                    raise RuntimeError(
+                        "Cesium did not create the governed tileset prim"
+                    )
+                tileset.GetMaximumScreenSpaceErrorAttr().Set(
+                    config.tile_streaming.maximum_screen_space_error
+                )
+                tileset.GetMaximumSimultaneousTileLoadsAttr().Set(
+                    config.tile_streaming.maximum_simultaneous_loads
+                )
+                tileset.GetMaximumCachedBytesAttr().Set(
+                    config.tile_streaming.maximum_cached_bytes
+                )
+                tileset.GetPreloadAncestorsAttr().Set(
+                    config.tile_streaming.preload_ancestors
+                )
+                tileset.GetPreloadSiblingsAttr().Set(
+                    config.tile_streaming.preload_siblings
+                )
+                tileset.GetForbidHolesAttr().Set(config.tile_streaming.forbid_holes)
+                tileset_paths.add(authored_path)
+                return authored_path
+            finally:
+                stage.SetEditTarget(previous_author_target)
+
+        def retire_google_tileset(retired_path: str) -> None:
+            previous_retire_target = stage.GetEditTarget()
+            stage.SetEditTarget(Usd.EditTarget(stage.GetSessionLayer()))
+            try:
+                retired_tileset = CesiumTileset.Get(stage, retired_path)
+                if retired_tileset.GetPrim().IsValid():
+                    retired_tileset.GetIonAccessTokenAttr().Clear()
+                    if not stage.RemovePrim(retired_path):
+                        raise RuntimeError(
+                            f"failed to retire Cesium tileset {retired_path}"
+                        )
+                tileset_paths.discard(retired_path)
+            finally:
+                stage.SetEditTarget(previous_retire_target)
+
+        tileset_path = author_google_tileset("Google_Photorealistic_3D_Tiles")
 
         mount_w, mount_x, mount_y, mount_z = config.camera.mount.orientation_wxyz
         sensor_mount_pose = Pose(
@@ -344,64 +381,6 @@ def run(config: RuntimeConfig) -> None:
         physical_cameras = {}
         for index in range(config.vehicle_count):
             vehicle_id = f"uav-{index + 1}"
-            vehicle_prim_path = f"/World/uav_{index + 1}"
-            multirotor_config = MultirotorConfig()
-            multirotor_config.thrust_curve = Px4IrisThrustCurve()
-            PX4_IRIS_SENSOR_CADENCE.validate_for_physics(config.physics_hz)
-            multirotor_config.sensors = [
-                Barometer(
-                    {"update_rate": float(PX4_IRIS_SENSOR_CADENCE.barometer_hz)}
-                ),
-                IMU({"update_rate": float(PX4_IRIS_SENSOR_CADENCE.imu_hz)}),
-                Magnetometer(
-                    {
-                        "update_rate": float(
-                            PX4_IRIS_SENSOR_CADENCE.magnetometer_hz
-                        )
-                    }
-                ),
-                GPS({"update_rate": float(PX4_IRIS_SENSOR_CADENCE.gps_hz)}),
-            ]
-            px4_backend = PX4MavlinkBackend(
-                PX4MavlinkBackendConfig(
-                    {
-                        "vehicle_id": index,
-                        "px4_autolaunch": True,
-                        "px4_dir": config.px4_directory,
-                        "px4_vehicle_model": "gazebo-classic_iris",
-                        # This process owns the one real-time physics clock.
-                        # Waiting serially for four independent PX4 actuator
-                        # replies here would multiply their latency and make
-                        # native rendering stall the authoritative timeline.
-                        "enable_lockstep": False,
-                        "update_rate": float(config.physics_hz),
-                    }
-                )
-            )
-            multirotor_config.backends = [px4_backend]
-            vehicle = Multirotor(
-                vehicle_prim_path,
-                ROBOTS["Iris"],
-                index,
-                [float(index * 3), 0.0, 0.07],
-                [0.0, 0.0, 0.0, 1.0],
-                config=multirotor_config,
-            )
-            vehicles[vehicle_id] = vehicle
-            vehicle_callback_prefixes[vehicle_id] = vehicle_prim_path
-
-            # Pegasus's Iris asset binds two MDL materials over plain HTTP.
-            # The UAV geometry remains functional without those cosmetic
-            # bindings, and deactivating them keeps the production image
-            # self-contained under the chart's HTTPS-only egress policy.
-            for looks_path in (
-                f"{vehicle_prim_path}/body/Looks",
-                *(f"{vehicle_prim_path}/rotor{rotor}/Looks" for rotor in range(4)),
-            ):
-                looks = stage.GetPrimAtPath(looks_path)
-                if looks.IsValid():
-                    looks.SetActive(False)
-
             commander = Px4Commander(
                 index, world_config.georeference_origin.ellipsoid_height_m
             )
@@ -438,7 +417,7 @@ def run(config: RuntimeConfig) -> None:
         )
         operator_products = OperatorProductCollection.create(
             config.operator_live_view,
-            stage,
+            operator_cameras,
         )
         extension_manager.set_extension_enabled_immediate(
             "omni.kit.livestream.aov", True
@@ -448,12 +427,14 @@ def run(config: RuntimeConfig) -> None:
                 "failed to enable required extension omni.kit.livestream.aov"
             )
         state.update_stream_products(operator_products.state(content_ready=False))
+        physics_timeline.play()
+        simulation_app.update()
+        SimulationManager.initialize_physics()
+        if SimulationManager.get_active_physics_engine() != "newton":
+            raise RuntimeError("Newton changed during physics initialization")
+        if not physics_timeline.is_playing() or not newton_stage.playing:
+            raise RuntimeError("Newton timeline did not enter the playing state")
 
-        rigid_body_paths = tuple(
-            f"{vehicle_callback_prefixes[vehicle_id]}/{body_name}"
-            for vehicle_id in vehicles
-            for body_name in ("body", "rotor0", "rotor1", "rotor2", "rotor3")
-        )
         recording_cadence = FixedStepCadenceGate(
             config.physics_hz, config.recording.telemetry_hz
         )
@@ -461,27 +442,21 @@ def run(config: RuntimeConfig) -> None:
             config.physics_hz,
             maximum_steps_per_pass=config.physics_hz,
         )
-        render_cadence = FixedStepCadenceGate(
-            config.physics_hz, config.rendering_hz
-        )
+        render_cadence = FixedStepCadenceGate(config.physics_hz, config.rendering_hz)
 
         def telemetry_snapshot() -> list[VehicleTelemetry]:
+            assert fleet_runtime is not None
             telemetry: list[VehicleTelemetry] = []
-            for vehicle_id, vehicle in vehicles.items():
+            for vehicle_id, vehicle_state in zip(
+                vehicle_ids, fleet_runtime.snapshots(), strict=True
+            ):
                 px4_status = commanders[vehicle_id].status()
-                vehicle_state = vehicle.state
                 telemetry.append(
                     VehicleTelemetry(
                         vehicle_id=vehicle_id,
-                        position_enu=tuple(
-                            float(value) for value in vehicle_state.position
-                        ),
-                        attitude_xyzw=tuple(
-                            float(value) for value in vehicle_state.attitude
-                        ),
-                        linear_velocity_enu_mps=tuple(
-                            float(value) for value in vehicle_state.linear_velocity
-                        ),
+                        position_enu=vehicle_state.position_enu_m,
+                        attitude_xyzw=vehicle_state.attitude_xyzw,
+                        linear_velocity_enu_mps=vehicle_state.linear_velocity_enu_mps,
                         flight_state=px4_status.flight_state,
                         battery_percent=px4_status.battery_percent,
                         px4_connected=px4_status.connected,
@@ -490,19 +465,18 @@ def run(config: RuntimeConfig) -> None:
             return telemetry
 
         def operator_entity_transforms() -> dict[str, EntityTransform]:
+            assert fleet_runtime is not None
             return {
                 vehicle_id: EntityTransform(
                     vehicle_id,
                     Pose(
-                        Vector3(
-                            *(float(value) for value in vehicle.state.position)
-                        ),
-                        QuaternionXyzw(
-                            *(float(value) for value in vehicle.state.attitude)
-                        ).normalized(),
+                        Vector3(*vehicle_state.position_enu_m),
+                        QuaternionXyzw(*vehicle_state.attitude_xyzw).normalized(),
                     ),
                 )
-                for vehicle_id, vehicle in vehicles.items()
+                for vehicle_id, vehicle_state in zip(
+                    vehicle_ids, fleet_runtime.snapshots(), strict=True
+                )
             }
 
         def update_operator_cameras(now: float | None = None) -> None:
@@ -538,41 +512,45 @@ def run(config: RuntimeConfig) -> None:
             telemetry = telemetry_snapshot()
             state.update_vehicles(telemetry)
             recording.offer_frame(
-                    telemetry,
-                    [
-                        ImuTelemetry(
-                            vehicle_id=vehicle_id,
-                            linear_acceleration_mps2=tuple(
-                                float(value)
-                                for value in vehicle.state.linear_acceleration
-                            ),
-                            angular_velocity_rps=tuple(
-                                float(value) for value in vehicle.state.angular_velocity
-                            ),
-                        )
-                        for vehicle_id, vehicle in vehicles.items()
-                    ],
-                    simulation_time_s,
-                    physics_step,
+                telemetry,
+                [
+                    ImuTelemetry(
+                        vehicle_id=vehicle_id,
+                        linear_acceleration_mps2=(
+                            vehicle_state.linear_acceleration_frd_mps2
+                        ),
+                        angular_velocity_rps=vehicle_state.angular_velocity_frd_rps,
+                    )
+                    for vehicle_id, vehicle_state in zip(
+                        vehicle_ids, fleet_runtime.snapshots(), strict=True
+                    )
+                ],
+                simulation_time_s,
+                physics_step,
             )
 
-        physics_lifecycle = FleetPhysicsLifecycle(
-            world,
-            vehicles,
-            vehicle_callback_prefixes,
-            rigid_body_paths,
+        hil_fleet = Px4HilFleet(config.px4_directory, config.vehicle_count)
+        fleet_runtime = WarpFleetRuntime(
+            fleet_scene.body_paths,
+            fleet_scene.initial_positions_enu_m,
+            world_config.georeference_origin.latitude_degrees,
+            world_config.georeference_origin.longitude_degrees,
+            world_config.georeference_origin.ellipsoid_height_m,
+            config.physics_hz,
+            hil_fleet,
             after_step=advance_physics,
         )
-        physics_batch = physics_lifecycle.reset()
+        hil_fleet.start()
         LOGGER.info(
-            "UAV fleet physics batch ready: bodies=%d device=%s",
-            physics_batch.body_count,
-            physics_batch.device,
+            "Newton CUDA UAV fleet ready: bodies=%d device=%s",
+            fleet_runtime.body_count,
+            fleet_runtime.device,
         )
 
         def pause() -> None:
             def action() -> None:
-                timeline.pause()
+                nonlocal simulation_running
+                simulation_running = False
                 physics_clock.reset(physics_step)
                 state.set_lifecycle("paused")
 
@@ -580,8 +558,9 @@ def run(config: RuntimeConfig) -> None:
 
         def resume() -> None:
             def action() -> None:
+                nonlocal simulation_running
                 physics_clock.reset(physics_step)
-                timeline.play()
+                simulation_running = True
                 state.set_lifecycle("running")
 
             command_queue.submit(action)
@@ -589,10 +568,9 @@ def run(config: RuntimeConfig) -> None:
         def reset() -> None:
             def action() -> None:
                 nonlocal physics_step, simulation_time_s, simulation_generation
-                assert world is not None
-                was_playing = timeline.is_playing()
-                assert physics_lifecycle is not None
-                physics_lifecycle.reset()
+                assert fleet_runtime is not None
+                was_running = simulation_running
+                fleet_runtime.reset()
                 physics_step = 0
                 simulation_time_s = 0.0
                 simulation_generation += 1
@@ -600,20 +578,18 @@ def run(config: RuntimeConfig) -> None:
                 physics_clock.reset(physics_step)
                 render_cadence.reset(physics_step)
                 state.advance(simulation_time_s, physics_step)
-                state.set_lifecycle("running" if was_playing else "paused")
+                state.set_lifecycle("running" if was_running else "paused")
 
             command_queue.submit(action)
 
         def step(steps: int) -> None:
             def action() -> None:
-                nonlocal physics_step, simulation_time_s
-                assert world is not None
-                timeline.play()
-                simulation_app.update()
+                nonlocal simulation_running
+                assert fleet_runtime is not None
+                simulation_running = False
                 for _ in range(steps):
-                    world.step(render=False)
-                world.render()
-                timeline.pause()
+                    fleet_runtime.step(physics_step + 1)
+                update_operator_cameras()
                 simulation_app.update()
                 physics_clock.reset(physics_step)
                 render_cadence.reset(physics_step)
@@ -644,7 +620,6 @@ def run(config: RuntimeConfig) -> None:
         server = AdapterServer(config, application.application)
         server.start()
 
-        timeline.play()
         connection_executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=config.vehicle_count, thread_name_prefix="px4-connect"
         )
@@ -663,7 +638,8 @@ def run(config: RuntimeConfig) -> None:
             time.monotonic() + config.px4_connect_timeout_seconds + 15.0
         )
         while not all(future.done() for future in connection_futures.values()):
-            world.step(render=False)
+            assert fleet_runtime is not None
+            fleet_runtime.step(physics_step + 1)
             for vehicle_id, future in connection_futures.items():
                 if future.done() and future.exception() is not None:
                     raise RuntimeError(
@@ -681,6 +657,7 @@ def run(config: RuntimeConfig) -> None:
         tile_controller = TileLifecycleController(
             tileset_path=tileset_path,
             ready_frames=config.tile_ready_frames,
+            replacement_timeout_frames=config.rendering_hz * 120,
         )
         # The Cesium extension starts before this headless application authors
         # its runtime-only tileset. Rebind the completed stage through Cesium's
@@ -740,10 +717,11 @@ def run(config: RuntimeConfig) -> None:
             fleet_loop.raise_if_failed()
             command_queue.drain()
             render = False
-            if timeline.is_playing():
+            if simulation_running:
                 due_steps = physics_clock.due_steps(physics_step)
                 for _ in range(due_steps):
-                    world.step(render=False)
+                    assert fleet_runtime is not None
+                    fleet_runtime.step(physics_step + 1)
                     render = render_cadence.due(physics_step) or render
                 if render:
                     render_cycle_started = time.monotonic()
@@ -753,26 +731,22 @@ def run(config: RuntimeConfig) -> None:
                     # cannot make the simulation clock run slow.
                     update_operator_cameras()
                     for sensor in camera_sensors.values():
-                        sensor.observe_simulation_time(
-                            simulation_time_s, physics_step
-                        )
+                        sensor.observe_simulation_time(simulation_time_s, physics_step)
                     update_cesium_viewport()
                     native_update_started = time.monotonic()
-                    world.render()
+                    simulation_app.update()
                     native_update_wall_seconds = (
                         time.monotonic() - native_update_started
                     )
                     assert operator_products is not None
-                    operator_products.observe_render_completion(time.monotonic())
                     tile_state = state.snapshot()["tiles"]
                     state.update_stream_products(
                         operator_products.state(
-                            content_ready=(
-                                tile_state["lifecycle"] == "ready"
-                                or (
-                                    tile_state["lifecycle"] == "refreshing"
-                                    and tile_state["visible_tiles"] > 0
-                                )
+                            content_ready=tile_content_ready(
+                                lifecycle=tile_state["lifecycle"],
+                                visible_tiles=tile_state["visible_tiles"],
+                                geometries_rendered=tile_state["geometries_rendered"],
+                                materials_loaded=tile_state["materials_loaded"],
                             )
                         )
                     )
@@ -842,25 +816,56 @@ def run(config: RuntimeConfig) -> None:
                 for tile_event in tile_event_bridge.drain():
                     tile_action = tile_controller.accept(tile_event)
                     if tile_action.report_failure:
-                        LOGGER.error(
+                        log = (
+                            LOGGER.warning
+                            if tile_action.retained_textured_coverage
+                            else LOGGER.error
+                        )
+                        log(
                             (
                                 "streamed-world load failed: type=%s "
-                                "status=%d generation=%d; simulation continues"
+                                "status=%d generation=%d; simulation and resident "
+                                "textured coverage continue=%s"
                             ),
                             tile_event.load_type,
                             tile_event.http_status,
                             tile_event.generation,
+                            tile_action.retained_textured_coverage,
                         )
-                    if tile_action.reload_tileset:
+                    if tile_action.begin_replacement:
                         try:
-                            cesium_interface.reload_tileset(tileset_path)
+                            replacement_path = begin_provider_session_replacement(
+                                author_google_tileset,
+                                (
+                                    "Google_Photorealistic_3D_Tiles_refresh_"
+                                    f"{tile_controller.snapshot().refresh_count}"
+                                ),
+                            )
+                            tile_controller.replacement_started(replacement_path)
                             LOGGER.info(
-                                "streamed-world provider generation refresh requested"
+                                "streamed-world replacement authored: %s; awaiting "
+                                "native registration and textured coverage while the "
+                                "resident generation remains mounted",
+                                replacement_path,
                             )
                         except Exception:
                             tile_controller.mark_refresh_command_failed()
                             LOGGER.exception(
-                                "streamed-world generation refresh failed; simulation continues"
+                                "streamed-world replacement creation failed; "
+                                "resident generation remains mounted"
+                            )
+                    if tile_action.retire_tileset_path is not None:
+                        try:
+                            retire_google_tileset(tile_action.retire_tileset_path)
+                            tileset_path = tile_controller.active_tileset_path
+                            LOGGER.info(
+                                "streamed-world failed replacement retired: %s",
+                                tile_action.retire_tileset_path,
+                            )
+                        except Exception:
+                            tile_controller.mark_refresh_command_failed()
+                            LOGGER.exception(
+                                "streamed-world obsolete generation retirement failed"
                             )
                 statistics = cesium_interface.get_render_statistics()
                 resident = int(statistics.tiles_loaded)
@@ -868,11 +873,34 @@ def run(config: RuntimeConfig) -> None:
                 loading = int(statistics.tiles_loading_worker) + int(
                     statistics.tiles_loading_main
                 )
-                tile_health = tile_controller.observe_render(
-                    resident_tiles=resident,
-                    visible_tiles=visible,
-                    loading_tiles=loading,
+                tile_observation = tile_controller.observe_render(
+                    TileRenderStatistics(
+                        resident_tiles=resident,
+                        visible_tiles=visible,
+                        loading_tiles=loading,
+                        geometries_loaded=int(statistics.geometries_loaded),
+                        geometries_rendered=int(statistics.geometries_rendered),
+                        materials_loaded=int(statistics.materials_loaded),
+                    )
                 )
+                if tile_observation.action.report_failure:
+                    LOGGER.error(
+                        "streamed-world replacement failed to prove textured coverage"
+                    )
+                if tile_observation.action.retire_tileset_path is not None:
+                    try:
+                        retire_google_tileset(
+                            tile_observation.action.retire_tileset_path
+                        )
+                        tileset_path = tile_controller.active_tileset_path
+                        LOGGER.info(
+                            "streamed-world textured replacement promoted; retired %s",
+                            tile_observation.action.retire_tileset_path,
+                        )
+                    except Exception:
+                        tile_controller.mark_refresh_command_failed()
+                        LOGGER.exception("streamed-world generation retirement failed")
+                tile_health = tile_observation.snapshot
                 state.set_tiles(tile_health)
                 recording.log_tiles(
                     resident,
@@ -893,7 +921,7 @@ def run(config: RuntimeConfig) -> None:
                 state.observe_render_cycle(
                     native_update_wall_seconds,
                     time.monotonic() - render_cycle_started,
-                    physics_lifecycle.timing(),
+                    fleet_runtime.timing(),
                 )
 
             for vehicle_id, future in connection_futures.items():
@@ -941,16 +969,17 @@ def run(config: RuntimeConfig) -> None:
     finally:
         if state is not None:
             state.set_lifecycle("stopping")
-        if tileset_path is not None:
+        if tileset_paths:
 
             def clear_ion_token() -> None:
                 stage = omni.usd.get_context().get_stage()
                 previous_target = stage.GetEditTarget()
                 stage.SetEditTarget(Usd.EditTarget(stage.GetSessionLayer()))
                 try:
-                    tileset = CesiumTileset.Get(stage, tileset_path)
-                    if tileset.GetPrim().IsValid():
-                        tileset.GetIonAccessTokenAttr().Clear()
+                    for governed_tileset_path in tuple(tileset_paths):
+                        tileset = CesiumTileset.Get(stage, governed_tileset_path)
+                        if tileset.GetPrim().IsValid():
+                            tileset.GetIonAccessTokenAttr().Clear()
                 finally:
                     stage.SetEditTarget(previous_target)
 
@@ -972,8 +1001,11 @@ def run(config: RuntimeConfig) -> None:
             _cleanup("native Isaac H.264 camera sensor", camera_sensor.close)
         if stream_publication is not None:
             _cleanup("native H.264 RTP publication", stream_publication.close)
-        if timeline.is_playing():
-            _cleanup("timeline", timeline.stop)
+        if hil_fleet is not None:
+            _cleanup("PX4 HIL fleet", hil_fleet.close)
+        if physics_timeline is not None:
+            _cleanup("Newton timeline", physics_timeline.stop)
+        _cleanup("Newton physics", SimulationManager.invalidate_physics)
         for commander in commanders.values():
             _cleanup("PX4 commander", commander.close)
         if recording is not None:

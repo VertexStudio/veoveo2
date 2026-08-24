@@ -18,6 +18,12 @@ interaction evidence without changing model weights or weakening gateway authori
 also asks whether action-to-observation evidence can teach the harness how the profile
 behaves, not merely which action previously received a successful final score.
 
+Model-weight changes belong to the separate
+[`HARNESS_MEDIATED_MODEL_POST_TRAINING.md`](HARNESS_MEDIATED_MODEL_POST_TRAINING.md)
+exploration. The two directions may share governed trajectory and evaluation evidence,
+but this document keeps the model frozen and changes only external strategy or dynamics
+records.
+
 The working term is **self-improving harness**. Names such as *adaptive profile*,
 *profile strategy*, *profile dynamics*, and the component paths discussed below are
 provisional.
@@ -44,7 +50,17 @@ learning signal. The primary sources considered here are:
 
 These papers concern model-weight training and learned simulators. Veoveo may be able to
 apply their supervision and evaluation lessons at the harness level before considering
-weight training.
+weight training. The companion post-training exploration uses
+[Agent Lightning v1.0](https://arxiv.org/html/2608.17528v1) as its primary reference for
+the later model-weight path.
+
+[NVIDIA AVO](https://arxiv.org/abs/2603.24517) demonstrates a seven-day autonomous
+optimization carried by one mechanism: a fitness gate over a single lineage, where a
+candidate is committed only when correctness passes and a measured improvement clears
+the current best. AVO is a reference for gate discipline, not for architecture. Its
+agent and its acceptance gate share one trust domain, and nothing in its system
+improves except the artifact under optimization. The measured-acceptance shape below
+keeps the gate and separates the trust domains.
 
 ## Current Veoveo Boundary
 
@@ -220,6 +236,119 @@ Held-out evaluation should vary both workflows and authority combinations. A can
 that improves a privileged path while regressing read-only or agent access should not
 become the general profile strategy.
 
+## Measured Acceptance: The Scorer Primitive
+
+Every loop in this document ends at the same requirement: a change is admitted
+only when a measurement says the candidate beats the incumbent. The
+measurement is always domain specific. The shape around it is not. This
+section records a shared shape for that machinery.
+
+Four records define the shape:
+
+- **Scorer.** A registered, versioned definition of one measurement: the
+  subject URI kinds it accepts, the owning domain that executes it, the
+  procedure reference, units, direction of improvement, required repetitions,
+  and the runtime-tuple fields that make two of its scores comparable.
+- **Score.** One execution result, stored as an ordinary artifact. Provenance
+  names the scorer version, the exact subject URIs, and the runtime tuple.
+  A value without uncertainty is not a Score.
+- **Baseline.** A governed pointer to the currently accepted candidate and
+  its Score, one per lineage. The lineage itself is the artifact provenance
+  chain that already exists.
+- **Gate.** A typed decision comparing a candidate Score against a Baseline
+  Score. A Gate admits only when the improvement clears the scorer's declared
+  margin under a matching runtime tuple, and it refuses cross-tuple
+  comparisons rather than guessing.
+
+Placement follows the platform's existing pattern: the four records are a
+contract profile, tentatively `veoveo.io/score/v1`, that domain servers
+implement. Measurement execution never centralizes. Mission efficiency is a
+query over recordings and episodes, forecast error belongs to Timeseries
+against actuals, solver quality is Optimization's existing independent
+verification, and simulator fidelity is a divergence measure over paired
+simulated and real recordings.
+
+Two rules keep the loop honest, and both are enforced below the agent:
+
+1. Commit-class actions gate on decisions, not on claims. Releasing an
+   improved artifact, publishing a changed tool description, or promoting a
+   configuration is admitted by profile policy only when the action
+   references an admitting Gate. The proposing agent requests evaluation;
+   it never computes its own acceptance.
+2. The ruler changes under different authority. Scorer definitions are
+   governed records whose mutation requires a scope and Work Context
+   membership the proposing agent's profile does not hold. An agent that
+   improves tools cannot touch the measurement it is judged by.
+
+The primitive generalizes past profile strategies. Each surface the platform
+could improve agentically pairs with a measurement the evidence plane
+already carries or can cheaply produce:
+
+| Improvable surface | Candidate scorer | Gate condition |
+|---|---|---|
+| Tool descriptions and prompts | Task success and action efficiency over a replayed mission set | Efficiency improves beyond margin with no success regression |
+| New tools and hosted servers | Contract conformance plus acceptance scenarios plus observed use | Conformance passes and one accepted mission required the capability |
+| Analytical memory and queries | Grounded-answer rate and bounded read cost from Reason evidence | Groundedness improves at equal or lower cost |
+| Optimization and timeseries configuration | Verified objective values and forecast error against actuals | Objective or error improves on the archived history |
+| Simulation runtime | Simulated-versus-real divergence over paired recordings | Divergence shrinks while acceptance scenarios still pass |
+
+The same shape serves three consumers without modification. Candidate-model
+admission in
+[`HARNESS_MEDIATED_MODEL_POST_TRAINING.md`](HARNESS_MEDIATED_MODEL_POST_TRAINING.md)
+is a Gate over model candidates. Mission action efficiency in the style of
+interactive-benchmark action-efficiency metrics is a Scorer over episodes
+and outcomes. And an installation's operational key ratio, the number its
+operators are evaluated on, is a customer-registered Scorer over the same
+evidence plane, which turns "cost per outcome is a query" from positioning
+into a record with provenance.
+
+A first experiment needs no new server: define two scorers as governed
+records, mission action efficiency over an existing UAV acceptance recording
+and forecast error over an archived timeseries, execute both through the
+owning domains, and store the Scores as artifacts. The registry, baselines,
+and policy-bound gating become worth building only after those two scores
+prove comparable, repeatable, and cheap.
+
+## Possible Server Shape
+
+If the experiment holds, one hosted server could own the loop's bookkeeping
+without owning its trust. A `score` server with the `score://` scheme would
+carry canonical identities for scorers, lineages, baselines, gates, and
+evaluation runs, and would use the full protocol surface the contract
+already prescribes:
+
+| Surface | Responsibility |
+|---|---|
+| Tools | `register_scorer` under `score:define`, `open_lineage`, task-augmented `request_evaluation`, `submit_measurement`, `evaluate_gate`, and `promote_baseline` under `score:promote` |
+| Resources | scorer catalog and templates, lineage histories, baselines, gate decisions, run states, with completions over scorer identities |
+| Prompts | the scripted evaluation and self-improvement cycles, from naming the surface and scorer through committing only with an admitting Gate reference |
+| Durable tasks | evaluation runs with repetitions and progress, terminating in the Gate or Score URI as `result_uri` |
+| Subscriptions | baseline-change notifications, so an improvement agent's manifest-declared subscription wakes it when its baseline moves |
+| MCP Apps | a scoreboard over lineage history with uncertainty bands, gate log, and evidence links, plus a scorer-registration app |
+
+Guidance flows through the protocol rather than a scaffold: prompts carry
+the procedure, the evaluation task walks the agent stepwise through
+`input_required` handoffs, resources make the baseline discoverable instead
+of remembered, typed gate refusals teach through diagnostics, and baseline
+wakes give agents initiative.
+
+Two scorer procedure kinds keep measurement independent. Query scorers
+execute inside the server over the evidence plane on the platform's
+sandboxed DuckDB runtime. Domain scorers are measured by the owning server,
+and the score server accepts the measurement only when the Score artifact's
+provenance shows the owning server's principal produced it under the
+declared procedure. The proposing agent cannot hand-author its own score,
+and that property is checkable with existing artifact provenance.
+
+The server would be a bookkeeper and a judge, never a measurer and never
+the police. Final authority stays in the gateway: the improving agent's
+profile holds evaluation access but neither `score:promote` nor the
+commit-class scopes on the target surface, and promotion belongs to a
+separate principal whose only admitted path references an admitting Gate.
+Gateway policy that checks Gate references on arbitrary commit-class
+actions across servers would be a later control-plane feature, recorded
+here as the deeper version rather than assumed.
+
 ## Simulation
 
 A profile simulator could eventually reduce the cost of real rollouts and generate
@@ -274,7 +403,8 @@ discussion only. This document does not reserve them.
 ## Suggested Experiments
 
 The smallest useful experiments would avoid model-weight training and production
-self-modification:
+self-modification. The companion post-training exploration defines the evidence gates
+that would have to open before a model-weight experiment:
 
 1. Define a typed evaluation trajectory for isolated agent episodes.
 2. Build a scenario suite spanning one profile and several authority classes.

@@ -30,11 +30,13 @@ const GOOGLE_PHOTOREALISTIC_3D_TILES_ASSET_ID: u64 = 2_275_207;
 const OPERATOR_PROFILE_SCOPES: &[&str] = &[
     "operator:use",
     "uav-sim:read",
+    "uav-sim:control",
     "uav-sim:stream",
     "view:read",
     "view:write",
     "view:capture",
     "map:dataset:read",
+    "map:route",
     "time:read",
 ];
 
@@ -49,6 +51,7 @@ struct UavAcceptanceScenario {
     world_ready_timeout_seconds: u64,
     takeoff: TakeoffScenario,
     camera: CameraAcceptance,
+    map_mobility_profile_uri: String,
     mission: MissionScenario,
     recording: RecordingAcceptance,
     stream: StreamScenario,
@@ -180,7 +183,15 @@ struct OperatorClient<'a> {
 impl OperatorClient<'_> {
     async fn conformance(&self, operation: &[&str], timeout: Duration) -> Result<String> {
         let token = gateway_token(self.conformance, self.base).await?;
-        gateway_conformance(self.conformance, self.base, &token, operation, timeout).await
+        gateway_conformance(
+            self.conformance,
+            self.base,
+            "operator",
+            &token,
+            operation,
+            timeout,
+        )
+        .await
     }
 
     async fn call_tool(&self, tool: &str, arguments: Value) -> Result<Value> {
@@ -250,13 +261,14 @@ impl UavAcceptanceScenario {
 
     fn validate(&self) -> Result<()> {
         ensure!(
-            self.schema == "veoveo.uav-sim-acceptance/v10",
+            self.schema == "veoveo.uav-sim-acceptance/v11",
             "unsupported UAV acceptance scenario schema {:?}",
             self.schema
         );
         validate_identity("session_id", &self.session_id)?;
         validate_identity("geospatial_layer_id", &self.geospatial_layer_id)?;
         validate_identity("vehicle_id", &self.vehicle_id)?;
+        parse_mobility_profile_uri(&self.map_mobility_profile_uri)?;
         ensure!(
             !self.world.display_name.trim().is_empty(),
             "world display name must not be blank"
@@ -450,7 +462,11 @@ async fn uav_sim_verify_with_visual_hold(
         "frames__publish_world",
         "uav-sim__configure_world",
         "uav-sim__get_simulation_state",
-        "uav-sim__execute_mission",
+        "uav-sim__list_active_vehicle_control_grants",
+        "uav-sim__prepare_vehicle_mission",
+        "uav-sim__execute_vehicle_mission_plan",
+        "map__route",
+        "map__prepare_route_handoff",
         "stream__start_live_session",
         "stream__stop_live_session",
         "stream__run_recording",
@@ -479,6 +495,7 @@ async fn uav_sim_verify_with_visual_hold(
         "UAV camera did not fail closed on the canonical NVIDIA NVENC H.264 path: {state}"
     );
     state = wait_for_recording_catalog(&operator, &scenario, Duration::from_secs(30)).await?;
+    let control_grant = ensure_operator_control_grant(&operator, &scenario).await?;
     let recording_uri = json_string(&state, "/recordings/0/recording_uri")?.to_owned();
     let recording_id = recording_uri
         .strip_prefix("recording://recordings/")
@@ -514,38 +531,17 @@ async fn uav_sim_verify_with_visual_hold(
     };
 
     let flight_result: Result<String> = async {
-        let initial_flight_state = json_string(
-            &simulation_state(&operator, &scenario).await?,
-            "/vehicles/0/flight_state",
-        )?
-        .to_owned();
-        if !matches!(
-            initial_flight_state.as_str(),
-            "armed" | "taking_off" | "flying"
-        ) {
-            ensure_vehicle_landed(&operator, &scenario, "preflight recovery").await?;
-            operator
-                .call_tool(
-                    "uav-sim__arm_vehicle",
-                    serde_json::json!({
-                        "session_id": scenario.session_id,
-                        "vehicle_id": scenario.vehicle_id
-                    }),
-                )
-                .await?;
-            wait_for_flight_state(&operator, &["armed"], Duration::from_secs(60), &scenario)
-                .await?;
-            operator
-                .call_tool(
-                    "uav-sim__takeoff_vehicle",
-                    serde_json::json!({
-                        "session_id": scenario.session_id,
-                        "vehicle_id": scenario.vehicle_id,
-                        "relative_altitude_m": scenario.takeoff.relative_altitude_m
-                    }),
-                )
-                .await?;
-        }
+        ensure_vehicle_landed(&operator, &scenario, "preflight recovery").await?;
+        operator
+            .call_tool(
+                "uav-sim__takeoff_vehicle",
+                serde_json::json!({
+                    "session_id": scenario.session_id,
+                    "vehicle_id": scenario.vehicle_id,
+                    "relative_altitude_m": scenario.takeoff.relative_altitude_m
+                }),
+            )
+            .await?;
         state = wait_for_flight_state(
             &operator,
             &["flying"],
@@ -576,24 +572,75 @@ async fn uav_sim_verify_with_visual_hold(
         .context("UAV state returned an invalid current vehicle WGS84 position")?;
         let target_position =
             nearby_mission_position(&current_position, scenario.mission.longitude_offset_degrees)?;
-        let mission = serde_json::json!({
-            "session_id": scenario.session_id,
-            "mission_id": format!("acceptance-{}", uuid::Uuid::now_v7()),
-            "expected_world_revision_uri": revision_uri,
-            "vehicles": [{
-                "vehicle_id": scenario.vehicle_id,
-                "waypoints": [{
-                    "position": target_position,
+        let (mobility_profile_id, mobility_profile_version) =
+            parse_mobility_profile_uri(json_string(&control_grant, "/map_mobility_profile_uri")?)?;
+        let route = operator
+            .task_tool(
+                "map__route",
+                serde_json::json!({
+                    "mobility_profile_id": mobility_profile_id,
+                    "mobility_profile_version": mobility_profile_version,
+                    "origin": {
+                        "kind": "position",
+                        "position": map_position(&current_position)
+                    },
+                    "destination": {
+                        "kind": "position",
+                        "position": map_position(&target_position)
+                    },
+                    "waypoints": [],
+                    "departure_time": Utc::now(),
+                    "objective": { "kind": "shortest" },
+                    "constraints": {},
+                    "alternatives": 0,
+                    "data_policy": {
+                        "allow_planning_advisory": true,
+                        "allow_stale_operational_data": false,
+                        "required_map_families": ["aviation"]
+                    }
+                }),
+                Duration::from_secs(scenario.mission.task_timeout_seconds),
+            )
+            .await?;
+        let map_route = operator
+            .call_tool(
+                "map__prepare_route_handoff",
+                serde_json::json!({
+                    "route_id": json_string(&route, "/route_id")?
+                }),
+            )
+            .await?;
+        let mission_timeout = governed_mission_timeout(
+            &route,
+            scenario.mission.speed_mps,
+            scenario.mission.task_timeout_seconds,
+        )?;
+        let mission_id = format!("acceptance-{}", uuid::Uuid::now_v7());
+        let plan = operator
+            .call_tool(
+                "uav-sim__prepare_vehicle_mission",
+                serde_json::json!({
+                    "session_id": scenario.session_id,
+                    "mission_id": mission_id,
+                    "vehicle_id": scenario.vehicle_id,
+                    "expected_world_revision_uri": revision_uri,
+                    "map_route": map_route,
                     "speed_mps": scenario.mission.speed_mps,
-                    "hold_seconds": scenario.mission.hold_seconds
-                }]
-            }]
-        });
+                    "hold_seconds_at_destination": scenario.mission.hold_seconds
+                }),
+            )
+            .await?;
         let mission_output = operator
             .task_tool(
-                "uav-sim__execute_mission",
-                mission,
-                Duration::from_secs(scenario.mission.task_timeout_seconds),
+                "uav-sim__execute_vehicle_mission_plan",
+                serde_json::json!({
+                    "plan_id": json_string(&plan, "/plan_id")?,
+                    "expected_revision": plan
+                        .get("revision")
+                        .and_then(Value::as_u64)
+                        .context("prepared UAV mission plan omitted its revision")?
+                }),
+                mission_timeout,
             )
             .await?;
         ensure!(
@@ -1517,13 +1564,13 @@ fn assert_world_ready(state: &Value, revision_uri: &str, simulation_frame_uri: &
     )
     .context("authoritative simulator returned invalid stream_products")?;
     ensure!(
-        viewer_slot_pool_matches_contract(&products),
-        "authoritative simulator viewer-slot pool violates its native product contract: {state}"
+        camera_product_set_matches_contract(&products),
+        "authoritative simulator tiled camera product violates its shared-stream contract: {state}"
     );
     Ok(())
 }
 
-fn viewer_slot_pool_matches_contract(products: &[LiveStreamProductState]) -> bool {
+fn camera_product_set_matches_contract(products: &[LiveStreamProductState]) -> bool {
     if products.is_empty() {
         return false;
     }
@@ -1531,51 +1578,45 @@ fn viewer_slot_pool_matches_contract(products: &[LiveStreamProductState]) -> boo
         .iter()
         .map(|product| &product.stream_product_id)
         .collect::<std::collections::BTreeSet<_>>();
-    let mut capacity_slots = products
+    let camera_ids = products
         .iter()
-        .map(|product| usize::from(product.capacity_slot))
-        .collect::<Vec<_>>();
-    capacity_slots.sort_unstable();
+        .flat_map(|product| {
+            product
+                .camera_regions
+                .iter()
+                .map(|region| &region.camera_id)
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    let camera_region_count = products
+        .iter()
+        .map(|product| product.camera_regions.len())
+        .sum::<usize>();
     product_ids.len() == products.len()
-        && capacity_slots == (0..products.len()).collect::<Vec<_>>()
+        && camera_ids.len() == camera_region_count
+        && products.iter().all(LiveStreamProductState::validate)
         && products.iter().all(|product| match product.lifecycle {
-            LiveStreamProductLifecycle::Inactive => {
-                product.camera_id.is_none()
-                    && product.live_view_id.is_none()
-                    && product.active_viewer_leases == 0
-                    && product.connected_viewers == 0
-                    && product.nvenc_sessions == 0
-                    && product.last_frame_at.is_none()
-                    && product.visible.is_none()
-                    && product.diagnostic.is_none()
-            }
             LiveStreamProductLifecycle::Starting => {
-                product.camera_id.is_some()
-                    && product.live_view_id.is_some()
-                    && product.active_viewer_leases == 1
-                    && product.connected_viewers <= 1
-                    && product.nvenc_sessions == 1
+                product.active_viewers == 0
+                    && product.connected_viewers == 0
+                    && product.nvenc_sessions <= 1
             }
             LiveStreamProductLifecycle::Ready => {
-                product.camera_id.is_some()
-                    && product.live_view_id.is_some()
-                    && product.active_viewer_leases == 1
-                    && product.connected_viewers <= 1
+                product.connected_viewers <= product.active_viewers
                     && product.nvenc_sessions == 1
                     && product.encoded_frames > 0
                     && product.last_frame_at.is_some()
                     && product.visible != Some(false)
                     && product.diagnostic.is_none()
             }
-            LiveStreamProductLifecycle::Failed => false,
+            LiveStreamProductLifecycle::Inactive | LiveStreamProductLifecycle::Failed => false,
         })
 }
 
-fn idle_viewer_slot_pool_matches_contract(products: &[LiveStreamProductState]) -> bool {
-    viewer_slot_pool_matches_contract(products)
+fn ready_camera_product_set_matches_contract(products: &[LiveStreamProductState]) -> bool {
+    camera_product_set_matches_contract(products)
         && products
             .iter()
-            .all(|product| product.lifecycle == LiveStreamProductLifecycle::Inactive)
+            .all(|product| product.lifecycle == LiveStreamProductLifecycle::Ready)
 }
 
 fn sensor_camera_is_started(camera: &Value) -> bool {
@@ -1737,14 +1778,120 @@ async fn gateway_token(conformance: &Path, base: &str) -> Result<String> {
     .await
 }
 
+async fn ensure_operator_control_grant(
+    operator: &OperatorClient<'_>,
+    scenario: &UavAcceptanceScenario,
+) -> Result<Value> {
+    let principal_key = format!("{}/oauth#operator-service", operator.base);
+    let admin_token = gateway_token_for_context(
+        operator.conformance,
+        operator.base,
+        "admin-service",
+        "admin",
+        &["operator:use", "admin:manage", "uav-sim:admin"],
+        "operations",
+    )
+    .await?;
+    let arguments = serde_json::to_string(&serde_json::json!({
+        "grant_id": format!("acceptance-operator-{}", scenario.vehicle_id),
+        "session_id": scenario.session_id,
+        "vehicle_id": scenario.vehicle_id,
+        "principal_key": principal_key,
+        "permissions": ["inspect", "plan", "execute", "abort"],
+        "map_mobility_profile_uri": scenario.map_mobility_profile_uri,
+        "allow_planning_advisory": true,
+        "valid_from": "2026-08-13T00:00:00Z"
+    }))?;
+    let granted = gateway_conformance(
+        operator.conformance,
+        operator.base,
+        "admin",
+        &admin_token,
+        &[
+            "call",
+            "--tool-name",
+            "uav-sim__grant_vehicle_control",
+            "--arguments",
+            &arguments,
+        ],
+        Duration::from_secs(120),
+    )
+    .await?;
+    let granted =
+        structured_output(&granted).context("admin control grant returned invalid output")?;
+
+    let visible = operator
+        .call_tool(
+            "uav-sim__list_active_vehicle_control_grants",
+            serde_json::json!({ "session_id": scenario.session_id }),
+        )
+        .await?;
+    let grant = visible
+        .as_array()
+        .and_then(|grants| {
+            grants.iter().find(|grant| {
+                grant.get("grant_id") == granted.get("grant_id")
+                    && grant.get("principal_key").and_then(Value::as_str)
+                        == Some(principal_key.as_str())
+                    && grant.get("vehicle_id").and_then(Value::as_str)
+                        == Some(scenario.vehicle_id.as_str())
+            })
+        })
+        .context("operator profile did not expose its active UAV control grant")?;
+    ensure!(
+        grant
+            .get("permissions")
+            .and_then(Value::as_array)
+            .is_some_and(|permissions| {
+                ["inspect", "plan", "execute", "abort"]
+                    .into_iter()
+                    .all(|required| permissions.iter().any(|permission| permission == required))
+            })
+            && grant
+                .get("map_mobility_profile_uri")
+                .and_then(Value::as_str)
+                == Some(scenario.map_mobility_profile_uri.as_str()),
+        "operator UAV control grant does not carry the canonical permissions and Map profile: {grant}"
+    );
+    Ok(grant.clone())
+}
+
+fn parse_mobility_profile_uri(value: &str) -> Result<(&str, u64)> {
+    let rest = value
+        .strip_prefix("map://mobility-profile/")
+        .context("mobility profile must use the canonical Map URI")?;
+    let (profile_id, version) = rest
+        .split_once('/')
+        .context("mobility profile URI must include one exact version")?;
+    ensure!(
+        !profile_id.is_empty() && !version.contains('/'),
+        "mobility profile URI must identify exactly one profile version"
+    );
+    Ok((
+        profile_id,
+        version
+            .parse()
+            .context("mobility profile URI version must be an unsigned integer")?,
+    ))
+}
+
+fn map_position(position: &Wgs84Position) -> Value {
+    serde_json::json!({
+        "longitude_deg": position.longitude_degrees,
+        "latitude_deg": position.latitude_degrees,
+        "ellipsoidal_height_m": position.ellipsoid_height_m
+    })
+}
+
 async fn gateway_conformance(
     conformance: &Path,
     base: &str,
+    profile: &str,
     token: &str,
     operation: &[&str],
     timeout: Duration,
 ) -> Result<String> {
-    let url = format!("{base}/mcp/operator");
+    let url = format!("{base}/mcp/{profile}");
     let mut command = tokio::process::Command::new(conformance);
     command
         .args(["--url", &url, "--scheme", "uav-sim"])
@@ -1827,6 +1974,34 @@ fn nearby_mission_position(
     Ok(target)
 }
 
+fn governed_mission_timeout(route: &Value, speed_mps: f64, limit_seconds: u64) -> Result<Duration> {
+    let distance_m = route
+        .pointer("/summary/distance")
+        .and_then(Value::as_f64)
+        .context("governed Map route omitted its summary distance")?;
+    let modeled_duration_s = route
+        .pointer("/summary/duration")
+        .and_then(Value::as_f64)
+        .context("governed Map route omitted its summary duration")?;
+    ensure!(
+        distance_m.is_finite()
+            && distance_m >= 0.0
+            && modeled_duration_s.is_finite()
+            && modeled_duration_s >= 0.0,
+        "governed Map route returned invalid cost quantities: {route}"
+    );
+    let minimum_flight_duration_s = distance_m / speed_mps;
+    let required_seconds = modeled_duration_s
+        .max(minimum_flight_duration_s)
+        .mul_add(2.0, 60.0)
+        .ceil() as u64;
+    ensure!(
+        required_seconds <= limit_seconds,
+        "governed route requires a {required_seconds}-second flight budget, above the configured {limit_seconds}-second acceptance limit"
+    );
+    Ok(Duration::from_secs(required_seconds.max(1)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1870,7 +2045,11 @@ mod tests {
     #[test]
     fn canonical_mission_is_runtime_loaded_and_validated() {
         let scenario = UavAcceptanceScenario::load(&canonical_scenario()).unwrap();
-        assert_eq!(scenario.schema, "veoveo.uav-sim-acceptance/v10");
+        assert_eq!(scenario.schema, "veoveo.uav-sim-acceptance/v11");
+        assert_eq!(
+            scenario.map_mobility_profile_uri,
+            "map://mobility-profile/mobility-019ffdb2-0598-7476-96d3-f3d7b0769f9e/1"
+        );
         assert_eq!(scenario.session_id, "uav-showcase");
         assert_eq!(scenario.world.world_id.as_str(), "uav-showcase-new-york");
         assert_eq!(scenario.world.tree.frames.len(), 15);
@@ -1888,11 +2067,11 @@ mod tests {
         assert_eq!(origin.latitude_degrees, 40.758);
         assert_eq!(origin.longitude_degrees, -73.9855);
         assert_eq!(origin.ellipsoid_height_m, -17.0);
-        assert_eq!(scenario.takeoff.relative_altitude_m, 300.0);
+        assert_eq!(scenario.takeoff.relative_altitude_m, 197.0);
         assert_eq!(scenario.takeoff.state_timeout_seconds, 1800);
         assert_eq!(scenario.mission.longitude_offset_degrees, 0.0002);
-        assert_eq!(scenario.mission.speed_mps, 3.0);
-        assert_eq!(scenario.mission.task_timeout_seconds, 120);
+        assert_eq!(scenario.mission.speed_mps, 20.0);
+        assert_eq!(scenario.mission.task_timeout_seconds, 1800);
         assert_eq!(scenario.recording.live_rows_timeout_seconds, 120);
         assert_eq!(scenario.camera.stream_timeout_seconds, 60);
         assert_eq!(scenario.stream.recording_replay.range_lag_seconds, 1.0);
@@ -1921,47 +2100,53 @@ mod tests {
     }
 
     #[test]
-    fn stream_product_acceptance_requires_an_idle_contiguous_viewer_slot_pool() {
+    fn stream_product_acceptance_requires_one_ready_tiled_product() {
         let products: Vec<LiveStreamProductState> = serde_json::from_value(serde_json::json!([
-            {"streamProductId":"product-slot-0","capacitySlot":0,"lifecycle":"inactive",
-             "activeViewerLeases":0,"connectedViewers":0,"nvencSessions":0,"encodedFrames":12,
-             "sourceToRenderSamples":0},
-            {"streamProductId":"product-slot-1","capacitySlot":1,"lifecycle":"inactive",
-             "activeViewerLeases":0,"connectedViewers":0,"nvencSessions":0,"encodedFrames":9,
-             "sourceToRenderSamples":0}
+            {"streamProductId":"camera-atlas","cameraRegions":[
+                {"cameraId":"follow","xPx":0,"yPx":0,"widthPx":1280,"heightPx":720},
+                {"cameraId":"chase","xPx":1280,"yPx":0,"widthPx":1280,"heightPx":720}
+             ],"codedWidthPx":2560,"codedHeightPx":720,"lifecycle":"ready",
+             "activeViewers":0,"connectedViewers":0,"nvencSessions":1,"encodedFrames":12,
+             "sourceToRenderSamples":120,"lastFrameAt":"2026-08-07T18:00:00Z","visible":true}
         ]))
         .unwrap();
-        assert!(idle_viewer_slot_pool_matches_contract(&products));
-        assert!(viewer_slot_pool_matches_contract(&products));
+        assert!(ready_camera_product_set_matches_contract(&products));
+        assert!(camera_product_set_matches_contract(&products));
     }
 
     #[test]
-    fn stream_product_acceptance_allows_valid_assignment_but_idle_preflight_rejects_it() {
-        let assigned: Vec<LiveStreamProductState> = serde_json::from_value(serde_json::json!([
-            {"streamProductId":"product-slot-0","capacitySlot":0,"cameraId":"follow",
-             "liveViewId":"view-a","lifecycle":"ready","activeViewerLeases":1,
-             "connectedViewers":1,"nvencSessions":1,"encodedFrames":12,
+    fn stream_product_acceptance_allows_many_viewers_on_one_product() {
+        let shared: Vec<LiveStreamProductState> = serde_json::from_value(serde_json::json!([
+            {"streamProductId":"camera-atlas","cameraRegions":[
+                {"cameraId":"follow","xPx":0,"yPx":0,"widthPx":1280,"heightPx":720}
+             ],"codedWidthPx":1280,"codedHeightPx":720,
+             "lifecycle":"ready","activeViewers":25,
+             "connectedViewers":25,"nvencSessions":1,"encodedFrames":12,
              "sourceToRenderP95Microseconds":18000,"sourceToRenderSamples":120,
              "lastFrameAt":"2026-08-07T18:00:00Z","visible":true}
         ]))
         .unwrap();
-        assert!(!idle_viewer_slot_pool_matches_contract(&assigned));
-        assert!(viewer_slot_pool_matches_contract(&assigned));
+        assert!(ready_camera_product_set_matches_contract(&shared));
+        assert!(camera_product_set_matches_contract(&shared));
     }
 
     #[test]
-    fn stream_product_acceptance_rejects_duplicate_viewer_slots() {
+    fn stream_product_acceptance_rejects_duplicate_camera_products() {
         let duplicate: Vec<LiveStreamProductState> = serde_json::from_value(serde_json::json!([
-            {"streamProductId":"product-slot-0","capacitySlot":0,"lifecycle":"inactive",
-             "activeViewerLeases":0,"connectedViewers":0,"nvencSessions":0,"encodedFrames":0,
+            {"streamProductId":"camera-atlas-a","cameraRegions":[
+                {"cameraId":"follow","xPx":0,"yPx":0,"widthPx":1280,"heightPx":720}
+             ],"codedWidthPx":1280,"codedHeightPx":720,"lifecycle":"starting",
+             "activeViewers":0,"connectedViewers":0,"nvencSessions":0,"encodedFrames":0,
              "sourceToRenderSamples":0},
-            {"streamProductId":"product-slot-1","capacitySlot":0,"lifecycle":"inactive",
-             "activeViewerLeases":0,"connectedViewers":0,"nvencSessions":0,"encodedFrames":0,
+            {"streamProductId":"camera-atlas-b","cameraRegions":[
+                {"cameraId":"follow","xPx":0,"yPx":0,"widthPx":1280,"heightPx":720}
+             ],"codedWidthPx":1280,"codedHeightPx":720,"lifecycle":"starting",
+             "activeViewers":0,"connectedViewers":0,"nvencSessions":0,"encodedFrames":0,
              "sourceToRenderSamples":0}
         ]))
         .unwrap();
-        assert!(!idle_viewer_slot_pool_matches_contract(&duplicate));
-        assert!(!viewer_slot_pool_matches_contract(&duplicate));
+        assert!(!ready_camera_product_set_matches_contract(&duplicate));
+        assert!(!camera_product_set_matches_contract(&duplicate));
     }
 
     #[test]
@@ -1997,6 +2182,22 @@ mod tests {
         assert_eq!(target.latitude_degrees, current.latitude_degrees);
         assert_eq!(target.longitude_degrees, -73.9853);
         assert_eq!(target.ellipsoid_height_m, current.ellipsoid_height_m);
+    }
+
+    #[test]
+    fn governed_mission_budget_tracks_the_authoritative_route_cost() {
+        let route = serde_json::json!({
+            "summary": {"distance": 580.0, "duration": 29.0}
+        });
+        assert_eq!(
+            governed_mission_timeout(&route, 20.0, 1800).unwrap(),
+            Duration::from_secs(118)
+        );
+
+        let excessive = serde_json::json!({
+            "summary": {"distance": 20_000.0, "duration": 1_000.0}
+        });
+        assert!(governed_mission_timeout(&excessive, 20.0, 1800).is_err());
     }
 
     #[test]

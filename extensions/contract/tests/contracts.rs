@@ -10,8 +10,9 @@ use veoveo_extension_contract::{
     NvidiaDriverCapability, PythonDistributionInput, ReleaseVersion, RuntimeComponent,
     RuntimeComponentVersion, SdkCompatibility, SdkLanguage, SimulationAttestationEvidence,
     SimulationConformanceResult, SimulationConformanceResultSchema, SimulationGpuRequirement,
-    SimulationHardwareEvidence, SimulationOverlayKind, SimulationProbeKind, SimulationProbeResult,
-    SimulationRuntimeBuildLock, SimulationRuntimeBuildLockSchema, SimulationRuntimeReleaseEvidence,
+    SimulationHardwareEvidence, SimulationNewtonDynamicsEvidence, SimulationOverlayKind,
+    SimulationProbeKind, SimulationProbeResult, SimulationRuntimeBuildLock,
+    SimulationRuntimeBuildLockSchema, SimulationRuntimeReleaseEvidence,
     SimulationRuntimeReleaseEvidenceSchema, SimulationSourceInput, SourceRevision,
     VersionRequirement, compatibility_manifest_schema, extension_release_schema,
     simulation_conformance_result_schema, simulation_runtime_build_lock_schema,
@@ -204,10 +205,10 @@ fn simulation_components() -> Vec<RuntimeComponentVersion> {
             "3.0.0-beta2.patch1",
             Some("f".repeat(40)),
         ),
-        (RuntimeComponent::Warp, "1.15.0", None),
-        (RuntimeComponent::Newton, "1.4.0", None),
-        (RuntimeComponent::Mujoco, "3.10.0", None),
-        (RuntimeComponent::MujocoWarp, "3.10.0.3", None),
+        (RuntimeComponent::Warp, "1.16.0", None),
+        (RuntimeComponent::Newton, "1.5.0", None),
+        (RuntimeComponent::Mujoco, "3.11.0", None),
+        (RuntimeComponent::MujocoWarp, "3.11.0", None),
         (RuntimeComponent::Python, "3.12.13", None),
         (RuntimeComponent::Torch, "2.12.0+cu130", None),
         (RuntimeComponent::Cuda, "13.0", None),
@@ -252,8 +253,8 @@ fn simulation_build_lock_requires_complete_immutable_tuple() {
         }],
         python_distributions: vec![PythonDistributionInput {
             package: ArtifactName::new("warp-lang").expect("package"),
-            version: "1.15.0".to_owned(),
-            filename: "warp_lang-1.15.0-py3-none-manylinux_2_28_x86_64.whl".to_owned(),
+            version: "1.16.0".to_owned(),
+            filename: "warp_lang-1.16.0-py3-none-manylinux_2_28_x86_64.whl".to_owned(),
             digest: digest('b'),
         }],
         authoritative_package_roots: vec![
@@ -297,6 +298,10 @@ fn simulation_result_rejects_incomplete_or_software_evidence() {
     let mut software = result;
     software.hardware.gpu_name = "llvmpipe".to_owned();
     assert!(software.validate().is_err());
+
+    let mut static_body = simulation_result(SimulationOverlayKind::AnonymousExternal);
+    static_body.newton_dynamics.final_height = static_body.newton_dynamics.initial_height;
+    assert!(static_body.validate().is_err());
 }
 
 #[test]
@@ -349,7 +354,7 @@ fn simulation_release_evidence_requires_paired_overlays() {
 
 fn simulation_result(overlay_kind: SimulationOverlayKind) -> SimulationConformanceResult {
     SimulationConformanceResult {
-        schema_version: SimulationConformanceResultSchema::V1,
+        schema_version: SimulationConformanceResultSchema::V2,
         profile: ArtifactName::new("isaac-sim-6").expect("profile"),
         base_image: ArtifactCoordinate::new(format!(
             "oci://registry.example/veoveo/uav-sim-base@{}",
@@ -374,6 +379,14 @@ fn simulation_result(overlay_kind: SimulationOverlayKind) -> SimulationConforman
             graphics_api: "Vulkan".to_owned(),
             renderer: "RaytracedLighting".to_owned(),
         },
+        newton_dynamics: SimulationNewtonDynamicsEvidence {
+            device: "cuda:0".to_owned(),
+            initial_height: 2.0,
+            final_height: 2.08,
+            final_vertical_velocity: 1.5,
+            force_newtons: 25.0,
+            steps: 12,
+        },
         attestations: SimulationAttestationEvidence {
             sbom_digest: digest('e'),
             provenance_digest: digest('f'),
@@ -383,6 +396,7 @@ fn simulation_result(overlay_kind: SimulationOverlayKind) -> SimulationConforman
         probes: [
             SimulationProbeKind::ComponentTuple,
             SimulationProbeKind::ModuleGraph,
+            SimulationProbeKind::NewtonDynamics,
             SimulationProbeKind::NewtonTiledCamera,
             SimulationProbeKind::IndependentRtxCameras,
             SimulationProbeKind::OverlayBoundary,

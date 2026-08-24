@@ -1,23 +1,21 @@
 from __future__ import annotations
 
 import json
-import math
 import os
 import struct
-import sys
 import tempfile
 import threading
 import unittest
+from collections import deque
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import numpy as np
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from pymavlink import mavutil
-from veoveo_uav_sim.app import kit_live_render_arguments
 from veoveo_uav_sim.adapter_auth import authorization_middleware
+from veoveo_uav_sim.app import kit_live_render_arguments, kit_newton_arguments
 from veoveo_uav_sim.config import (
     FleetLoopConfig,
     RuntimeConfig,
@@ -26,6 +24,7 @@ from veoveo_uav_sim.config import (
 from veoveo_uav_sim.contracts import ContractError, parse_command, parse_operation
 from veoveo_uav_sim.event_queue import NonBlockingEventQueue
 from veoveo_uav_sim.fleet_loop import FleetLoopController, vehicle_loop_route
+from veoveo_uav_sim.fleet_runtime import FleetPhysicsTiming
 from veoveo_uav_sim.geo import enu_to_geodetic, horizontal_distance_m
 from veoveo_uav_sim.h264 import (
     annex_b_nals,
@@ -40,13 +39,15 @@ from veoveo_uav_sim.physical_camera import (
     physical_camera_path,
     physical_camera_product_name,
 )
-from veoveo_uav_sim.physics_batch import (
-    FleetPhysicsLifecycle,
-    FleetPhysicsTiming,
-    IsaacFleetPhysicsBatch,
-    RigidBodyBatchAccumulator,
-)
 from veoveo_uav_sim.px4 import Px4Commander, Px4CommandRejected
+from veoveo_uav_sim.px4_hil import (
+    PX4_EXTERNAL_IRIS_AUTOSTART,
+    PX4_HIL_QUEUE_CAPACITY,
+    Px4HilBridge,
+    Px4Process,
+    _signed_centimeters_per_second,
+    _unsigned_centimeters_per_second,
+)
 from veoveo_uav_sim.realtime import (
     FixedStepCadenceGate,
     MonotonicPhysicsClock,
@@ -76,19 +77,18 @@ from veoveo_uav_sim.tile_lifecycle import (
     NativeTileEvent,
     NativeTileEventBridge,
     TileLifecycleController,
+    TileRenderStatistics,
+    begin_provider_session_replacement,
+    tile_content_ready,
 )
-from veoveo_uav_sim.vehicle_model import (
+from veoveo_uav_sim.vehicle_spec import (
+    PX4_HIL_HZ,
     PX4_IRIS_MOMENT_CONSTANT,
     PX4_IRIS_MOTOR_CONSTANT,
     PX4_IRIS_SENSOR_CADENCE,
     PX4_IRIS_YAW_MOMENT_COEFFICIENT,
-    Px4IrisSensorCadence,
-    Px4IrisThrustCurve,
-    attitude_enu_flu_to_ned_frd,
-    enu_to_ned_vector,
-    flu_to_frd_vector,
-    inverse_rotate_vector_xyzw,
-    quaternion_multiply_xyzw,
+    SensorCadence,
+    decode_actuator_controls,
 )
 from veoveo_uav_sim.world_config import (
     GeoreferenceOrigin,
@@ -106,9 +106,7 @@ VALID_ENVIRONMENT = {
     "UAV_SIM_TILE_CACHE_POLICY": "persistent",
     "UAV_SIM_WORLD_SOURCE": "google_photorealistic_3d_tiles",
     "UAV_SIM_RENDERING_HZ": "30",
-    "UAV_SIM_LIVE_VIEWER_SLOTS": "2",
-    "UAV_SIM_LIVE_ACTIVATION_TIMEOUT_SECONDS": "7.5",
-    "UAV_SIM_LIVE_PUBLIC_MEDIA_IP": "127.0.0.1",
+    "UAV_SIM_OPERATOR_RTSP_PORT_BASE": "8560",
     "UAV_SIM_OPERATOR_CAMERAS_JSON": json.dumps(
         [
             {
@@ -173,46 +171,18 @@ class RuntimeConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "vehicle identity is invalid"):
             physical_camera_path("uav/1")
 
-    def test_px4_frame_transforms_do_not_require_scipy_objects(self) -> None:
-        np.testing.assert_allclose(
-            enu_to_ned_vector([1.0, 2.0, 3.0]), [2.0, 1.0, -3.0]
-        )
-        np.testing.assert_allclose(
-            flu_to_frd_vector([1.0, 2.0, 3.0]), [1.0, -2.0, -3.0]
-        )
-        np.testing.assert_allclose(
-            inverse_rotate_vector_xyzw([0.0, 0.0, 0.0, 1.0], [1.0, 2.0, 3.0]),
-            [1.0, 2.0, 3.0],
-        )
-        quarter_turn_z = [0.0, 0.0, math.sqrt(0.5), math.sqrt(0.5)]
-        np.testing.assert_allclose(
-            inverse_rotate_vector_xyzw(quarter_turn_z, [0.0, 1.0, 0.0]),
-            [1.0, 0.0, 0.0],
-            atol=1.0e-12,
-        )
-        np.testing.assert_allclose(
-            quaternion_multiply_xyzw(
-                quarter_turn_z, [0.0, 0.0, 0.0, 1.0]
-            ),
-            quarter_turn_z,
-        )
-        converted = attitude_enu_flu_to_ned_frd([0.0, 0.0, 0.0, 1.0])
-        self.assertAlmostEqual(float(np.linalg.norm(converted)), 1.0)
-        np.testing.assert_allclose(
-            converted, [0.0, 0.0, -math.sqrt(0.5), -math.sqrt(0.5)]
-        )
-
-    def test_px4_sensor_cadence_is_bounded_by_the_physics_clock(self) -> None:
-        PX4_IRIS_SENSOR_CADENCE.validate_for_physics(60)
+    def test_px4_sensor_cadence_is_bounded_by_the_hil_transport(self) -> None:
+        PX4_IRIS_SENSOR_CADENCE.validate_for_physics(PX4_HIL_HZ)
+        self.assertEqual(PX4_HIL_HZ, 60)
         self.assertEqual(PX4_IRIS_SENSOR_CADENCE.imu_hz, 60)
         self.assertEqual(PX4_IRIS_SENSOR_CADENCE.barometer_hz, 30)
         self.assertEqual(PX4_IRIS_SENSOR_CADENCE.magnetometer_hz, 30)
         self.assertEqual(PX4_IRIS_SENSOR_CADENCE.gps_hz, 10)
 
         with self.assertRaisesRegex(ValueError, "exceeds physics cadence"):
-            Px4IrisSensorCadence(imu_hz=120).validate_for_physics(60)
+            SensorCadence(imu_hz=120).validate_for_physics(60)
         with self.assertRaisesRegex(ValueError, "must divide physics cadence"):
-            Px4IrisSensorCadence(gps_hz=11).validate_for_physics(60)
+            SensorCadence(gps_hz=11).validate_for_physics(60)
 
     def test_authoritative_tick_does_not_wait_for_present_threads(self) -> None:
         arguments = kit_live_render_arguments()
@@ -229,6 +199,16 @@ class RuntimeConfigTests(unittest.TestCase):
             ],
         )
 
+    def test_newton_is_enabled_before_kit_initializes_physics(self) -> None:
+        self.assertEqual(
+            kit_newton_arguments(),
+            [
+                "--enable",
+                "isaacsim.physics.newton",
+                "--/exts/isaacsim.core.simulation_manager/default_engine=newton",
+            ],
+        )
+
     def test_google_tiles_are_mandatory_and_exact(self) -> None:
         with patch.dict(os.environ, VALID_ENVIRONMENT, clear=True):
             config = RuntimeConfig.from_environment()
@@ -241,7 +221,10 @@ class RuntimeConfigTests(unittest.TestCase):
         self.assertTrue(config.tile_streaming.preload_siblings)
         self.assertTrue(config.tile_streaming.forbid_holes)
         self.assertEqual(config.adapter_host, "0.0.0.0")
-        self.assertEqual(config.adapter_bearer_token, VALID_ENVIRONMENT["UAV_SIM_ADAPTER_BEARER_TOKEN"])
+        self.assertEqual(
+            config.adapter_bearer_token,
+            VALID_ENVIRONMENT["UAV_SIM_ADAPTER_BEARER_TOKEN"],
+        )
 
         invalid_holes = {
             **VALID_ENVIRONMENT,
@@ -258,12 +241,8 @@ class RuntimeConfigTests(unittest.TestCase):
 
     def test_runtime_events_are_typed_and_publish_without_a_consumer(self) -> None:
         publisher = RuntimeEventPublisher()
-        notify_adapter_ready(
-            publisher, session_id="uav-showcase", generation=7
-        )
-        notify_runtime_ready(
-            publisher, session_id="uav-showcase", generation=7
-        )
+        notify_adapter_ready(publisher, session_id="uav-showcase", generation=7)
+        notify_runtime_ready(publisher, session_id="uav-showcase", generation=7)
         self.assertEqual(
             json.loads(RuntimeEvent("ready", "uav-showcase", 7).encode()),
             {
@@ -345,11 +324,11 @@ class RuntimeAdapterHttpTests(unittest.IsolatedAsyncioTestCase):
     def test_operator_render_cadence_is_independent_of_sensor_cadence(self) -> None:
         with patch.dict(os.environ, VALID_ENVIRONMENT, clear=True):
             config = RuntimeConfig.from_environment()
-        self.assertEqual(config.physics_hz, 60)
+        self.assertEqual(config.physics_hz, 30)
         self.assertEqual(config.rendering_hz, 30)
         self.assertEqual(config.camera.fps, 2)
         self.assertEqual(config.operator_live_view.cameras[0].optics.frame_rate_hz, 30)
-        self.assertEqual(config.operator_live_view.activation_timeout_seconds, 7.5)
+        self.assertEqual(config.operator_live_view.rtsp_port_base, 8560)
         self.assertEqual(config.px4_connect_timeout_seconds, 180.0)
         self.assertEqual(config.camera.vehicle_id, "uav-1")
         self.assertEqual(config.recording.telemetry_hz, 5)
@@ -364,11 +343,12 @@ class RuntimeAdapterHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('"omni.replicator.core"', app_source)
         self.assertNotIn("import CameraSensor", app_source)
         self.assertNotIn("RtxCamera", app_source)
-        self.assertNotIn("isaacsim.sensors.experimental.rtx", app_source)
+        self.assertNotIn('"isaacsim.sensors.experimental.rtx"', app_source)
         self.assertIn("NativeH264CameraSensor", app_source)
         self.assertIn("create_physical_rgb_camera", app_source)
         self.assertIn("omni.kit.livestream.aov", app_source)
         self.assertIn("AuthoritativeOperatorCameraCollection", app_source)
+        self.assertIn('"--/rtx/viewTile/limit="', app_source)
         self.assertIn('"sync_loads": False', app_source)
         self.assertIn('"disable_viewport_updates": True', app_source)
         self.assertIn(
@@ -385,10 +365,15 @@ class RuntimeAdapterHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("sensor.observe_simulation_time(", app_source)
         self.assertIn("simulation_time_s, physics_step", app_source)
 
+        server_source = (
+            Path(__file__).parents[1] / "veoveo_uav_sim" / "server.py"
+        ).read_text()
+        self.assertIn("heartbeat=10.0", server_source)
+        self.assertIn("_consume_live_stream_control_frames(websocket)", server_source)
+        self.assertIn("async for _message in websocket", server_source)
+
         operator_camera_source = (
-            Path(__file__).parents[1]
-            / "veoveo_uav_sim"
-            / "operator_camera.py"
+            Path(__file__).parents[1] / "veoveo_uav_sim" / "operator_camera.py"
         ).read_text()
         self.assertIn("CreateHorizontalApertureAttr", operator_camera_source)
 
@@ -396,20 +381,19 @@ class RuntimeAdapterHttpTests(unittest.IsolatedAsyncioTestCase):
             Path(__file__).parents[1] / "veoveo_uav_sim" / "hydra_camera.py"
         ).read_text()
         operator_product_source = (
-            Path(__file__).parents[1]
-            / "veoveo_uav_sim"
-            / "operator_products.py"
+            Path(__file__).parents[1] / "veoveo_uav_sim" / "operator_products.py"
         ).read_text()
-        product_sources = "".join(
-            (hydra_camera_source, operator_product_source)
-        )
+        product_sources = "".join((hydra_camera_source, operator_product_source))
         self.assertEqual(product_sources.count("get_frame_info"), 1)
-        self.assertIn("is_async_low_latency=False", hydra_camera_source)
-        self.assertIn("is_async_low_latency=False", operator_product_source)
+        self.assertIn("is_async_low_latency=True", hydra_camera_source)
         self.assertNotIn("AnnotatorRegistry", hydra_camera_source)
         self.assertNotIn("omni.replicator", hydra_camera_source)
+        self.assertIn("create_hydra_texture", hydra_camera_source)
+        self.assertIn('GetRelationship("camera").SetTargets', hydra_camera_source)
+        self.assertIn('settings.set("/rtx/viewTile/resolution/0", 0)', hydra_camera_source)
+        self.assertIn("reset_xform_op_properties=False", hydra_camera_source)
         self.assertIn('"streamType": "rtsp"', hydra_camera_source)
-        self.assertIn("RtspH264Receiver", hydra_camera_source)
+        self.assertIn("RtspH264Receiver", operator_product_source)
 
     def test_native_sensor_aov_uses_one_internal_nvenc_stream(self) -> None:
         arguments = native_sensor_aov_arguments(
@@ -418,7 +402,9 @@ class RuntimeAdapterHttpTests(unittest.IsolatedAsyncioTestCase):
             target_fps=2,
         )
         self.assertEqual(len(arguments), 5)
-        self.assertTrue(all("physical_uav_1_down.LdrColor" in value for value in arguments))
+        self.assertTrue(
+            all("physical_uav_1_down.LdrColor" in value for value in arguments)
+        )
         self.assertTrue(any(value.endswith("/streamType=rtsp") for value in arguments))
         self.assertTrue(any(value.endswith("/signalPort=8555") for value in arguments))
         self.assertTrue(any(value.endswith("/streamPort=8554") for value in arguments))
@@ -429,7 +415,7 @@ class RuntimeAdapterHttpTests(unittest.IsolatedAsyncioTestCase):
     def test_native_sensor_aov_ports_cannot_overlap_operator_products(self) -> None:
         environment = {
             **VALID_ENVIRONMENT,
-            "UAV_SIM_LIVE_SIGNALING_PORT_BASE": "8555",
+            "UAV_SIM_OPERATOR_RTSP_PORT_BASE": "8555",
         }
         with patch.dict(os.environ, environment, clear=True):
             with self.assertRaisesRegex(ValueError, "AOV port ranges overlap at 8555"):
@@ -444,11 +430,9 @@ class RuntimeAdapterHttpTests(unittest.IsolatedAsyncioTestCase):
 
     def test_headless_cesium_has_one_authoritative_viewport_writer(self) -> None:
         runtime_root = Path(__file__).parents[1]
-        dockerfile = (runtime_root / "Dockerfile").read_text()
+        dockerfile = (runtime_root / "Dockerfile.dependencies").read_text()
         patch = (
-            runtime_root
-            / "patches"
-            / "cesium-0.29.0-external-viewports.patch"
+            runtime_root / "patches" / "cesium-0.29.0-external-viewports.patch"
         ).read_text()
         self.assertIn("cesium-0.29.0-external-viewports.patch", dockerfile)
         self.assertIn("externallyManagedViewports", patch)
@@ -456,14 +440,10 @@ class RuntimeAdapterHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("if not settings.get_as_bool", patch)
 
         lifecycle_patch = (
-            runtime_root
-            / "patches"
-            / "cesium-0.29.0-lifecycle-events.patch"
+            runtime_root / "patches" / "cesium-0.29.0-lifecycle-events.patch"
         ).read_text()
         native_patch = (
-            runtime_root
-            / "patches"
-            / "cesium-native-ca0311f-tile-load-events.patch"
+            runtime_root / "patches" / "cesium-native-ca0311f-tile-load-events.patch"
         ).read_text()
         self.assertIn("cesium-0.29.0-lifecycle-events.patch", dockerfile)
         self.assertIn("cesium-native-ca0311f-tile-load-events.patch", dockerfile)
@@ -477,6 +457,14 @@ class RuntimeAdapterHttpTests(unittest.IsolatedAsyncioTestCase):
             lifecycle_patch,
         )
         self.assertIn("TileContent", native_patch)
+        self.assertIn(
+            '+  pAssetAccessor->request(asyncSystem, "GET", url)',
+            native_patch,
+        )
+        self.assertIn(
+            '+      ->request(externals.asyncSystem, "GET", ionUrl)',
+            native_patch,
+        )
         self.assertNotIn("releases/download", dockerfile)
 
     def test_recording_policy_is_typed_and_bounded(self) -> None:
@@ -505,7 +493,7 @@ class RuntimeAdapterHttpTests(unittest.IsolatedAsyncioTestCase):
             config = RuntimeConfig.from_environment()
 
         timing = initial_runtime_timing(config)
-        self.assertEqual(timing["physics_hz"], 60)
+        self.assertEqual(timing["physics_hz"], 30)
         self.assertEqual(timing["native_rendering_hz"], 30)
         self.assertEqual(timing["render_cycles"], 0)
         self.assertEqual(timing["physics_steps"], 0)
@@ -532,35 +520,28 @@ class RuntimeAdapterHttpTests(unittest.IsolatedAsyncioTestCase):
             server_source,
         )
 
-    def test_preconfiguration_accepts_ephemeral_viewer_slot_reset(self) -> None:
+    def test_preconfiguration_has_no_viewer_product_mutation_routes(self) -> None:
         server_source = (
             Path(__file__).parents[1] / "veoveo_uav_sim" / "server.py"
         ).read_text()
         preconfiguration = server_source.split(
             "class PreconfigurationApplication:", maxsplit=1
         )[1].split("class AdapterApplication:", maxsplit=1)[0]
-        self.assertIn(
-            '"/v1/live-products/release-all"', preconfiguration
-        )
-        self.assertIn(
-            'return web.json_response({"accepted": True})', preconfiguration
-        )
+        self.assertNotIn("/v1/live-products", preconfiguration)
+        self.assertIn("initial_operator_atlas_state", preconfiguration)
 
     def test_multi_instance_px4_has_distinct_gcs_ports(self) -> None:
         runtime_root = Path(__file__).parents[1]
-        dockerfile = (runtime_root / "Dockerfile").read_text()
+        dockerfile = (runtime_root / "Dockerfile.dependencies").read_text()
         px4_patch = (
             runtime_root / "patches" / "px4-1.17.0-multi-instance-gcs.patch"
         ).read_text()
         self.assertIn("git -C px4 apply --check /tmp/px4.patch", dockerfile)
         self.assertIn("udp_gcs_port_remote=$((14550+px4_instance))", px4_patch)
 
-        pegasus_patch = (
-            runtime_root / "patches" / "pegasus-5.1.0-isaac-6.0.1.patch"
-        ).read_text()
-        self.assertIn("if self._enable_lockstep:", pegasus_patch)
-        self.assertIn("for _ in range(256):", pegasus_patch)
-        self.assertIn("recv_match(blocking=False)", pegasus_patch)
+        self.assertNotIn("Pegasus", dockerfile)
+        self.assertNotIn("pegasus", dockerfile)
+        self.assertNotIn("ROS_LOG_DIR", dockerfile)
         self.assertIn("-o $udp_gcs_port_remote", px4_patch)
         self.assertIn("param set-default SDLOG_BACKEND 0", px4_patch)
 
@@ -660,9 +641,9 @@ class RuntimeAdapterHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('"codec"', video_packet_source)
         self.assertIn("rr.VideoStream.from_fields(sample=sample)", video_packet_source)
         self.assertNotIn("is_keyframe", video_packet_source)
-        publish_source = camera_stream_source.split(
-            "    def publish(", maxsplit=1
-        )[1].split("    def _set_time(", maxsplit=1)[0]
+        publish_source = camera_stream_source.split("    def publish(", maxsplit=1)[
+            1
+        ].split("    def _set_time(", maxsplit=1)[0]
         self.assertNotIn("rr.Pinhole(", publish_source)
         self.assertIn("access_unit.sample", publish_source)
 
@@ -693,9 +674,7 @@ class RuntimeAdapterHttpTests(unittest.IsolatedAsyncioTestCase):
             source_vehicle_id="uav-1",
             queue_capacity=4,
         )
-        access_unit = parse_native_h264_access_unit(
-            b"\x00\x00\x00\x01\x65\x88\x84"
-        )
+        access_unit = parse_native_h264_access_unit(b"\x00\x00\x00\x01\x65\x88\x84")
         with patch(
             "veoveo_uav_sim.stream_output.RtpH264Publisher",
             FakePublisher,
@@ -730,41 +709,42 @@ class RuntimeAdapterHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(recording["dropped_events"], 9)
         self.assertEqual(recording["diagnostic"], "network unavailable")
 
-    def test_inactive_viewer_slots_do_not_require_camera_assignments(self) -> None:
+    def test_streamable_cameras_share_one_persistent_atlas(self) -> None:
         with patch.dict(os.environ, VALID_ENVIRONMENT, clear=True):
             state = RuntimeState(RuntimeConfig.from_environment(), WORLD)
-        inactive_slots = state.snapshot()["stream_products"]
+        products = state.snapshot()["stream_products"]
 
-        state.update_stream_products(inactive_slots)
+        state.update_stream_products(products)
 
         snapshot = state.snapshot()
         self.assertEqual(
-            [product["capacitySlot"] for product in snapshot["stream_products"]],
-            [0, 1],
+            [product["streamProductId"] for product in snapshot["stream_products"]],
+            ["camera-atlas"],
         )
-        self.assertTrue(
-            all("cameraId" not in product for product in snapshot["stream_products"])
+        self.assertEqual(
+            snapshot["stream_products"][0]["cameraRegions"][0]["cameraId"],
+            "follow",
         )
-        self.assertEqual(snapshot["live_cameras"][0]["health"], "healthy")
+        self.assertEqual(snapshot["live_cameras"][0]["health"], "warming")
 
-    def test_shared_logical_camera_aggregates_distinct_viewer_slots(self) -> None:
+    def test_camera_health_tracks_its_persistent_product(self) -> None:
         with patch.dict(os.environ, VALID_ENVIRONMENT, clear=True):
             state = RuntimeState(RuntimeConfig.from_environment(), WORLD)
         state.update_stream_products(
             [
                 {
-                    "streamProductId": "product-slot-0",
-                    "capacitySlot": 0,
-                    "cameraId": "follow",
-                    "liveViewId": "view-a",
-                    "lifecycle": "failed",
-                    "lastFrameAt": "2026-08-07T18:00:00Z",
-                },
-                {
-                    "streamProductId": "product-slot-1",
-                    "capacitySlot": 1,
-                    "cameraId": "follow",
-                    "liveViewId": "view-b",
+                    "streamProductId": "camera-atlas",
+                    "cameraRegions": [
+                        {
+                            "cameraId": "follow",
+                            "xPx": 0,
+                            "yPx": 0,
+                            "widthPx": 1280,
+                            "heightPx": 720,
+                        }
+                    ],
+                    "codedWidthPx": 1280,
+                    "codedHeightPx": 720,
                     "lifecycle": "ready",
                     "lastFrameAt": "2026-08-07T18:00:01Z",
                 },
@@ -942,7 +922,9 @@ class StreamOutputTests(unittest.TestCase):
         self.assertEqual(packet.payload_type, 96)
         self.assertEqual(packet.payload, b"\x65\x99")
 
-    def test_rtsp_rtp_depacketizer_qualifies_first_idr_and_retains_p_frames(self) -> None:
+    def test_rtsp_rtp_depacketizer_qualifies_first_idr_and_retains_p_frames(
+        self,
+    ) -> None:
         depacketizer = H264RtpDepacketizer(
             96,
             sequence_parameter_set=b"\x67\x01",
@@ -966,9 +948,7 @@ class StreamOutputTests(unittest.TestCase):
         self.assertIsNone(
             depacketizer.push(RtpPacket(1, 100, False, 96, b"\x7c\x85\x03"))
         )
-        access_unit = depacketizer.push(
-            RtpPacket(2, 100, True, 96, b"\x7c\x45\x04")
-        )
+        access_unit = depacketizer.push(RtpPacket(2, 100, True, 96, b"\x7c\x45\x04"))
         self.assertIsNotNone(access_unit)
         assert access_unit is not None
         self.assertEqual(annex_b_nals(access_unit.sample)[-1], b"\x65\x03\x04")
@@ -1074,298 +1054,6 @@ class FleetLoopTests(unittest.TestCase):
         controller.close()
 
 
-class RigidBodyBatchTests(unittest.TestCase):
-    def test_fleet_batch_is_bound_only_after_reset_and_rebinds_atomically(self) -> None:
-        events: list[str] = []
-        prefix = "/World/uav_1"
-
-        class FakeWorld:
-            def __init__(self) -> None:
-                self.physics_sim_view = object()
-                self.callbacks = {
-                    prefix + suffix: object()
-                    for suffix in ("/state", "/update", "/Sensors", "/mav_state")
-                }
-
-            def physics_callback_exists(self, name: str) -> bool:
-                return name in self.callbacks
-
-            def remove_physics_callback(self, name: str) -> None:
-                events.append(f"remove:{name}")
-                del self.callbacks[name]
-
-            def reset(self) -> None:
-                self.assert_no_callbacks_during_reset()
-                events.append("reset")
-
-            def assert_no_callbacks_during_reset(self) -> None:
-                if self.callbacks:
-                    raise AssertionError("physics callback survived reset boundary")
-
-            def add_physics_callback(self, name: str, callback: object) -> None:
-                events.append(f"add:{name}")
-                self.callbacks[name] = callback
-
-        class FakeBatch:
-            def rebind(self, _physics_view: object) -> None:
-                events.append("rebind")
-
-            def refresh_states(self) -> None:
-                events.append("refresh")
-
-            def flush_forces(self) -> None:
-                events.append("flush")
-
-        class FakeVehicle:
-            def bind_physics_batch(self, _batch: FakeBatch) -> None:
-                events.append("bind")
-
-            def update_state(self, _dt: float) -> None:
-                events.append("state")
-
-            def update(self, _dt: float) -> None:
-                events.append("dynamics")
-
-            def update_sensors(self, _dt: float) -> None:
-                events.append("sensors")
-
-            def update_sim_state(self, _dt: float) -> None:
-                events.append("backend")
-
-        world = FakeWorld()
-        batch = FakeBatch()
-        lifecycle = FleetPhysicsLifecycle(
-            world,
-            {"uav-1": FakeVehicle()},
-            {"uav-1": prefix},
-            (prefix + "/body",),
-            batch_factory=lambda _paths, _physics_view: (
-                events.append("create") or batch
-            ),
-            after_step=lambda _dt: events.append("after"),
-        )
-
-        self.assertIs(lifecycle.reset(), batch)
-        self.assertEqual(
-            events[-4:],
-            [
-                "reset",
-                "create",
-                "bind",
-                "add:/World/veoveo_uav_fleet/physics_batch",
-            ],
-        )
-
-        events.clear()
-        self.assertIs(lifecycle.reset(), batch)
-        self.assertEqual(
-            events,
-            [
-                "remove:/World/veoveo_uav_fleet/physics_batch",
-                "reset",
-                "rebind",
-                "bind",
-                "add:/World/veoveo_uav_fleet/physics_batch",
-            ],
-        )
-
-        events.clear()
-        callback = world.callbacks["/World/veoveo_uav_fleet/physics_batch"]
-        callback(0.004)  # type: ignore[operator]
-        self.assertEqual(
-            events,
-            [
-                "refresh",
-                "state",
-                "dynamics",
-                "sensors",
-                "backend",
-                "flush",
-                "after",
-            ],
-        )
-        timing = lifecycle.timing()
-        self.assertEqual(timing.physics_steps, 1)
-        self.assertGreaterEqual(timing.refresh_states_wall_seconds, 0.0)
-        self.assertGreaterEqual(timing.vehicle_update_wall_seconds, 0.0)
-        self.assertGreaterEqual(timing.state_update_wall_seconds, 0.0)
-        self.assertGreaterEqual(timing.dynamics_update_wall_seconds, 0.0)
-        self.assertGreaterEqual(timing.sensor_update_wall_seconds, 0.0)
-        self.assertGreaterEqual(timing.backend_state_wall_seconds, 0.0)
-        self.assertGreaterEqual(timing.flush_forces_wall_seconds, 0.0)
-        self.assertGreaterEqual(timing.after_step_wall_seconds, 0.0)
-        self.assertGreaterEqual(timing.maximum_physics_step_ms, 0.0)
-
-    def test_force_at_position_is_reduced_to_force_and_torque(self) -> None:
-        batch = RigidBodyBatchAccumulator(("/World/uav_1/body",))
-        batch.queue_force(
-            "/World/uav_1/body",
-            (0.0, 0.0, 4.0),
-            (0.0, 2.0, 0.0),
-        )
-        batch.queue_torque("/World/uav_1/body", (0.0, 0.0, 3.0))
-
-        np.testing.assert_array_equal(batch.forces, [[0.0, 0.0, 4.0]])
-        np.testing.assert_array_equal(batch.torques, [[8.0, 0.0, 3.0]])
-
-        forces = batch.forces
-        torques = batch.torques
-        batch.clear_forces()
-        self.assertIs(batch.forces, forces)
-        self.assertIs(batch.torques, torques)
-        np.testing.assert_array_equal(batch.forces, np.zeros((1, 3)))
-        np.testing.assert_array_equal(batch.torques, np.zeros((1, 3)))
-
-    def test_tensor_batch_uses_live_buffers_and_stream_local_sync(self) -> None:
-        class FakeArray:
-            def __init__(self, value: np.ndarray) -> None:
-                self.value = value
-
-            def numpy(self) -> np.ndarray:
-                return self.value
-
-        class FakeDevice:
-            is_cuda = True
-
-            def __str__(self) -> str:
-                return "cuda:0"
-
-        class FakeWarp:
-            float32 = np.float32
-            uint32 = np.uint32
-
-            def __init__(self) -> None:
-                self.stream_syncs = 0
-
-            def get_device(self, _device: object) -> FakeDevice:
-                return FakeDevice()
-
-            def zeros(
-                self,
-                shape: int | tuple[int, ...],
-                *,
-                dtype: object,
-                device: object,
-            ) -> FakeArray:
-                return FakeArray(np.zeros(shape, dtype=dtype))
-
-            def array(
-                self,
-                value: np.ndarray,
-                *,
-                dtype: object,
-                device: object,
-            ) -> FakeArray:
-                return FakeArray(np.array(value, dtype=dtype, copy=True))
-
-            def copy(self, target: FakeArray, source: FakeArray) -> None:
-                np.copyto(target.value, source.value)
-
-            def synchronize_stream(self, _device: object) -> None:
-                self.stream_syncs += 1
-
-            def synchronize_device(self, _device: object) -> None:
-                raise AssertionError(
-                    "fleet physics must not synchronize unrelated GPU streams"
-                )
-
-        class FakeRigidBodyView:
-            prim_paths = ("/World/uav_1/body",)
-
-            def __init__(self) -> None:
-                self.submitted_forces: np.ndarray | None = None
-
-            def get_transforms(self) -> FakeArray:
-                return FakeArray(
-                    np.array(
-                        [[1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0]],
-                        dtype=np.float32,
-                    )
-                )
-
-            def get_velocities(self) -> FakeArray:
-                return FakeArray(
-                    np.array(
-                        [[4.0, 5.0, 6.0, 0.1, 0.2, 0.3]],
-                        dtype=np.float32,
-                    )
-                )
-
-            def apply_forces_and_torques_at_position(
-                self,
-                forces: FakeArray,
-                _torques: FakeArray,
-                _positions: object,
-                _indices: FakeArray,
-                _is_global: bool,
-            ) -> None:
-                self.submitted_forces = forces.value.copy()
-
-        class FakeSimulationView:
-            device = "cuda:0"
-
-            def __init__(self) -> None:
-                self.rigid_body_view = FakeRigidBodyView()
-
-            def set_subspace_roots(self, _root: str) -> None:
-                pass
-
-            def create_rigid_body_view(self, _paths: list[str]) -> FakeRigidBodyView:
-                return self.rigid_body_view
-
-        fake_warp = FakeWarp()
-        physics_view = FakeSimulationView()
-        with patch.dict(sys.modules, {"warp": fake_warp}):
-            batch = IsaacFleetPhysicsBatch(("/World/uav_1/body",), physics_view)
-            batch.refresh_states()
-            state = batch.state("/World/uav_1/body")
-            batch.queue_force("/World/uav_1/body", (0.0, 0.0, 4.0), (0.0, 0.0, 0.0))
-            batch.flush_forces()
-
-        self.assertEqual(fake_warp.stream_syncs, 2)
-        np.testing.assert_array_equal(state.position_xyz, [1.0, 2.0, 3.0])
-        np.testing.assert_array_equal(state.linear_velocity_xyz, [4.0, 5.0, 6.0])
-        np.testing.assert_array_equal(
-            physics_view.rigid_body_view.submitted_forces,
-            [0.0, 0.0, 4.0],
-        )
-
-    def test_one_state_batch_serves_distinct_vehicle_bodies(self) -> None:
-        paths = ("/World/uav_1/body", "/World/uav_2/body")
-        batch = RigidBodyBatchAccumulator(paths)
-        transforms = np.array(
-            [
-                [1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0],
-                [4.0, 5.0, 6.0, 0.0, 0.0, 1.0, 0.0],
-            ],
-            dtype=np.float32,
-        )
-        velocities = np.array(
-            [
-                [7.0, 8.0, 9.0, 0.1, 0.2, 0.3],
-                [10.0, 11.0, 12.0, 0.4, 0.5, 0.6],
-            ],
-            dtype=np.float32,
-        )
-        batch.update_states(transforms, velocities)
-
-        first = batch.state(paths[0])
-        second = batch.state(paths[1])
-        np.testing.assert_array_equal(first.position_xyz, [1.0, 2.0, 3.0])
-        np.testing.assert_array_equal(first.orientation_xyzw, [0.0, 0.0, 0.0, 1.0])
-        np.testing.assert_array_equal(second.linear_velocity_xyz, [10.0, 11.0, 12.0])
-        np.testing.assert_allclose(second.angular_velocity_xyz, [0.4, 0.5, 0.6])
-
-    def test_unknown_body_and_non_finite_input_fail_closed(self) -> None:
-        batch = RigidBodyBatchAccumulator(("/World/uav_1/body",))
-        with self.assertRaisesRegex(RuntimeError, "outside the admitted fleet"):
-            batch.queue_torque("/World/uav_2/body", (0.0, 0.0, 0.0))
-        with self.assertRaisesRegex(RuntimeError, "non-finite"):
-            batch.queue_force(
-                "/World/uav_1/body", (float("nan"), 0.0, 0.0), (0.0, 0.0, 0.0)
-            )
-
-
 class _FleetLoopStatus:
     def __init__(self, flight_state: str) -> None:
         self.flight_state = flight_state
@@ -1408,20 +1096,77 @@ class _FleetLoopCommander:
 
 
 class NativeCadenceTests(unittest.TestCase):
+    def test_fleet_hot_path_is_newton_experimental_and_batched_warp(self) -> None:
+        runtime_root = Path(__file__).parents[1]
+        module_root = runtime_root / "veoveo_uav_sim"
+        app_source = (module_root / "app.py").read_text()
+        fleet_source = (module_root / "fleet_runtime.py").read_text()
+        plant_source = (module_root / "plant_warp.py").read_text()
+        scene_source = (module_root / "scene.py").read_text()
+        asset_source = (runtime_root / "assets" / "iris.usda").read_text()
+
+        self.assertIn('switch_physics_engine("newton"', app_source)
+        self.assertIn('"renderer": "MinimalRendering"', app_source)
+        self.assertIn('"minimal_shading_mode": 2', app_source)
+        self.assertIn('"anti_aliasing": 2', app_source)
+        hydra_source = (module_root / "hydra_camera.py").read_text()
+        self.assertIn("is_async_low_latency=True", hydra_source)
+        self.assertIn("newton_stage.cfg.time_step_app = False", app_source)
+        self.assertIn("newton_stage.cfg.num_substeps = 1", app_source)
+        self.assertIn("newton_stage.cfg.use_cuda_graph = False", app_source)
+        self.assertIn("newton_stage.cfg.solver_cfg.iterations = 1", app_source)
+        self.assertIn("newton_stage.cfg.solver_cfg.ls_iterations = 1", app_source)
+        self.assertIn(
+            'newton_stage.cfg.solver_cfg.integrator = "euler"', app_source
+        )
+        self.assertIn("newton_stage.cfg.solver_cfg.disable_contacts = True", app_source)
+        self.assertIn("newton_stage.cfg.solver_cfg.use_mujoco_contacts = False", app_source)
+        self.assertIn("newton_stage.cfg.solver_cfg.njmax = 1", app_source)
+        self.assertIn("newton_stage.cfg.solver_cfg.nconmax = 0", app_source)
+        self.assertIn("physics_timeline.play()", app_source)
+        self.assertIn("not newton_stage.playing", app_source)
+        self.assertIn("isaacsim.core.experimental.prims", fleet_source)
+        self.assertIn("RigidPrim(list(paths), resolve_paths=True)", fleet_source)
+        self.assertIn("self._wp.launch(", fleet_source)
+        self.assertIn(
+            "@wp.kernel\ndef advance_fleet_and_sample_hil", plant_source
+        )
+        self.assertIn("isaacsim.core.experimental.objects", scene_source)
+        self.assertIn("float physics:mass = 1.5", asset_source)
+        self.assertNotIn("import numpy", fleet_source)
+        self.assertNotIn("import numpy", plant_source)
+        self.assertNotIn("from isaacsim.core.api", app_source)
+        step_source = fleet_source.split("    def step(", 1)[1].split(
+            "    def _decode_packets", 1
+        )[0]
+        self.assertNotIn("self._rigid.get_world_poses()", step_source)
+        self.assertNotIn("self._rigid.get_velocities()", step_source)
+        self.assertNotIn("SimulationManager.step", step_source)
+        self.assertNotIn("apply_forces_and_torques_at_pos", step_source)
+        self.assertIn("self._body_q = getattr(state, \"body_q\"", fleet_source)
+        self.assertIn("self._body_qd = getattr(state, \"body_qd\"", fleet_source)
+        self.assertIn("self._body_indices", fleet_source)
+        self.assertIn("self._kernels.advance_fleet_and_sample_hil", step_source)
+        self.assertNotIn("self._rigid_tensor_view.set_transforms", step_source)
+        self.assertNotIn("self._rigid_tensor_view.set_velocities", step_source)
+        self.assertNotIn("self._rigid_tensor_view.get_transforms()", step_source)
+        self.assertNotIn("self._rigid_tensor_view.get_velocities()", step_source)
+
     def test_runtime_coalesces_render_work_after_due_fixed_physics(self) -> None:
         app_source = (
             Path(__file__).parents[1] / "veoveo_uav_sim" / "app.py"
         ).read_text()
         self.assertIn("physics_clock.due_steps(physics_step)", app_source)
         self.assertIn("render_cadence.due(physics_step)", app_source)
-        self.assertIn("world.step(render=False)", app_source)
-        self.assertIn("world.render()", app_source)
-        physics_index = app_source.rindex("world.step(render=False)")
+        self.assertIn("fleet_runtime.step(physics_step + 1)", app_source)
+        self.assertIn("simulation_app.update()", app_source)
+        physics_index = app_source.rindex("fleet_runtime.step(physics_step + 1)")
         camera_index = app_source.rindex("update_operator_cameras()")
-        render_index = app_source.rindex("world.render()")
+        render_index = app_source.index("simulation_app.update()", camera_index)
         self.assertLess(physics_index, camera_index)
         self.assertLess(camera_index, render_index)
-        self.assertNotIn("world.step(render=True)", app_source)
+        self.assertNotIn("from isaacsim.core.api", app_source)
+        self.assertNotIn("world.step", app_source)
         self.assertIn("loop_runner.set_manual_mode(True)", app_source)
         self.assertNotIn("RealtimePhysicsClock", app_source)
         self.assertNotIn("PeriodicDeadline", app_source)
@@ -1462,7 +1207,7 @@ class NativeCadenceTests(unittest.TestCase):
         )
 
 
-class Px4IrisVehicleModelTests(unittest.TestCase):
+class Px4HilPlantContractTests(unittest.TestCase):
     def test_yaw_coefficient_matches_pinned_px4_iris_contract(self) -> None:
         self.assertEqual(PX4_IRIS_MOTOR_CONSTANT, 5.84e-6)
         self.assertEqual(PX4_IRIS_MOMENT_CONSTANT, 0.06)
@@ -1471,28 +1216,45 @@ class Px4IrisVehicleModelTests(unittest.TestCase):
             PX4_IRIS_MOTOR_CONSTANT * PX4_IRIS_MOMENT_CONSTANT,
         )
 
-    def test_motor_response_uses_bounded_asymmetric_first_order_dynamics(self) -> None:
-        model = Px4IrisThrustCurve()
-        model.set_input_reference([1100.0] * 4)
-        force, rising_velocity, moment = model.update(None, 1.0 / 60.0)
-        self.assertTrue(all(0.0 < value < 1100.0 for value in rising_velocity))
-        self.assertTrue(all(value > 0.0 for value in force))
-        self.assertAlmostEqual(moment, 0.0)
-
-        model.set_input_reference([0.0] * 4)
-        _, falling_velocity, _ = model.update(None, 1.0 / 60.0)
-        self.assertTrue(
-            all(
-                0.0 < after < before
-                for after, before in zip(falling_velocity, rising_velocity)
-            )
+    def test_actuator_decode_is_armed_bounded_and_exact(self) -> None:
+        armed = mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED
+        self.assertEqual(
+            decode_actuator_controls([0.0, 0.25, 1.0, 2.0], armed, armed),
+            (100.0, 350.0, 1100.0, 1100.0),
+        )
+        self.assertEqual(
+            decode_actuator_controls([1.0, 1.0, 1.0, 1.0], 0, armed),
+            (0.0, 0.0, 0.0, 0.0),
         )
 
-    def test_motor_model_preserves_px4_rotor_yaw_directions(self) -> None:
-        model = Px4IrisThrustCurve()
-        model.set_input_reference([900.0, 900.0, 300.0, 300.0])
-        _, _, moment = model.update(None, 1.0)
-        self.assertLess(moment, 0.0)
+    def test_px4_process_selects_external_iris_airframe(self) -> None:
+        self.assertEqual(PX4_EXTERNAL_IRIS_AUTOSTART, "10016")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            process = Px4Process(str(root), 3)
+            self.assertEqual(process.command.instance, 3)
+            self.assertEqual(process.command.argv()[-3:], ("-i", "3", "-d"))
+            process.close()
+
+    def test_sensor_publication_is_bounded_and_does_not_wait_for_transport(self) -> None:
+        bridge = Px4HilBridge.__new__(Px4HilBridge)
+        bridge.instance = 2
+        bridge._condition = threading.Condition()
+        bridge._failure = None
+        bridge._pending = deque()
+
+        for sequence in range(PX4_HIL_QUEUE_CAPACITY):
+            bridge.publish(sequence, SimpleNamespace())
+        self.assertEqual(len(bridge._pending), PX4_HIL_QUEUE_CAPACITY)
+        with self.assertRaisesRegex(RuntimeError, "sensor queue is full"):
+            bridge.publish(PX4_HIL_QUEUE_CAPACITY, SimpleNamespace())
+
+    def test_hil_gps_velocity_fields_saturate_to_mavlink_wire_bounds(self) -> None:
+        self.assertEqual(_signed_centimeters_per_second(-1_000.0), -32_768)
+        self.assertEqual(_signed_centimeters_per_second(1_000.0), 32_767)
+        self.assertEqual(_signed_centimeters_per_second(12.345), 1_234)
+        self.assertEqual(_unsigned_centimeters_per_second(-1.0), 0)
+        self.assertEqual(_unsigned_centimeters_per_second(1_000.0), 65_535)
 
 
 class AdapterContractTests(unittest.TestCase):
@@ -1716,6 +1478,32 @@ class Px4CommanderTests(unittest.TestCase):
             [mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM],
         )
 
+    def test_takeoff_atomically_arms_before_launch(self) -> None:
+        connection = _MavlinkConnection(
+            [mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM]
+        )
+        connection._messages.append(
+            _MavlinkMessage(
+                "COMMAND_ACK",
+                command=mavutil.mavlink.MAV_CMD_NAV_TAKEOFF,
+                result=mavutil.mavlink.MAV_RESULT_ACCEPTED,
+            )
+        )
+        commander = Px4Commander(instance=0, origin_height_m=-17.0)
+        commander._connection = connection
+        commander._connected = True
+
+        commander.takeoff(197.0)
+
+        self.assertEqual(
+            [command for command, _parameters in connection.mav.commands],
+            [
+                mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
+                mavutil.mavlink.MAV_CMD_NAV_TAKEOFF,
+            ],
+        )
+        self.assertEqual(connection.mav.commands[-1][1][-1], 180.0)
+
 
 class WorldConfigurationTests(unittest.TestCase):
     def test_world_binding_is_strict_and_typed(self) -> None:
@@ -1754,6 +1542,41 @@ class WorldConfigurationTests(unittest.TestCase):
 
 
 class StreamedWorldHealthTests(unittest.TestCase):
+    @staticmethod
+    def controller(
+        *, ready_frames: int = 2, replacement_timeout_frames: int = 120
+    ) -> TileLifecycleController:
+        return TileLifecycleController(
+            tileset_path="/World/Tileset",
+            ready_frames=ready_frames,
+            replacement_timeout_frames=replacement_timeout_frames,
+        )
+
+    @staticmethod
+    def statistics(
+        *,
+        resident_tiles: int,
+        visible_tiles: int,
+        loading_tiles: int,
+        geometries_loaded: int | None = None,
+        geometries_rendered: int | None = None,
+        materials_loaded: int | None = None,
+    ) -> TileRenderStatistics:
+        return TileRenderStatistics(
+            resident_tiles=resident_tiles,
+            visible_tiles=visible_tiles,
+            loading_tiles=loading_tiles,
+            geometries_loaded=(
+                resident_tiles if geometries_loaded is None else geometries_loaded
+            ),
+            geometries_rendered=(
+                visible_tiles if geometries_rendered is None else geometries_rendered
+            ),
+            materials_loaded=(
+                resident_tiles if materials_loaded is None else materials_loaded
+            ),
+        )
+
     def test_native_event_payload_is_reduced_to_the_typed_safe_surface(self) -> None:
         event = SimpleNamespace(
             payload={
@@ -1776,22 +1599,27 @@ class StreamedWorldHealthTests(unittest.TestCase):
         )
 
     def test_visibility_absence_never_infers_provider_failure(self) -> None:
-        controller = TileLifecycleController(
-            tileset_path="/World/Tileset", ready_frames=2
-        )
+        controller = self.controller()
         for _ in range(10_000):
             state = controller.observe_render(
-                resident_tiles=30_000,
-                visible_tiles=0,
-                loading_tiles=0,
-            )
+                self.statistics(
+                    resident_tiles=30_000,
+                    visible_tiles=0,
+                    loading_tiles=0,
+                )
+            ).snapshot
         self.assertEqual(state.lifecycle, "streaming")
         self.assertEqual(state.refresh_count, 0)
         self.assertIsNone(state.last_failure)
 
-    def test_session_rejection_requests_one_generation_refresh(self) -> None:
-        controller = TileLifecycleController(
-            tileset_path="/World/Tileset", ready_frames=2
+    def test_session_rejection_requests_one_shadow_generation(self) -> None:
+        controller = self.controller()
+        controller.accept(
+            NativeTileEvent(
+                kind="loaded",
+                tileset_path="/World/Tileset",
+                generation=1,
+            )
         )
         event = NativeTileEvent(
             kind="load_failed",
@@ -1800,9 +1628,9 @@ class StreamedWorldHealthTests(unittest.TestCase):
             load_type="tile_content",
             http_status=400,
         )
-        self.assertTrue(controller.accept(event).reload_tileset)
+        self.assertTrue(controller.accept(event).begin_replacement)
         duplicate = controller.accept(event)
-        self.assertFalse(duplicate.reload_tileset)
+        self.assertFalse(duplicate.begin_replacement)
         self.assertFalse(duplicate.report_failure)
         state = controller.snapshot()
         self.assertEqual(state.lifecycle, "refreshing")
@@ -1813,12 +1641,140 @@ class StreamedWorldHealthTests(unittest.TestCase):
             "provider_session_rejected",
         )
 
+    def test_geometry_without_loaded_materials_never_reports_ready(self) -> None:
+        controller = self.controller(ready_frames=1)
+        controller.accept(
+            NativeTileEvent(kind="loaded", tileset_path="/World/Tileset", generation=1)
+        )
+        state = controller.observe_render(
+            self.statistics(
+                resident_tiles=20,
+                visible_tiles=4,
+                loading_tiles=0,
+                geometries_loaded=20,
+                geometries_rendered=4,
+                materials_loaded=0,
+            )
+        ).snapshot
+
+        self.assertEqual(state.lifecycle, "streaming")
+        self.assertEqual(state.materials_loaded, 0)
+
+    def test_transient_content_transport_failure_retains_textured_service(
+        self,
+    ) -> None:
+        controller = self.controller(ready_frames=2)
+        controller.accept(
+            NativeTileEvent(kind="loaded", tileset_path="/World/Tileset", generation=1)
+        )
+        for _ in range(2):
+            controller.observe_render(
+                self.statistics(resident_tiles=3_565, visible_tiles=91, loading_tiles=0)
+            )
+
+        action = controller.accept(
+            NativeTileEvent(
+                kind="load_failed",
+                tileset_path="/World/Tileset",
+                generation=1,
+                load_type="tile_content",
+                http_status=0,
+            )
+        )
+        state = controller.snapshot()
+
+        self.assertTrue(action.report_failure)
+        self.assertTrue(action.retained_textured_coverage)
+        self.assertFalse(action.begin_replacement)
+        self.assertEqual(state.lifecycle, "ready")
+        self.assertIsNone(state.diagnostic)
+        self.assertEqual(
+            state.last_failure.code if state.last_failure else None,
+            "transport_failed",
+        )
+        self.assertTrue(
+            tile_content_ready(
+                lifecycle=state.lifecycle,
+                visible_tiles=state.visible_tiles,
+                geometries_rendered=state.geometries_rendered,
+                materials_loaded=state.materials_loaded,
+            )
+        )
+
+    def test_transient_content_failure_recovers_only_after_textures_return(
+        self,
+    ) -> None:
+        controller = self.controller(ready_frames=2)
+        controller.accept(
+            NativeTileEvent(kind="loaded", tileset_path="/World/Tileset", generation=1)
+        )
+        action = controller.accept(
+            NativeTileEvent(
+                kind="load_failed",
+                tileset_path="/World/Tileset",
+                generation=1,
+                load_type="tile_content",
+                http_status=503,
+            )
+        )
+        self.assertFalse(action.retained_textured_coverage)
+        self.assertEqual(controller.snapshot().lifecycle, "degraded")
+
+        first = controller.observe_render(
+            self.statistics(resident_tiles=20, visible_tiles=4, loading_tiles=0)
+        ).snapshot
+        recovered = controller.observe_render(
+            self.statistics(resident_tiles=20, visible_tiles=4, loading_tiles=0)
+        ).snapshot
+
+        self.assertEqual(first.lifecycle, "degraded")
+        self.assertEqual(recovered.lifecycle, "ready")
+        self.assertIsNone(recovered.diagnostic)
+
+    def test_transient_content_failure_fails_closed_when_coverage_is_lost(
+        self,
+    ) -> None:
+        controller = self.controller(ready_frames=2)
+        controller.accept(
+            NativeTileEvent(kind="loaded", tileset_path="/World/Tileset", generation=1)
+        )
+        for _ in range(2):
+            controller.observe_render(
+                self.statistics(resident_tiles=20, visible_tiles=4, loading_tiles=0)
+            )
+        controller.accept(
+            NativeTileEvent(
+                kind="load_failed",
+                tileset_path="/World/Tileset",
+                generation=1,
+                load_type="tile_content",
+                http_status=0,
+            )
+        )
+
+        lost = controller.observe_render(
+            self.statistics(
+                resident_tiles=20,
+                visible_tiles=0,
+                loading_tiles=0,
+                geometries_rendered=0,
+            )
+        ).snapshot
+
+        self.assertEqual(lost.lifecycle, "degraded")
+        self.assertFalse(
+            tile_content_ready(
+                lifecycle=lost.lifecycle,
+                visible_tiles=lost.visible_tiles,
+                geometries_rendered=lost.geometries_rendered,
+                materials_loaded=lost.materials_loaded,
+            )
+        )
+
     def test_distinct_failure_can_supersede_an_earlier_failure_in_one_generation(
         self,
     ) -> None:
-        controller = TileLifecycleController(
-            tileset_path="/World/Tileset", ready_frames=2
-        )
+        controller = self.controller()
         unavailable = controller.accept(
             NativeTileEvent(
                 kind="load_failed",
@@ -1838,13 +1794,24 @@ class StreamedWorldHealthTests(unittest.TestCase):
             )
         )
         self.assertTrue(unavailable.report_failure)
-        self.assertFalse(unavailable.reload_tileset)
+        self.assertFalse(unavailable.begin_replacement)
         self.assertTrue(rejected.report_failure)
-        self.assertTrue(rejected.reload_tileset)
+        self.assertTrue(rejected.begin_replacement)
 
-    def test_matching_replacement_generation_recovers_deterministically(self) -> None:
-        controller = TileLifecycleController(
-            tileset_path="/World/Tileset", ready_frames=2
+    def test_loaded_shadow_generation_is_promoted_before_old_is_retired(self) -> None:
+        controller = self.controller()
+        controller.accept(
+            NativeTileEvent(
+                kind="loaded",
+                tileset_path="/World/Tileset",
+                generation=1,
+            )
+        )
+        controller.observe_render(
+            self.statistics(resident_tiles=20, visible_tiles=4, loading_tiles=0)
+        )
+        controller.observe_render(
+            self.statistics(resident_tiles=20, visible_tiles=4, loading_tiles=0)
         )
         controller.accept(
             NativeTileEvent(
@@ -1855,27 +1822,79 @@ class StreamedWorldHealthTests(unittest.TestCase):
                 http_status=400,
             )
         )
-        controller.accept(
+        controller.replacement_started("/World/Tileset_refresh_1")
+        promoted = controller.accept(
             NativeTileEvent(
                 kind="loaded",
-                tileset_path="/World/Tileset",
-                generation=2,
+                tileset_path="/World/Tileset_refresh_1",
+                generation=1,
             )
         )
+        self.assertIsNone(promoted.retire_tileset_path)
+        self.assertEqual(controller.active_tileset_path, "/World/Tileset")
         first = controller.observe_render(
-            resident_tiles=20, visible_tiles=4, loading_tiles=2
+            self.statistics(
+                resident_tiles=40,
+                visible_tiles=8,
+                loading_tiles=2,
+                geometries_loaded=40,
+                geometries_rendered=8,
+                materials_loaded=40,
+            )
         )
         recovered = controller.observe_render(
-            resident_tiles=24, visible_tiles=6, loading_tiles=0
+            self.statistics(
+                resident_tiles=44,
+                visible_tiles=10,
+                loading_tiles=0,
+                geometries_loaded=44,
+                geometries_rendered=10,
+                materials_loaded=44,
+            )
         )
-        self.assertEqual(first.lifecycle, "streaming")
-        self.assertEqual(recovered.lifecycle, "ready")
-        self.assertIsNone(recovered.diagnostic)
+        self.assertEqual(first.snapshot.lifecycle, "refreshing")
+        self.assertEqual(recovered.snapshot.lifecycle, "ready")
+        self.assertEqual(recovered.action.retire_tileset_path, "/World/Tileset")
+        self.assertEqual(controller.active_tileset_path, "/World/Tileset_refresh_1")
+        self.assertIsNone(recovered.snapshot.diagnostic)
+
+    def test_unregistered_replacement_times_out_without_retiring_resident(
+        self,
+    ) -> None:
+        controller = self.controller(ready_frames=2, replacement_timeout_frames=3)
+        controller.accept(
+            NativeTileEvent(kind="loaded", tileset_path="/World/Tileset", generation=1)
+        )
+        controller.observe_render(
+            self.statistics(resident_tiles=20, visible_tiles=4, loading_tiles=0)
+        )
+        controller.accept(
+            NativeTileEvent(
+                kind="load_failed",
+                tileset_path="/World/Tileset",
+                generation=1,
+                load_type="tile_content",
+                http_status=400,
+            )
+        )
+        controller.replacement_started("/World/Tileset_refresh_1")
+
+        observation = None
+        for _ in range(3):
+            observation = controller.observe_render(
+                self.statistics(resident_tiles=20, visible_tiles=4, loading_tiles=0)
+            )
+
+        assert observation is not None
+        self.assertEqual(observation.snapshot.lifecycle, "degraded")
+        self.assertEqual(
+            observation.action.retire_tileset_path,
+            "/World/Tileset_refresh_1",
+        )
+        self.assertEqual(controller.active_tileset_path, "/World/Tileset")
 
     def test_duplicate_loaded_event_does_not_destabilize_ready_generation(self) -> None:
-        controller = TileLifecycleController(
-            tileset_path="/World/Tileset", ready_frames=2
-        )
+        controller = self.controller()
         loaded = NativeTileEvent(
             kind="loaded",
             tileset_path="/World/Tileset",
@@ -1883,26 +1902,24 @@ class StreamedWorldHealthTests(unittest.TestCase):
         )
         controller.accept(loaded)
         controller.observe_render(
-            resident_tiles=20, visible_tiles=4, loading_tiles=1
+            self.statistics(resident_tiles=20, visible_tiles=4, loading_tiles=1)
         )
         ready = controller.observe_render(
-            resident_tiles=24, visible_tiles=6, loading_tiles=0
-        )
+            self.statistics(resident_tiles=24, visible_tiles=6, loading_tiles=0)
+        ).snapshot
         self.assertEqual(ready.lifecycle, "ready")
         self.assertEqual(ready.event_sequence, 1)
 
         duplicate = controller.accept(loaded)
         stable = controller.observe_render(
-            resident_tiles=24, visible_tiles=6, loading_tiles=2
-        )
-        self.assertFalse(duplicate.reload_tileset)
+            self.statistics(resident_tiles=24, visible_tiles=6, loading_tiles=2)
+        ).snapshot
+        self.assertFalse(duplicate.begin_replacement)
         self.assertEqual(stable.lifecycle, "ready")
         self.assertEqual(stable.event_sequence, 1)
 
     def test_rejected_replacement_generation_degrades_without_a_loop(self) -> None:
-        controller = TileLifecycleController(
-            tileset_path="/World/Tileset", ready_frames=1
-        )
+        controller = self.controller(ready_frames=1)
         first = NativeTileEvent(
             kind="load_failed",
             tileset_path="/World/Tileset",
@@ -1910,23 +1927,34 @@ class StreamedWorldHealthTests(unittest.TestCase):
             load_type="tile_content",
             http_status=400,
         )
-        second = NativeTileEvent(
+        replacement = NativeTileEvent(
             kind="load_failed",
-            tileset_path="/World/Tileset",
-            generation=2,
+            tileset_path="/World/Tileset_refresh_1",
+            generation=1,
             load_type="tile_content",
             http_status=400,
         )
-        self.assertTrue(controller.accept(first).reload_tileset)
-        self.assertFalse(controller.accept(second).reload_tileset)
-        self.assertFalse(controller.accept(second).reload_tileset)
+        self.assertTrue(controller.accept(first).begin_replacement)
+        controller.replacement_started("/World/Tileset_refresh_1")
+        rejected = controller.accept(replacement)
+        self.assertFalse(rejected.begin_replacement)
+        self.assertEqual(rejected.retire_tileset_path, "/World/Tileset_refresh_1")
+        self.assertFalse(controller.accept(replacement).begin_replacement)
         state = controller.snapshot()
         self.assertEqual(state.lifecycle, "degraded")
         self.assertEqual(state.refresh_count, 1)
+        still_degraded = controller.observe_render(
+            self.statistics(resident_tiles=20, visible_tiles=4, loading_tiles=0)
+        ).snapshot
+        self.assertEqual(still_degraded.lifecycle, "degraded")
 
     def test_credential_failure_is_typed_and_never_refreshed(self) -> None:
-        controller = TileLifecycleController(
-            tileset_path="/World/Tileset", ready_frames=1
+        controller = self.controller(ready_frames=1)
+        controller.accept(
+            NativeTileEvent(kind="loaded", tileset_path="/World/Tileset", generation=1)
+        )
+        controller.observe_render(
+            self.statistics(resident_tiles=20, visible_tiles=4, loading_tiles=0)
         )
         action = controller.accept(
             NativeTileEvent(
@@ -1938,7 +1966,8 @@ class StreamedWorldHealthTests(unittest.TestCase):
             )
         )
         state = controller.snapshot()
-        self.assertFalse(action.reload_tileset)
+        self.assertFalse(action.begin_replacement)
+        self.assertFalse(action.retained_textured_coverage)
         self.assertEqual(state.lifecycle, "degraded")
         self.assertEqual(
             state.last_failure.code if state.last_failure else None,
@@ -1950,7 +1979,11 @@ class StreamedWorldHealthTests(unittest.TestCase):
         self.assertIn("TileLifecycleController(", source)
         self.assertIn('sensor_status.lifecycle == "degraded"', source)
         self.assertIn("statistics.tiles_rendered", source)
-        self.assertIn("cesium_interface.reload_tileset(tileset_path)", source)
+        self.assertIn("begin_provider_session_replacement(", source)
+        self.assertIn("resident generation remains mounted", source)
+        self.assertIn("from .adapter_server import AdapterServer", source)
+        self.assertNotIn("        AdapterServer,\n", source)
+        self.assertNotIn("clear_accessor_cache", source)
         self.assertNotIn("tile_absent_since", source)
         self.assertNotIn("assess_tile_health", source)
         self.assertNotIn('raise RuntimeError("Google Photorealistic', source)
@@ -1962,7 +1995,7 @@ class StreamedWorldHealthTests(unittest.TestCase):
             Path(__file__).parents[1] / "veoveo_uav_sim" / "hydra_camera.py"
         ).read_text()
         self.assertIn("simulation continues", sensor_source)
-        self.assertNotIn("raise RuntimeError(\"native Isaac", sensor_source)
+        self.assertNotIn('raise RuntimeError("native Isaac', sensor_source)
 
         server_source = (
             Path(__file__).parents[1] / "veoveo_uav_sim" / "server.py"
@@ -1974,6 +2007,30 @@ class StreamedWorldHealthTests(unittest.TestCase):
         self.assertNotIn('snapshot["cameras"]', simulation_ready)
         self.assertNotIn('snapshot["recordings"]', simulation_ready)
         self.assertIn("visual_ready", server_source)
+        self.assertIn("ready = simulation_ready and visual_ready", server_source)
+        self.assertIn("status=200 if ready else 503", server_source)
+        self.assertIn("tile_content_ready(", server_source)
+        self.assertIn('materials_loaded=tiles["materials_loaded"]', server_source)
+
+    def test_provider_replacement_preserves_cache_and_authors_shadow(self) -> None:
+        operations: list[tuple[str, str | None]] = []
+
+        def author_tileset(name: str) -> str:
+            operations.append(("author", name))
+            return "/World/Tileset_refresh_1"
+
+        path = begin_provider_session_replacement(
+            author_tileset,
+            "Tileset_refresh_1",
+        )
+
+        self.assertEqual(path, "/World/Tileset_refresh_1")
+        self.assertEqual(
+            operations,
+            [
+                ("author", "Tileset_refresh_1"),
+            ],
+        )
 
     def test_native_camera_fanout_has_no_software_encoder_or_drain(self) -> None:
         recording_source = (

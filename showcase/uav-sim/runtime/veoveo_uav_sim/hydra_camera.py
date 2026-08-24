@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import threading
 from collections import deque
 from dataclasses import dataclass
@@ -95,7 +96,7 @@ def native_sensor_aov_arguments(
         # The pinned livestream core gives every server type a default
         # signalPort of 49100. RTSP does not expose that socket, but the AOV
         # manager still reserves the value and would displace the first
-        # operator WebRTC product from its locked endpoint. Give the internal
+        # AOV product from its locked endpoint. Give the internal
         # RTSP server an explicit, disjoint reservation beside its listener.
         "signalPort": str(signal_port),
         "streamPort": str(rtsp_port),
@@ -145,7 +146,7 @@ class RtxHydraRenderProduct:
             usd_camera_path=camera_path,
             hydra_engine_name="rtx",
             is_async=True,
-            is_async_low_latency=False,
+            is_async_low_latency=True,
             hydra_tick_rate=render_fps,
         )
         actual_path = self._hydra_texture.get_render_product_path()
@@ -168,6 +169,100 @@ class RtxHydraRenderProduct:
 
     def close(self) -> None:
         self.set_updates_enabled(False)
+
+
+class RtxTiledHydraRenderProduct:
+    """One Isaac Experimental Camera batch rendered as an RTX tile atlas."""
+
+    def __init__(
+        self,
+        *,
+        name: str,
+        camera_paths: tuple[str, ...],
+        tile_width: int,
+        tile_height: int,
+        render_fps: int,
+    ) -> None:
+        import carb
+        import omni.usd
+        from isaacsim.core.experimental.objects import Camera
+        from omni.kit.hydra_texture import create_hydra_texture
+        from pxr import Usd
+
+        if not camera_paths:
+            raise ValueError("RTX tiled product requires at least one camera")
+        if tile_width < 1 or tile_height < 1 or render_fps < 1:
+            raise ValueError(
+                "RTX tiled product dimensions and frame rate must be positive"
+            )
+        # The authoritative operator camera objects retain their USD XformOp
+        # handles for every render update. Experimental Camera wrapping resets
+        # Xform ops by default, which would invalidate those exact handles.
+        self._camera = Camera(
+            list(camera_paths), reset_xform_op_properties=False
+        )
+        self._camera.enforce_square_pixels(
+            (tile_height, tile_width), modes="horizontal"
+        )
+
+        columns = math.ceil(math.sqrt(len(camera_paths)))
+        rows = math.ceil(len(camera_paths) / columns)
+        self._width = columns * tile_width
+        self._height = rows * tile_height
+        settings = carb.settings.get_settings()
+        settings.set("/rtx/viewTile/resolution/0", 0)
+        settings.set("/rtx/viewTile/resolution/1", 0)
+
+        self._path = render_product_path(name)
+        self._hydra_texture = create_hydra_texture(
+            name,
+            self._width,
+            self._height,
+            usd_camera_path=camera_paths[0],
+            hydra_engine_name="rtx",
+            is_async=True,
+            is_async_low_latency=True,
+            hydra_tick_rate=render_fps,
+        )
+        actual_path = self._hydra_texture.get_render_product_path()
+        if actual_path != self._path:
+            self.close()
+            raise RuntimeError(
+                "Isaac tiled RTX product used an unexpected path: "
+                f"{actual_path}"
+            )
+        stage = omni.usd.get_context().get_stage()
+        product_prim = stage.GetPrimAtPath(self._path)
+        if not product_prim.IsValid():
+            self.close()
+            raise RuntimeError("Isaac tiled RTX render-product prim was not created")
+        with Usd.EditContext(stage, stage.GetSessionLayer()):
+            product_prim.GetRelationship("camera").SetTargets(list(camera_paths))
+
+    @property
+    def path(self) -> str:
+        return self._path
+
+    @property
+    def hydra_texture(self) -> Any:
+        return self._hydra_texture
+
+    @property
+    def width(self) -> int:
+        return self._width
+
+    @property
+    def height(self) -> int:
+        return self._height
+
+    def set_updates_enabled(self, enabled: bool) -> None:
+        self._hydra_texture.updates_enabled = enabled
+
+    def close(self) -> None:
+        texture = getattr(self, "_hydra_texture", None)
+        if texture is not None:
+            texture.updates_enabled = False
+            self._hydra_texture = None
 
 
 class NativeH264CameraSensor:

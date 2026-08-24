@@ -34,8 +34,8 @@ has one owner; an additional deployment document must not repeat chart selection
 values, Secret bindings, and apply order.
 
 The installation owner also supplies the Kubernetes cluster and reconciliation
-controller. Argo CD is the reference GitOps implementation, not a Veoveo runtime
-dependency. The Veoveo root Application begins after the controller and repository
+controller. Flux is the reference GitOps implementation, not a Veoveo runtime
+dependency. The Veoveo root Kustomization begins after the controller and repository
 credentials exist, and it cannot install, upgrade, or delete that controller. Direct
 Helm and other GitOps controllers consume the same package and configuration contracts.
 
@@ -204,6 +204,12 @@ explicit projections over the canonical behavior. They reuse the same models,
 policy checks, audit events, task state, and artifact identities. They are not a
 second implementation or a fallback completion path.
 
+Federated discovery failure is a profile-selected decision, not an implicit
+behavior. The default isolates an unavailable server and reports its degradation
+through typed metadata; a profile that declares `fail_closed` discovery refuses
+the whole tool list instead, so an autonomous client can never act on a silently
+incomplete toolset. No profile may degrade silently.
+
 ## Hosted server administration
 
 Domain administration is part of the hosted server's MCP contract. Servers use
@@ -219,6 +225,12 @@ canonical MCP surface. The gateway exposes that projection at
 authorizes the operation, records audit evidence, and forwards a short-lived
 internal identity assertion. The owning server validates that assertion and
 applies the request through its canonical domain models and state.
+
+Health is a declared contract, never an inference. Every catalog entry names an
+explicit `health_url` beside its MCP endpoint; the gateway probes it with an
+unauthenticated GET and treats only a success status as healthy. An MCP request,
+an authentication failure, or a method rejection is never a health signal, and a
+fragment without a health endpoint fails control-plane validation.
 
 An HTTP projection never replaces MCP, invents alternate resource identities, or
 becomes a second source of truth. Generic server documentation under
@@ -265,6 +277,18 @@ CSRF enforcement, and authorized API aggregation. It is not a source of truth;
 mutations go through the gateway or owning service, and reads come from governed
 platform projections.
 
+## Agent control
+
+Agent control is policy authority, not principal-kind authority. Reading agent
+state, sending an agent a message, and answering a pending input request are
+gateway actions that every caller, signed-in user and service principal alike,
+must pass through the selected profile's action policy. This replaces the earlier
+human-only restriction: an installation that wants human-only control expresses
+it as policy, and one that admits automated responders grants that authority to
+named principals explicitly. Messages never carry implicit authority, remain
+actor-attributed and idempotent, and land inside the caller's exact tenant and
+Work Context.
+
 ## Recording and simulation
 
 The recording hub is a durable push path. Producers push Rerun log streams;
@@ -281,9 +305,10 @@ protocol or shell-based smoke framework.
 
 The UAV simulation showcase follows the same control boundary at GPU scale.
 One MCP server serializes mutations for each simulation session, while a
-cluster-private adapter owns Isaac Sim, Cesium for Omniverse, Pegasus, PX4,
-MAVLink, and sensor capture. Google Photorealistic 3D Tiles rendered inside
-Isaac through Cesium ion are part of the delivered world contract. View MCP's
+cluster-private adapter owns Isaac Sim, Cesium for Omniverse, Newton rigid bodies,
+the CUDA Warp UAV plant and sensors, PX4 HIL, MAVLink, and sensor capture. Google
+Photorealistic 3D Tiles rendered inside Isaac through Cesium ion are part of the
+delivered world contract. View MCP's
 direct Google source is independent and is not a substitute for simulator tile
 residency.
 
@@ -295,12 +320,12 @@ Stream consumes newly encoded simulator camera frames directly for live
 processing. Its reproducible replay profile consumes governed recording
 identities rather than a simulator-private media URL.
 
-The authoritative simulator also owns operator live cameras. Logical cameras share one
-final smoothed pose, while every actor-and-browser viewer lease reserves a preallocated
-camera clone and an isolated RTX, NVENC, and native WebRTC product. Camera smoothing
+The authoritative simulator also owns operator live cameras. Each logical camera has one
+final smoothed pose and one continuous RTX/NVENC H.264 product. Actor-and-browser
+authorizations share that exact encoded product. Camera smoothing
 changes only the logical operator-camera transform at the current simulator tick. The
 platform does not mirror scenes, transport visualization poses, reconcile a second
-renderer, relay media, or persist browser leases.
+renderer, duplicate encoding, or persist browser authorizations.
 
 The reference deployment runs the authoritative UAV simulator, View, Stream, Reason,
 the cuOpt executor, and the Rerun viewer concurrently. Their Helm workloads

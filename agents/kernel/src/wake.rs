@@ -83,7 +83,8 @@ impl WakeKindExt for WakeKind {
 }
 
 pub fn is_priority(wake: &ClaimedWake) -> bool {
-    wake.kind == WakeKind::OperatorMessage
+    wake.kind == WakeKind::TaskResult
+        || wake.kind == WakeKind::OperatorMessage
         || (wake.kind == WakeKind::InputRequest
             && wake
                 .payload
@@ -129,6 +130,20 @@ impl WakeBatch {
     pub fn ids(&self) -> Vec<WakeId> {
         self.wakes.iter().map(|wake| wake.wake_id).collect()
     }
+
+    pub fn is_heartbeat_only(&self) -> bool {
+        !self.wakes.is_empty() && self.wakes.iter().all(is_heartbeat)
+    }
+}
+
+fn is_heartbeat(wake: &ClaimedWake) -> bool {
+    wake.kind == WakeKind::Timer
+        && wake
+            .payload
+            .as_map()
+            .get("timer_kind")
+            .and_then(serde_json::Value::as_str)
+            == Some("heartbeat")
 }
 
 pub struct WakeReceiver {
@@ -270,5 +285,50 @@ mod tests {
         assert!(WakeKind::ResourceChanged.coalescible());
         assert!(!WakeKind::TaskResult.coalescible());
         assert!(!WakeKind::OperatorMessage.coalescible());
+    }
+
+    #[test]
+    fn terminal_task_results_bypass_scheduler_debounce_and_hourly_deferral() {
+        let wake = ClaimedWake {
+            wake_id: WakeId::new(),
+            kind: WakeKind::TaskResult,
+            dedupe_key: None,
+            payload: OpenObject::default(),
+            attempts: 1,
+        };
+        assert!(is_priority(&wake));
+    }
+
+    #[test]
+    fn only_pure_heartbeat_batches_skip_an_episode() {
+        let heartbeat = ClaimedWake {
+            wake_id: WakeId::new(),
+            kind: WakeKind::Timer,
+            dedupe_key: Some("heartbeat".to_owned()),
+            payload: payload([
+                ("name", serde_json::json!("heartbeat")),
+                ("timer_kind", serde_json::json!("heartbeat")),
+            ]),
+            attempts: 1,
+        };
+        let timer = ClaimedWake {
+            wake_id: WakeId::new(),
+            kind: WakeKind::Timer,
+            dedupe_key: Some("timer:inspection".to_owned()),
+            payload: payload([("name", serde_json::json!("inspection"))]),
+            attempts: 1,
+        };
+        assert!(
+            WakeBatch {
+                wakes: vec![heartbeat.clone()]
+            }
+            .is_heartbeat_only()
+        );
+        assert!(
+            !WakeBatch {
+                wakes: vec![heartbeat, timer]
+            }
+            .is_heartbeat_only()
+        );
     }
 }

@@ -17,14 +17,16 @@ mod browser;
 mod restart;
 
 use browser::{
-    ConsoleLiveCaptureEvidence, ConsoleLiveGridEvidence, ConsoleRecordingArchiveCaptureEvidence,
-    ConsoleRecordingCaptureEvidence, capture_console_live_app, capture_console_live_app_grid,
-    capture_console_live_app_pair, capture_console_recording, capture_console_recording_archive,
-    preflight_console_live_app, preflight_standalone_live_app,
+    ConsoleAgentInstructionEvidence, ConsoleLiveCaptureEvidence, ConsoleLiveGridEvidence,
+    ConsoleRecordingArchiveCaptureEvidence, ConsoleRecordingCaptureEvidence,
+    capture_console_live_app, capture_console_live_app_five_user_grid,
+    capture_console_live_app_grid, capture_console_live_app_pair, capture_console_recording,
+    capture_console_recording_archive, preflight_console_live_app, preflight_standalone_live_app,
+    send_console_uav_agent_instruction,
 };
 use restart::{RestartVerification, verify_live_view_restarts};
 
-const EVIDENCE_SCHEMA: &str = "veoveo.io/uav-live-view-browser-evidence/v11";
+const EVIDENCE_SCHEMA: &str = "veoveo.io/uav-live-view-browser-evidence/v12";
 const MAX_RECORDING_SOURCE_LAG_SECONDS: f64 = 1.0;
 const MINIMUM_PHYSICS_REAL_TIME_FACTOR: f64 = 0.98;
 const PRIMARY_CAMERA_ID: &str = "follow";
@@ -42,11 +44,13 @@ const FOCUSED_UAV_APP_HOST_PREFLIGHTS: [FocusedUavAppHostPreflight; 2] = [
 const OPERATOR_PROFILE_SCOPES: &[&str] = &[
     "operator:use",
     "uav-sim:read",
+    "uav-sim:control",
     "uav-sim:stream",
     "view:read",
     "view:write",
     "view:capture",
     "map:dataset:read",
+    "map:route",
     "time:read",
 ];
 
@@ -108,6 +112,24 @@ enum SmokeCommand {
         #[arg(long, default_value = "http://127.0.0.1:9222")]
         chrome_cdp_url: String,
         #[arg(long, default_value = "output/acceptance/uav-browser")]
+        evidence_root: PathBuf,
+    },
+    /// Send one UAV App instruction and prove its durable pilot reply through Console.
+    UavAgentInstructionBrowserVerify {
+        #[arg(long)]
+        public_base_url: String,
+        #[arg(long, default_value = "http://127.0.0.1:9222")]
+        chrome_cdp_url: String,
+        #[arg(long)]
+        agent_id: String,
+        #[arg(long)]
+        message: String,
+        #[arg(long, default_value_t = 300)]
+        timeout_seconds: u64,
+        #[arg(
+            long,
+            default_value = "output/acceptance/uav-agent-instruction-browser"
+        )]
         evidence_root: PathBuf,
     },
     /// Keep a headed live view mounted while restarting the MCP and simulator containers.
@@ -190,6 +212,7 @@ struct BrowserAcceptanceEvidence {
     sensor_isolation: SensorIsolationEvidence,
     performance: LiveViewPerformanceEvidence,
     grid: ConsoleLiveGridEvidence,
+    concurrent_users: Vec<ConsoleLiveGridEvidence>,
     live_views: Vec<ConsoleLiveCaptureEvidence>,
 }
 
@@ -219,6 +242,16 @@ struct RecordingArchiveBrowserAcceptanceEvidence {
     run_id: String,
     recording_id: String,
     recording: ConsoleRecordingArchiveCaptureEvidence,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentInstructionBrowserAcceptanceEvidence {
+    schema: &'static str,
+    completed_at: chrono::DateTime<Utc>,
+    source_revision: String,
+    run_id: String,
+    instruction: ConsoleAgentInstructionEvidence,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -261,7 +294,9 @@ struct SourceTimelineAlignmentEvidence {
 struct LiveViewPerformanceEvidence {
     physics_real_time_factor: f64,
     qualified_camera_count: usize,
-    simultaneous_viewer_count: usize,
+    browser_user_count: usize,
+    simultaneous_camera_views: usize,
+    simultaneous_encoded_streams: usize,
     minimum_observed_frame_rate_hz: f64,
     maximum_observed_frame_rate_hz: f64,
     browser_dropped_frames: u64,
@@ -324,6 +359,24 @@ async fn main() -> Result<()> {
             )
             .await
         }
+        SmokeCommand::UavAgentInstructionBrowserVerify {
+            public_base_url,
+            chrome_cdp_url,
+            agent_id,
+            message,
+            timeout_seconds,
+            evidence_root,
+        } => {
+            verify_uav_agent_instruction(
+                &public_base_url,
+                &chrome_cdp_url,
+                &agent_id,
+                &message,
+                Duration::from_secs(timeout_seconds),
+                &evidence_root,
+            )
+            .await
+        }
         SmokeCommand::UavShowcaseLiveRestartVerify {
             conformance_bin,
             scenario,
@@ -377,6 +430,62 @@ async fn main() -> Result<()> {
             .await
         }
     }
+}
+
+async fn verify_uav_agent_instruction(
+    public_base_url: &str,
+    chrome_cdp_url: &str,
+    agent_id: &str,
+    message: &str,
+    timeout: Duration,
+    evidence_root: &Path,
+) -> Result<()> {
+    let public_base_url = public_base_url.trim_end_matches('/');
+    ensure!(
+        url::Url::parse(public_base_url)?.scheme() == "https",
+        "UAV agent instruction acceptance requires public HTTPS"
+    );
+    ensure!(
+        !agent_id.trim().is_empty() && !message.trim().is_empty(),
+        "UAV agent instruction requires an exact agent and non-empty message"
+    );
+    let source_revision = git_revision()?;
+    let run_id = uuid::Uuid::now_v7().to_string();
+    let evidence_directory = evidence_root.join(&source_revision).join(&run_id);
+    fs::create_dir_all(&evidence_directory).with_context(|| {
+        format!(
+            "creating UAV agent instruction evidence directory {}",
+            evidence_directory.display()
+        )
+    })?;
+    let instruction = send_console_uav_agent_instruction(
+        chrome_cdp_url,
+        public_base_url,
+        agent_id,
+        message,
+        &evidence_directory.join("uav-agent-instruction.png"),
+        timeout,
+    )
+    .await?;
+    let evidence = AgentInstructionBrowserAcceptanceEvidence {
+        schema: "veoveo.io/uav-agent-instruction-browser-evidence/v1",
+        completed_at: Utc::now(),
+        source_revision,
+        run_id,
+        instruction,
+    };
+    let manifest = evidence_directory.join("evidence.json");
+    fs::write(&manifest, serde_json::to_vec_pretty(&evidence)?).with_context(|| {
+        format!(
+            "writing UAV agent instruction evidence {}",
+            manifest.display()
+        )
+    })?;
+    println!(
+        "UAV App instruction reached its pilot and received a durable reply. Evidence: {}",
+        manifest.display()
+    );
+    Ok(())
 }
 
 async fn verify_uav_app_hosts(
@@ -603,18 +712,28 @@ async fn verify_running_showcase(
     let initial_products = initial_state
         .get("stream_products")
         .and_then(Value::as_array)
-        .context("authoritative simulator omitted its viewer-slot collection")?;
+        .context("authoritative simulator omitted its tiled camera product")?;
+    let initial_camera_ids = initial_products
+        .iter()
+        .flat_map(|product| {
+            product
+                .get("cameraRegions")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|region| region.get("cameraId").and_then(Value::as_str))
+        })
+        .collect::<std::collections::BTreeSet<_>>();
     ensure!(
-        initial_products
-            .iter()
-            .filter(|product| {
-                product.get("lifecycle").and_then(Value::as_str) == Some("inactive")
-                    && product.get("cameraId").is_none()
-                    && product.get("liveViewId").is_none()
-            })
-            .count()
-            >= 2,
-        "focused browser acceptance requires two unassigned native viewer slots: {initial_products:?}"
+        initial_products.len() == 1
+            && initial_camera_ids.len() == QUALIFIED_CAMERA_IDS.len()
+            && initial_products.iter().all(|product| {
+                product.get("lifecycle").and_then(Value::as_str) == Some("ready")
+                    && product.get("nvencSessions").and_then(Value::as_u64) == Some(1)
+                    && product.get("codedWidthPx").and_then(Value::as_u64) == Some(3_840)
+                    && product.get("codedHeightPx").and_then(Value::as_u64) == Some(1_440)
+            }),
+        "focused browser acceptance requires one ready five-camera tiled product: {initial_products:?}"
     );
 
     let source_revision = git_revision()?;
@@ -638,24 +757,21 @@ async fn verify_running_showcase(
     ensure!(
         first_live.viewer_instance_id() != second_live.viewer_instance_id()
             && first_live.live_view_id() != second_live.live_view_id()
-            && first_live.stream_product_id() != second_live.stream_product_id()
-            && first_live.capacity_slot() != second_live.capacity_slot(),
-        "simultaneous browser instances did not receive isolated native viewer slots: \
-         first=({}, {}, {}, {}) second=({}, {}, {}, {})",
+            && first_live.stream_product_id() == second_live.stream_product_id(),
+        "simultaneous browser instances did not share one native camera atlas: \
+         first=({}, {}, {}) second=({}, {}, {})",
         first_live.viewer_instance_id(),
         first_live.live_view_id(),
         first_live.stream_product_id(),
-        first_live.capacity_slot(),
         second_live.viewer_instance_id(),
         second_live.live_view_id(),
         second_live.stream_product_id(),
-        second_live.capacity_slot(),
     );
     let mut live_views = vec![first_live, second_live];
     let grid = capture_console_live_app_grid(
         chrome_cdp_url,
         public_base_url,
-        &[PRIMARY_CAMERA_ID, "chase"],
+        &QUALIFIED_CAMERA_IDS,
         &evidence_directory.join("uav-live-view-grid.png"),
         timeout,
     )
@@ -684,43 +800,50 @@ async fn verify_running_showcase(
             "focused browser evidence omitted qualified camera {camera_id}: expected {expected_captures} captures"
         );
     }
+    let concurrent_users = capture_console_live_app_five_user_grid(
+        chrome_cdp_url,
+        public_base_url,
+        &QUALIFIED_CAMERA_IDS,
+        &evidence_directory,
+        timeout,
+    )
+    .await?;
+    ensure!(
+        concurrent_users.len() == 5
+            && concurrent_users
+                .iter()
+                .all(|user| user.products().len() == 1),
+        "five concurrent browser users did not each share one atlas across all five cameras"
+    );
     let final_state = simulation_state(&operator, &scenario.session_id).await?;
     let final_products = final_state
         .get("stream_products")
         .and_then(Value::as_array)
-        .context("authoritative simulator lost its viewer-slot collection")?;
+        .context("authoritative simulator lost its tiled camera product")?;
     for live in &live_views {
-        let released = final_products.iter().find(|product| {
+        let product = final_products.iter().find(|product| {
             product.get("streamProductId").and_then(Value::as_str) == Some(live.stream_product_id())
         });
         ensure!(
-            released.is_some_and(|product| {
-                product.get("capacitySlot").and_then(Value::as_u64)
-                    == Some(u64::from(live.capacity_slot()))
-                    && product.get("lifecycle").and_then(Value::as_str) == Some("inactive")
-                    && product.get("cameraId").is_none()
-                    && product.get("liveViewId").is_none()
-                    && product.get("nvencSessions").and_then(Value::as_u64) == Some(0)
+            product.is_some_and(|product| {
+                product.get("lifecycle").and_then(Value::as_str) == Some("ready")
+                    && product.get("nvencSessions").and_then(Value::as_u64) == Some(1)
             }),
-            "browser close did not release native viewer slot {} immediately: {final_products:?}",
-            live.capacity_slot(),
+            "browser close disrupted tiled camera product {}: {final_products:?}",
+            live.stream_product_id(),
         );
     }
-    for (stream_product_id, capacity_slot) in grid.products() {
-        let released = final_products.iter().find(|product| {
+    for stream_product_id in grid.products() {
+        let product = final_products.iter().find(|product| {
             product.get("streamProductId").and_then(Value::as_str)
                 == Some(stream_product_id.as_str())
         });
         ensure!(
-            released.is_some_and(|product| {
-                product.get("capacitySlot").and_then(Value::as_u64)
-                    == Some(u64::from(capacity_slot))
-                    && product.get("lifecycle").and_then(Value::as_str) == Some("inactive")
-                    && product.get("cameraId").is_none()
-                    && product.get("liveViewId").is_none()
-                    && product.get("nvencSessions").and_then(Value::as_u64) == Some(0)
+            product.is_some_and(|product| {
+                product.get("lifecycle").and_then(Value::as_str) == Some("ready")
+                    && product.get("nvencSessions").and_then(Value::as_u64) == Some(1)
             }),
-            "browser grid close did not release native viewer slot {capacity_slot} immediately: {final_products:?}",
+            "browser grid close disrupted tiled camera product {stream_product_id}: {final_products:?}",
         );
     }
     ensure!(
@@ -750,6 +873,7 @@ async fn verify_running_showcase(
         sensor_isolation,
         performance,
         grid,
+        concurrent_users,
         live_views,
     };
     let manifest = evidence_directory.join("evidence.json");
@@ -816,7 +940,9 @@ fn live_view_performance(
     Ok(LiveViewPerformanceEvidence {
         physics_real_time_factor,
         qualified_camera_count: QUALIFIED_CAMERA_IDS.len(),
-        simultaneous_viewer_count: 2,
+        browser_user_count: 5,
+        simultaneous_camera_views: 25,
+        simultaneous_encoded_streams: 5,
         minimum_observed_frame_rate_hz,
         maximum_observed_frame_rate_hz,
         browser_dropped_frames: live_views

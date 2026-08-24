@@ -4,9 +4,9 @@ use chrono::{DateTime, Utc};
 use serde_json::Value;
 use veoveo_mcp_contract::{
     AccessSubject, AuthMode, AuthorizationServerId, CanonicalTaskId, CompletionExposure,
-    DataLabelDefinition, DataLabelId, Exposure, GatewayAction, GatewayControlPlaneError, GroupId,
-    HttpsUrl, IdentityProvider, IdentityProviderId, IdentityProviderOidcClientRegistration,
-    InvocationMode, JwksSource, JwtId, LocalToolName,
+    DataLabelDefinition, DataLabelId, DiscoveryFailureMode, Exposure, GatewayAction,
+    GatewayControlPlaneError, GroupId, HttpsUrl, IdentityProvider, IdentityProviderId,
+    IdentityProviderOidcClientRegistration, InvocationMode, JwksSource, JwtId, LocalToolName,
     MCP_ENTERPRISE_MANAGED_AUTHORIZATION_EXTENSION, MCP_OAUTH_CLIENT_CREDENTIALS_EXTENSION,
     MountPath, OAuthClientAuthMethod, OAuthClientId, OAuthClientRegistration, OAuthClientSurface,
     OAuthEndpointUrl, OAuthGrantType, OAuthRedirectUri, OidcClientAuthMethod, OidcClientId,
@@ -98,6 +98,7 @@ fn media_manifest() -> ServerManifest {
         upstream: UpstreamEndpoint {
             transport: UpstreamTransport::StreamableHttp,
             url: UpstreamUrl::new("http://media-mcp:8787/media/mcp").unwrap(),
+            health_url: UpstreamUrl::new("http://media-mcp:8787/media/healthz").unwrap(),
             security: UpstreamTransportSecurity::ClusterInternalHttp,
             trusted_certificate_authorities: Vec::new(),
             client_certificate: None,
@@ -236,6 +237,7 @@ fn profile() -> GatewayProfile {
             AuthMode::OAuthClientCredentials,
             AuthMode::OidcAuthorizationCodePkce,
         ]),
+        discovery_failure_mode: DiscoveryFailureMode::Isolate,
         required_scopes: vec![ScopeName::new("operator:use").unwrap()],
         servers: vec![ProfileServerExposure {
             server: ServerSlug::new("media").unwrap(),
