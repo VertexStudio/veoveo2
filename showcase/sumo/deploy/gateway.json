@@ -95,6 +95,7 @@
       "upstream": {
         "transport": "streamable_http",
         "url": "http://recording-mcp:8796/mcp",
+        "health_url": "http://recording-mcp:8796/healthz",
         "security": "cluster_internal_http"
       },
       "capabilities": {
