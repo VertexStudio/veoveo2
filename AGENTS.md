@@ -7,6 +7,17 @@ placing a new module. It indexes the normative documents, component designs, cod
 ownership, and shortest implementation paths. Update the map in the same change when a
 document moves, a component is added, or an ownership boundary changes.
 
+Before operating, diagnosing, or changing the local k3d deployment, read
+[`docs/LOCAL_DEVELOPMENT_DEPLOYMENT.md`](docs/LOCAL_DEVELOPMENT_DEPLOYMENT.md). It is the
+ordered developer and agent runbook. Local fixtures do not establish production
+requirements, and a local failure does not authorize a repository-wide deployment rule.
+
+Before operating, diagnosing, or changing a fielded installation, read
+[`docs/DEPLOYMENT_GUIDE.md`](docs/DEPLOYMENT_GUIDE.md) and
+[`docs/ENTERPRISE_DEPLOYMENT.md`](docs/ENTERPRISE_DEPLOYMENT.md). The installation owner
+controls identity, Secrets, infrastructure, desired state, and recovery. Do not infer
+enterprise requirements from a local fixture or one reference installation.
+
 An MCP server's design document belongs at `servers/{server}-mcp/DESIGN.md` beside its
 crate. Repository-wide architecture stays under `docs/`.
 

@@ -10,6 +10,10 @@ Helm is the package contract. GitOps is the recommended reconciliation model, wi
 Argo CD as the maintained reference. An operator may use Flux or direct Helm without
 changing the chart, image, configuration, or Secret contracts.
 
+The ordered installation procedure for operators and agents is documented in the
+[deployment guide](DEPLOYMENT_GUIDE.md). This document remains the normative ownership
+and artifact contract.
+
 ## Standards And Protocols
 
 | Standard or protocol | Supported profile |

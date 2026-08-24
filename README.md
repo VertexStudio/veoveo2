@@ -422,6 +422,16 @@ repository.
 | Enterprise GitOps | Immutable OCI charts and image digests reconciled by the installation owner's Argo CD, Flux, or equivalent controller. | [`docs/ENTERPRISE_DEPLOYMENT.md`](docs/ENTERPRISE_DEPLOYMENT.md) |
 | Offline | A verified bundle containing runtime images, charts, schemas, checksums, image identities, and SPDX SBOMs. | [`deploy/offline`](deploy/offline/README.md) |
 
+Developers running the complete local SUMO installation should start with the
+[`local development deployment guide`](docs/LOCAL_DEVELOPMENT_DEPLOYMENT.md). It covers
+host prerequisites, the ordered clean-install workflow, acceptance, restart recovery,
+failure diagnosis, and destructive cleanup boundaries.
+
+Installation teams preparing a fielded environment should start with the
+[`deployment guide`](docs/DEPLOYMENT_GUIDE.md). It orders the existing enterprise
+contracts for GitOps, direct Helm, offline delivery, acceptance, upgrade, and rollback
+without inheriting local or Bioma-specific configuration.
+
 The [Autonomy Harness shared-responsibility contract](docs/AUTONOMY_HARNESS.md)
 defines how continuously autonomous agents remain contained across identity, data,
 network, compute, spend, capabilities, and side effects.

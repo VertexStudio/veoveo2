@@ -16,9 +16,11 @@ component:
 | [`TECH_DESIGN.md`](TECH_DESIGN.md) | current implementation of those architecture decisions |
 | [`AUTONOMY_HARNESS.md`](AUTONOMY_HARNESS.md) | shared responsibility, continuous containment boundary, and operating proof for always-autonomous agents |
 | [`WORK_CONTEXT_GOVERNANCE.md`](WORK_CONTEXT_GOVERNANCE.md) | invocation authority, output ownership, effective access, and rollout |
+| [`DEPLOYMENT_GUIDE.md`](DEPLOYMENT_GUIDE.md) | canonical operational guide for connected GitOps, direct Helm, offline installation, acceptance, upgrade, rollback, and agent boundaries |
 | [`ENTERPRISE_DEPLOYMENT.md`](ENTERPRISE_DEPLOYMENT.md) | OCI release, enterprise configuration, secrets, GitOps, extensions, and acceptance |
 | [`EXTERNAL_EXTENSIONS.md`](EXTERNAL_EXTENSIONS.md) | supported private external-repository contract, artifact ownership, compatibility manifests, and installation composition |
 | [`EXTERNAL_REPOSITORY_INTEGRATION.md`](EXTERNAL_REPOSITORY_INTEGRATION.md) | coding-agent runbook for native external build, conformance, private publication, gateway composition, and digest-pinned GitOps integration |
+| [`LOCAL_DEVELOPMENT_DEPLOYMENT.md`](LOCAL_DEVELOPMENT_DEPLOYMENT.md) | canonical ordered developer and agent runbook for the local k3d SUMO installation, acceptance, restart, diagnosis, and destructive cleanup boundaries |
 | [`LOCAL_DEPLOYMENT_PROFILES.md`](LOCAL_DEPLOYMENT_PROFILES.md) | disposable k3d showcase profile contract |
 | [`CODEMAP.md`](CODEMAP.md) | documentation index, code ownership, and change routing |
 | [`RECORDINGS.md`](RECORDINGS.md) | recording ingest, catalog, sealing, and governed read path |
