@@ -424,7 +424,7 @@
 <text x="66.0" y="1686" class="body" text-anchor="start">
 <tspan x="66.0" dy="0">SurrealDB platform database</tspan>
 </text>
-<text x="373.0" y="1661" class="tiny" text-anchor="end">SurrealDB 3.2.3</text>
+<text x="373.0" y="1661" class="tiny" text-anchor="end">SurrealDB 3.2.4</text>
 <rect x="403.0" y="1640" width="335.0" height="76" rx="7" fill="#ffffff" stroke="#b8c7cd" stroke-width="1" opacity="1"/>
 <rect x="403.0" y="1640" width="6" height="76" rx="6" fill="#2c8580" stroke="none" stroke-width="1" opacity="1"/>
 <text x="419.0" y="1661" class="node-id" text-anchor="start">VV-CMP-039</text>
@@ -482,14 +482,14 @@
 <text x="772.0" y="1778" class="body" text-anchor="start">
 <tspan x="772.0" dy="0">Map processing and routing toolchain</tspan>
 </text>
-<text x="1079.0" y="1753" class="tiny" text-anchor="end">Valhalla 3.8.3 GDAL 3.13.2 and GTFS Validator 8.0.1</text>
+<text x="1079.0" y="1753" class="tiny" text-anchor="end">Valhalla 3.8.3 GDAL 3.13.3 and GTFS Validator 8.0.1</text>
 <rect x="1109.0" y="1732" width="335.0" height="76" rx="7" fill="#ffffff" stroke="#b8c7cd" stroke-width="1" opacity="1"/>
 <rect x="1109.0" y="1732" width="6" height="76" rx="6" fill="#2c8580" stroke="none" stroke-width="1" opacity="1"/>
 <text x="1125.0" y="1753" class="node-id" text-anchor="start">VV-CMP-047</text>
 <text x="1125.0" y="1778" class="body" text-anchor="start">
 <tspan x="1125.0" dy="0">Rerun data model and transport</tspan>
 </text>
-<text x="1432.0" y="1753" class="tiny" text-anchor="end">Rerun 0.35.0 libraries and Data Protocol</text>
+<text x="1432.0" y="1753" class="tiny" text-anchor="end">Rerun 0.36.3 libraries and Data Protocol</text>
 <rect x="1462.0" y="1732" width="335.0" height="76" rx="7" fill="#ffffff" stroke="#b8c7cd" stroke-width="1" opacity="1"/>
 <rect x="1462.0" y="1732" width="6" height="76" rx="6" fill="#2c8580" stroke="none" stroke-width="1" opacity="1"/>
 <text x="1478.0" y="1753" class="node-id" text-anchor="start">VV-CMP-048</text>
@@ -510,7 +510,7 @@
 <text x="66.0" y="1870" class="body" text-anchor="start">
 <tspan x="66.0" dy="0">NVIDIA cuOpt and CUDA runtime</tspan>
 </text>
-<text x="373.0" y="1845" class="tiny" text-anchor="end">NVIDIA cuOpt 26.06 and CUDA 13.2</text>
+<text x="373.0" y="1845" class="tiny" text-anchor="end">NVIDIA cuOpt 26.08 and CUDA 13.3</text>
 <rect x="28" y="2065" width="2144" height="1.2" rx="0" fill="#687983" stroke="none" stroke-width="1" opacity="1"/>
 <text x="30" y="2086" class="tiny" text-anchor="start">Veoveo reference baseline - no client-specific data</text>
 <text x="2170" y="2086" class="tiny" text-anchor="end">Revision 2026-08-21 | VV-VIEW-05</text>

@@ -28,6 +28,7 @@ pub mod live_view;
 pub mod pagination;
 pub mod protocol;
 pub mod provider;
+pub mod recording_catalog;
 pub mod storage;
 pub mod subscriptions;
 pub mod tasks;
@@ -59,7 +60,7 @@ pub use artifact_service::{
     GrantList, IssueArtifactWriteCapabilityRequest, IssuedArtifactWriteCapability,
     ListArtifactAccessRequests, ListArtifactsRequest, MAX_ARTIFACT_PUT_DESCRIPTOR_BYTES,
     PlaneCaller, PutArtifactRequest, PutGrantRequest, RedeemArtifactWriteCapabilityRequest,
-    SetArtifactReleaseStateRequest,
+    SetArtifactReleaseStateRequest, StreamArtifactRequest,
 };
 pub use bootstrap::{
     SERVER_BOOTSTRAP_FLAG, SERVER_BOOTSTRAP_ISSUER, SERVER_BOOTSTRAP_MOUNT_PATH,
@@ -96,14 +97,15 @@ pub use duckdb::{
     duckdb_quote_literal, duckdb_read_function_sql, duckdb_read_options_sql,
 };
 pub use gateway::{
-    APP_RESOURCE_DEPENDENCIES_META_KEY, AccessTokenSubject, AppResourceDependency,
-    AppResourceOperation, ArtifactAudience, AuditEvent, AuthAuditEvent, AuthMethod, AuthMode,
-    AuthOutcome, AuthReasonCode, AuthorizationServerEndpoint, AuthorizationServerId,
-    CanonicalTaskId, CertificateAuthorityFilePath, CertificateAuthoritySource,
-    CompatibilityHelperId, CompletionExposure, ComposedGatewayControlPlane, CompositionDigest,
-    DataLabelDefinition, DataLabelId, DelegationId, DiscoveryFailureMode, Exposure,
-    GATEWAY_BINDING_SCHEMA, GATEWAY_COMPOSITION_PROVENANCE_SCHEMA, GATEWAY_SERVER_FRAGMENT_SCHEMA,
-    GatewayAction, GatewayAuthorizationCodeRecord, GatewayAuthorizationRequest, GatewayBinding,
+    APP_RESOURCE_DEPENDENCIES_META_KEY, APP_TOOL_DEPENDENCIES_META_KEY, AccessTokenSubject,
+    AppResourceDependency, AppResourceOperation, AppToolDependency, AppToolImport,
+    ArtifactAudience, AuditEvent, AuthAuditEvent, AuthMethod, AuthMode, AuthOutcome,
+    AuthReasonCode, AuthorizationServerEndpoint, AuthorizationServerId, CanonicalTaskId,
+    CertificateAuthorityFilePath, CertificateAuthoritySource, CompatibilityHelperId,
+    CompletionExposure, ComposedGatewayControlPlane, CompositionDigest, DataLabelDefinition,
+    DataLabelId, DelegationId, DiscoveryFailureMode, Exposure, GATEWAY_BINDING_SCHEMA,
+    GATEWAY_COMPOSITION_PROVENANCE_SCHEMA, GATEWAY_SERVER_FRAGMENT_SCHEMA, GatewayAction,
+    GatewayAuthorizationCodeRecord, GatewayAuthorizationRequest, GatewayBinding,
     GatewayBindingSchema, GatewayCompositionContribution, GatewayCompositionError,
     GatewayCompositionInput, GatewayCompositionInputKind, GatewayCompositionProvenance,
     GatewayCompositionProvenanceSchema, GatewayCompositionRequirements, GatewayControlPlane,
@@ -167,6 +169,12 @@ pub use protocol::{
     sanitized_request_meta, trace_id_from_traceparent,
 };
 pub use provider::Provider;
+pub use recording_catalog::{
+    CreateRecordingCatalogGrantRequest, CreateRecordingProjectionRequest,
+    RECORDING_CATALOG_GRANT_SCHEMA, RECORDING_PROJECTION_HANDLE_SCHEMA, RecordingCatalogGrant,
+    RecordingProjectionHandle, RecordingProjectionResultMetadata, RecordingProjectionSampling,
+    RecordingProjectionSparseFill,
+};
 pub use storage::{
     ArtifactMetadata, ArtifactObject, ArtifactProvenance, ArtifactPut, ArtifactReleaseState,
     ComplianceMetadata,

@@ -170,10 +170,22 @@ fn execute(
     program: &OsStr,
     arguments: &[OsString],
 ) -> Result<std::process::ExitStatus> {
+    let protoc = match env::var_os("PROTOC") {
+        Some(protoc) => protoc,
+        None => protoc_bin_vendored::protoc_bin_path()
+            .context("resolving repository-managed protoc")?
+            .into_os_string(),
+    };
     let mut command = Command::new(program);
     command
         .args(arguments)
         .current_dir(root)
+        .env(
+            "CARGO_BUILD_JOBS",
+            env::var_os("CARGO_BUILD_JOBS")
+                .unwrap_or_else(|| process::DEFAULT_CARGO_BUILD_JOBS.into()),
+        )
+        .env("PROTOC", protoc)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());

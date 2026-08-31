@@ -18,7 +18,7 @@ publishes their NVIDIA NVENC products to the governed live-view App.
 | WebSocket and H.264 | One continuous tiled NVIDIA NVENC atlas for every operator camera, delivered as Annex B H.264 access units to every authenticated browser. |
 | Native sensor video | `omni.kit.livestream.aov` `10.2.0` and `omni.kit.livestream.rtsp` `10.2.3`, packaged by Isaac Sim `6.0.1`, for CUDA-AOV-to-NVENC H.264 output. |
 | RTSP, RTP, and H.264 | Pod-local RTSP 1.0 with interleaved RTP/RTCP and RFC 6184 single-NAL, STAP-A, and FU-A packetization. |
-| Rerun RRD | Version `0.36.0` telemetry, leader-camera video, and producer Blueprint publication. |
+| Rerun RRD | Version `0.36.3` telemetry, leader-camera video, and producer Blueprint publication. |
 | NVIDIA CUDA, Vulkan, RTX, and NVENC | Mandatory simulation, low-latency RTX rendering, and server-side video encoding. |
 | MAVLink 2 | Pod-local PX4 `1.17.0` command, telemetry, actuator, and HIL sensor integration. |
 | OGC 3D Tiles | Cesium Omniverse `0.29.0` and its pinned Cesium Native revision stream photorealistic terrain and buildings. A repository-owned internal event extension reports redacted load lifecycle state. |
@@ -132,14 +132,16 @@ The selected revision determines the Cesium georeference, Newton fleet coordinat
 geographic conversion, mission guard, recording metadata, sensor frames, and
 operator-camera world.
 
-The stage uses Isaac 6's GPU-native `MinimalRendering` renderer in textured-diffuse mode
-with the pinned Cesium extension. This mode preserves Cesium's glTF imagery while it
-removes per-camera lighting rays from the five-product live path. The headless runtime is
-the sole owner of Cesium's active viewport list. It submits every active domain sensor
-and operator camera during the same Kit update; the extension's interactive
-viewport-window callback is disabled for this process because an empty window inventory
-would otherwise erase those authoritative viewports between frames. The runtime does not
-create another provider connection or tile cache for live views.
+The stage uses Isaac 6's GPU-native RTX Real-Time 2.0 renderer with the pinned Cesium
+extension. One color-temperature-calibrated dome and distant sun light every region of
+the shared camera atlas. Two total ray bounces, one specular/transmission bounce, no
+volume bounces, DLSS, fixed exposure, and Iray tone mapping retain daylight detail
+without allowing five different camera regions to drive one another's exposure. The
+headless runtime is the sole owner of Cesium's active viewport list. It submits every
+active domain sensor and operator camera during the same Kit update; the extension's
+interactive viewport-window callback is disabled for this process because an empty window
+inventory would otherwise erase those authoritative viewports between frames. The runtime
+does not create another provider connection or tile cache for live views.
 
 Moving cameras use hole-free tile refinement. Cesium retains a loaded parent until its
 replacement children are ready, while ancestor and sibling preloading keep the next
@@ -284,6 +286,12 @@ One bounded recording contains four-vehicle poses, velocities, geographic positi
 IMU values, changing health state, and leader video. The producer Blueprint opens Fleet
 3D, Leader camera, and Fleet map views. Installation-owned browser map credentials never
 enter RRD bytes or Blueprint metadata.
+
+Every simulator process mints a fresh UUIDv4 recording generation. The process also
+rotates that identity before its 4 GiB encoded-payload budget or four-hour wall age is
+reached, then republishes its Blueprint and static world context. The pod UID is not used
+as a recording identity because container restart must not reset a budget while reopening
+the same logical recording.
 
 Recording publication uses its own bounded worker queue. Queue pressure may shed
 recording observations according to policy, but it cannot delay physics, PX4, operator

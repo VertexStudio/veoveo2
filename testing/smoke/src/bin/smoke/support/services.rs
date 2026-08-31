@@ -323,7 +323,6 @@ pub(crate) struct PlatformStoreSmoke {
     pub(crate) endpoint: String,
     pub(crate) namespace: String,
     pub(crate) database: String,
-    control_plane: std::sync::Mutex<Option<PathBuf>>,
     _container: ContainerGuard,
 }
 
@@ -367,7 +366,7 @@ async fn spawn_surreal_platform() -> Result<PlatformStoreSmoke> {
             container_name.into(),
             "-p".into(),
             format!("127.0.0.1:{host_port}:8000").into(),
-            "surrealdb/surrealdb:v3.2.3".into(),
+            "surrealdb/surrealdb:v3.2.4".into(),
             "start".into(),
             "--log".into(),
             "warn".into(),
@@ -385,7 +384,6 @@ async fn spawn_surreal_platform() -> Result<PlatformStoreSmoke> {
         endpoint,
         namespace: "veoveo_smoke".to_owned(),
         database: format!("platform_{suffix}"),
-        control_plane: std::sync::Mutex::new(None),
         _container: container,
     })
 }
@@ -454,11 +452,6 @@ pub(crate) async fn bootstrap_gateway_platform_store(
         ],
         bootstrap_env,
     )?;
-    *platform
-        .control_plane
-        .lock()
-        .map_err(|_| anyhow!("smoke control-plane path lock is poisoned"))? =
-        Some(control_plane.to_path_buf());
     let validation = run_checked(
         gateway,
         ["control-plane-validate".into()],
@@ -477,20 +470,12 @@ pub(crate) fn gateway_serve_args_for_base(
     platform: &PlatformStoreSmoke,
     public_base_url: &str,
 ) -> Vec<OsString> {
-    let control_plane = platform
-        .control_plane
-        .lock()
-        .expect("smoke control-plane path lock is poisoned")
-        .clone()
-        .expect("gateway platform store must be bootstrapped before serve");
     vec![
         "serve".into(),
         "--port".into(),
         port.to_string().into(),
         "--public-base-url".into(),
         public_base_url.into(),
-        "--control-plane".into(),
-        control_plane.into_os_string(),
         "--surreal-endpoint".into(),
         platform.endpoint.clone().into(),
         "--surreal-namespace".into(),

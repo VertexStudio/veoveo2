@@ -1,44 +1,54 @@
 {
   "schemaVersion": 2,
-  "buildDigest": "sha256:051fbe853f7dc95ee00970e7cfbebbe485881abd977c8c76da6b663f2243b283",
-  "updatedAt": "2026-08-31T19:47:38Z",
+  "buildDigest": "sha256:de425a3d81566787a2b604bca42e2e2ea621b72e3392a387ee32be295b5bcbc7",
+  "updatedAt": "2026-08-31T20:42:20Z",
   "checks": [
     {
-      "name": "local-keycloak-json",
+      "name": "origin-main-sync-diff",
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "status": "passed",
+      "finishedAt": "2026-08-31T20:42:20Z",
+      "durationSeconds": 0.003827194,
+      "detail": "completed successfully"
+    },
+    {
+      "name": "origin-main-sync-gateway",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "veoveo-mcp-gateway",
+        "--lib",
+        "--tests"
+      ],
+      "status": "passed",
+      "finishedAt": "2026-08-31T20:41:11Z",
+      "durationSeconds": 0.732965843,
+      "detail": "completed successfully"
+    },
+    {
+      "name": "origin-main-sync-json",
       "command": [
         "jq",
         "empty",
         "configs/keycloak/veoveo-local-realm.json",
         "showcase/sumo/deploy/deployment.json",
         "showcase/sumo/deploy/gateway.json",
-        "showcase/sumo/deploy/helm/values.schema.json"
+        "deploy/helm/veoveo/values.schema.json",
+        "showcase/sumo/deploy/helm/values.schema.json",
+        "examples/bioma/gateway.json"
       ],
       "status": "passed",
-      "finishedAt": "2026-08-31T19:47:38Z",
-      "durationSeconds": 0.003206348,
+      "finishedAt": "2026-08-31T20:42:06Z",
+      "durationSeconds": 0.006055317,
       "detail": "completed successfully"
     },
     {
-      "name": "local-keycloak-main-integration",
-      "command": [
-        "cargo",
-        "test",
-        "-p",
-        "veoveo-deploy-contract",
-        "-p",
-        "veoveo-mcp-gateway",
-        "-p",
-        "veoveo-smoke",
-        "-p",
-        "veoveo-deployment-smoke"
-      ],
-      "status": "passed",
-      "finishedAt": "2026-08-31T19:46:34Z",
-      "durationSeconds": 134.132551641,
-      "detail": "completed successfully"
-    },
-    {
-      "name": "local-keycloak-platform-helm",
+      "name": "origin-main-sync-platform-helm",
       "command": [
         "helm",
         "lint",
@@ -47,12 +57,12 @@
         "showcase/sumo/deploy/platform-values.yaml"
       ],
       "status": "passed",
-      "finishedAt": "2026-08-31T19:47:15Z",
-      "durationSeconds": 0.177629727,
+      "finishedAt": "2026-08-31T20:41:44Z",
+      "durationSeconds": 0.159874735,
       "detail": "completed successfully"
     },
     {
-      "name": "local-keycloak-profile",
+      "name": "origin-main-sync-profile",
       "command": [
         "cargo",
         "xtask",
@@ -62,20 +72,33 @@
         "showcase/sumo/deploy/deployment.json"
       ],
       "status": "passed",
-      "finishedAt": "2026-08-31T19:47:04Z",
-      "durationSeconds": 2.542887365,
+      "finishedAt": "2026-08-31T20:41:33Z",
+      "durationSeconds": 2.079870701,
       "detail": "completed successfully"
     },
     {
-      "name": "local-keycloak-sumo-helm",
+      "name": "origin-main-sync-smoke",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "veoveo-smoke"
+      ],
+      "status": "passed",
+      "finishedAt": "2026-08-31T20:41:21Z",
+      "durationSeconds": 0.954190889,
+      "detail": "completed successfully"
+    },
+    {
+      "name": "origin-main-sync-sumo-helm",
       "command": [
         "helm",
         "lint",
         "showcase/sumo/deploy/helm"
       ],
       "status": "passed",
-      "finishedAt": "2026-08-31T19:47:24Z",
-      "durationSeconds": 0.064366494,
+      "finishedAt": "2026-08-31T20:41:55Z",
+      "durationSeconds": 0.052942727,
       "detail": "completed successfully"
     }
   ]

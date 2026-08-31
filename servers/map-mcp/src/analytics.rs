@@ -21,9 +21,44 @@ use crate::contract::{
 
 mod projection;
 
+#[cfg(test)]
+#[path = "analytics/performance.rs"]
+mod performance_tests;
+
 pub(crate) use projection::ReleaseProjectionWriter;
 
-const SCHEMA_VERSION: i64 = 9;
+const SCHEMA_VERSION: i64 = 10;
+const REBUILD_SPATIAL_INDEXES_FROM_SCHEMA_VERSION: i64 = 9;
+
+#[derive(Clone, Copy)]
+struct SpatialIndexDefinition {
+    name: &'static str,
+    table: &'static str,
+    column: &'static str,
+}
+
+const SPATIAL_INDEXES: [SpatialIndexDefinition; 4] = [
+    SpatialIndexDefinition {
+        name: "map_boundary_geometry",
+        table: "map_boundary",
+        column: "geometry",
+    },
+    SpatialIndexDefinition {
+        name: "map_source_feature_geometry",
+        table: "map_source_feature",
+        column: "geometry",
+    },
+    SpatialIndexDefinition {
+        name: "map_authored_revision_geometry",
+        table: "map_authored_feature_revision",
+        column: "geometry",
+    },
+    SpatialIndexDefinition {
+        name: "map_authored_head_geometry",
+        table: "map_authored_feature_head",
+        column: "geometry",
+    },
+];
 const NEARBY_FACILITIES_SQL: &str = "WITH scored AS MATERIALIZED (\
        SELECT canonical_json, facility_key, source_release_key, \
        ST_Distance_Sphere(ST_Point2D(longitude_deg, latitude_deg), ST_Point2D(?, ?)) AS distance_m \
@@ -613,10 +648,16 @@ impl MapAnalytics {
              FROM map_visible_boundary AS boundary \
              WHERE boundary.tenant_key = ? \
                AND boundary.source_release_key IN ({}) \
+               AND boundary.boundary_key IN (\
+                 SELECT spatial.boundary_key FROM map_boundary AS spatial \
+                 WHERE ST_Contains(spatial.geometry, ST_Point({}, {}))\
+               ) \
                AND ST_Contains(boundary.geometry, ST_Point({}, {})) \
              ORDER BY boundary.boundary_key, boundary.source_release_key \
              LIMIT 1000",
             sql_string_list(&active_releases),
+            position.longitude_deg,
+            position.latitude_deg,
             position.longitude_deg,
             position.latitude_deg
         );
@@ -646,10 +687,15 @@ impl MapAnalytics {
              FROM map_visible_boundary AS boundary \
              WHERE boundary.tenant_key = ? \
                AND boundary.source_release_key IN ({}) \
+               AND boundary.boundary_key IN (\
+                 SELECT spatial.boundary_key FROM map_boundary AS spatial \
+                 WHERE ST_Intersects(spatial.geometry, ST_GeomFromGeoJSON({}))\
+               ) \
                AND ST_Intersects(boundary.geometry, ST_GeomFromGeoJSON({})) \
              ORDER BY boundary.boundary_key, boundary.source_release_key \
              LIMIT 1000",
             sql_string_list(&active_releases),
+            duckdb_string_literal(&geometry),
             duckdb_string_literal(&geometry)
         );
         let mut statement = connection.prepare(&sql)?;
@@ -771,17 +817,21 @@ impl MapAnalytics {
             |row| row.get(0),
         )?;
         if schema_exists {
-            let version: Option<i64> = connection
-                .query_row(
-                    "SELECT version FROM map_schema WHERE version = ? AND (SELECT count(*) FROM map_schema) = 1",
-                    params![SCHEMA_VERSION],
-                    |row| row.get(0),
-                )
-                .ok();
-            if version != Some(SCHEMA_VERSION) {
-                bail!(
-                    "unsupported map analytics schema marker; rebuild the derived Map projection"
-                );
+            let version: Option<i64> = connection.query_row(
+                "SELECT CASE WHEN count(*) = 1 THEN max(version) ELSE NULL END FROM map_schema",
+                [],
+                |row| row.get(0),
+            )?;
+            match version {
+                Some(SCHEMA_VERSION) => {}
+                Some(REBUILD_SPATIAL_INDEXES_FROM_SCHEMA_VERSION) => {
+                    rebuild_spatial_indexes_for_schema_upgrade(&connection)?;
+                }
+                _ => {
+                    bail!(
+                        "unsupported map analytics schema marker; rebuild the derived Map projection"
+                    );
+                }
             }
         } else if managed_table_count != 0 {
             bail!(
@@ -944,7 +994,8 @@ impl MapAnalytics {
         if version != SCHEMA_VERSION {
             bail!("unsupported map analytics schema version {version}");
         }
-        self.verify_spatial()
+        self.verify_spatial()?;
+        verify_spatial_indexes(&connection)
     }
 
     pub(crate) fn connection(&self) -> Result<Connection> {
@@ -966,6 +1017,49 @@ impl MapAnalytics {
         }
         self.instance.connection()
     }
+}
+
+fn verify_spatial_indexes(connection: &Connection) -> Result<()> {
+    for index in SPATIAL_INDEXES {
+        connection
+            .query_row(
+                &format!("SELECT count(*) FROM rtree_index_dump('{}')", index.name),
+                [],
+                |row| row.get::<_, u64>(0),
+            )
+            .with_context(|| {
+                format!("binding and verifying DuckDB Spatial index {}", index.name)
+            })?;
+    }
+    Ok(())
+}
+
+fn rebuild_spatial_indexes_for_schema_upgrade(connection: &Connection) -> Result<()> {
+    let mut drop_sql = String::new();
+    for index in SPATIAL_INDEXES {
+        drop_sql.push_str(&format!("DROP INDEX IF EXISTS {};\n", index.name));
+    }
+    connection.execute_batch(&drop_sql).with_context(|| {
+        format!(
+            "dropping DuckDB Spatial indexes while upgrading Map analytics schema from {REBUILD_SPATIAL_INDEXES_FROM_SCHEMA_VERSION} to {SCHEMA_VERSION}"
+        )
+    })?;
+
+    let mut create_sql = String::from("BEGIN TRANSACTION;\n");
+    for index in SPATIAL_INDEXES {
+        create_sql.push_str(&format!(
+            "CREATE INDEX {} ON {} USING RTREE ({});\n",
+            index.name, index.table, index.column
+        ));
+    }
+    create_sql.push_str(&format!(
+        "UPDATE map_schema SET version = {SCHEMA_VERSION} WHERE version = {REBUILD_SPATIAL_INDEXES_FROM_SCHEMA_VERSION};\nCOMMIT;"
+    ));
+    connection.execute_batch(&create_sql).with_context(|| {
+        format!(
+            "rebuilding DuckDB Spatial indexes while upgrading Map analytics schema from {REBUILD_SPATIAL_INDEXES_FROM_SCHEMA_VERSION} to {SCHEMA_VERSION}"
+        )
+    })
 }
 
 fn polygon_geojson(polygon: &crate::contract::Wgs84Polygon) -> Result<String> {
@@ -1127,9 +1221,14 @@ fn source_feature_query_sql(
         validate_source_cursor_order(cursor, distance_ordered)?;
     }
     if let Some(spatial) = request.spatial.as_ref()
-        && let Some(predicate) = source_base_spatial_predicate(spatial)?
+        && let Some(predicate) = source_base_spatial_predicate(spatial, "feature")?
     {
         source_predicates.push(predicate);
+        source_predicates.push(format!(
+            "feature.feature_key IN ({})",
+            source_spatial_candidate_query(spatial)?
+                .context("index-eligible spatial predicate has no candidate query")?
+        ));
     }
 
     let mut scored_predicates = Vec::new();
@@ -1202,17 +1301,20 @@ fn source_distance_expression(spatial: &SourceSpatialQuery) -> Option<String> {
     ))
 }
 
-fn source_base_spatial_predicate(spatial: &SourceSpatialQuery) -> Result<Option<String>> {
+fn source_base_spatial_predicate(
+    spatial: &SourceSpatialQuery,
+    relation: &str,
+) -> Result<Option<String>> {
     match spatial {
         SourceSpatialQuery::BoundingBox { bounds } => {
             if bounds.west <= bounds.east {
                 Ok(Some(format!(
-                    "ST_Intersects(feature.geometry, ST_MakeEnvelope({}, {}, {}, {}))",
+                    "ST_Intersects({relation}.geometry, ST_MakeEnvelope({}, {}, {}, {}))",
                     bounds.west, bounds.south, bounds.east, bounds.north
                 )))
             } else {
                 Ok(Some(format!(
-                    "(ST_Intersects(feature.geometry, ST_MakeEnvelope({}, {}, 180, {})) OR ST_Intersects(feature.geometry, ST_MakeEnvelope(-180, {}, {}, {})))",
+                    "(ST_Intersects({relation}.geometry, ST_MakeEnvelope({}, {}, 180, {})) OR ST_Intersects({relation}.geometry, ST_MakeEnvelope(-180, {}, {}, {})))",
                     bounds.west,
                     bounds.south,
                     bounds.north,
@@ -1223,19 +1325,56 @@ fn source_base_spatial_predicate(spatial: &SourceSpatialQuery) -> Result<Option<
             }
         }
         SourceSpatialQuery::Intersects { geometry } => Ok(Some(format!(
-            "ST_Intersects(feature.geometry, ST_GeomFromGeoJSON({}))",
+            "ST_Intersects({relation}.geometry, ST_GeomFromGeoJSON({}))",
             duckdb_string_literal(&geometry.to_geojson_string()?)
         ))),
         SourceSpatialQuery::Contains { geometry } => Ok(Some(format!(
-            "ST_Contains(feature.geometry, ST_GeomFromGeoJSON({}))",
+            "ST_Contains({relation}.geometry, ST_GeomFromGeoJSON({}))",
             duckdb_string_literal(&geometry.to_geojson_string()?)
         ))),
         SourceSpatialQuery::Within { geometry } => Ok(Some(format!(
-            "ST_Within(feature.geometry, ST_GeomFromGeoJSON({}))",
+            "ST_Within({relation}.geometry, ST_GeomFromGeoJSON({}))",
             duckdb_string_literal(&geometry.to_geojson_string()?)
         ))),
         SourceSpatialQuery::WithinDistance { .. } | SourceSpatialQuery::Nearest { .. } => Ok(None),
     }
+}
+
+fn source_spatial_candidate_query(spatial: &SourceSpatialQuery) -> Result<Option<String>> {
+    if let SourceSpatialQuery::BoundingBox { bounds } = spatial
+        && bounds.west > bounds.east
+    {
+        let west = SourceSpatialQuery::BoundingBox {
+            bounds: Wgs84BoundingBox {
+                west: bounds.west,
+                south: bounds.south,
+                east: 180.0,
+                north: bounds.north,
+            },
+        };
+        let east = SourceSpatialQuery::BoundingBox {
+            bounds: Wgs84BoundingBox {
+                west: -180.0,
+                south: bounds.south,
+                east: bounds.east,
+                north: bounds.north,
+            },
+        };
+        return Ok(Some(format!(
+            "SELECT spatial.feature_key FROM map_source_feature AS spatial WHERE {} UNION SELECT spatial.feature_key FROM map_source_feature AS spatial WHERE {}",
+            source_base_spatial_predicate(&west, "spatial")?
+                .context("western dateline segment has no spatial predicate")?,
+            source_base_spatial_predicate(&east, "spatial")?
+                .context("eastern dateline segment has no spatial predicate")?,
+        )));
+    }
+    Ok(
+        source_base_spatial_predicate(spatial, "spatial")?.map(|predicate| {
+            format!(
+                "SELECT spatial.feature_key FROM map_source_feature AS spatial WHERE {predicate}"
+            )
+        }),
+    )
 }
 
 fn source_distance_limit(spatial: &SourceSpatialQuery) -> Option<f64> {
@@ -1547,6 +1686,35 @@ mod tests {
     }
 
     #[test]
+    fn source_bbox_query_has_rtree_candidates_and_exact_dateline_filtering() {
+        let request = QuerySourceFeaturesRequest {
+            release_id: crate::contract::DatasetReleaseId::new(),
+            source_id: None,
+            source_element_id: None,
+            representation: None,
+            tags_equal: Vec::new(),
+            tags_exist: Vec::new(),
+            normalized_text: None,
+            spatial: Some(SourceSpatialQuery::BoundingBox {
+                bounds: Wgs84BoundingBox {
+                    west: 170.0,
+                    south: -10.0,
+                    east: -170.0,
+                    north: 10.0,
+                },
+            }),
+            limit: 50,
+            cursor: None,
+        };
+        let sql = source_feature_query_sql("tenant", &request, None).unwrap();
+        assert!(sql.contains("feature.feature_key IN ("));
+        assert!(sql.contains("FROM map_source_feature AS spatial"));
+        assert!(sql.contains(" UNION "));
+        assert_eq!(sql.matches("ST_Intersects(spatial.geometry").count(), 2);
+        assert!(sql.contains("(ST_Intersects(feature.geometry"));
+    }
+
+    #[test]
     fn geojson_axis_distance_order_and_cursor_survive_restart() {
         let Some(extension) = std::env::var_os("VEOVEO_TEST_DUCKDB_SPATIAL_EXTENSION") else {
             return;
@@ -1731,6 +1899,62 @@ mod tests {
         drop(connection);
         let error = MapAnalytics::open(analytics_config(&root, &extension)).unwrap_err();
         assert!(error.to_string().contains("schema marker"));
+    }
+
+    #[test]
+    fn schema_nine_upgrade_rebuilds_spatial_indexes_without_losing_mixed_geometries() {
+        let Some(extension) = std::env::var_os("VEOVEO_TEST_DUCKDB_SPATIAL_EXTENSION") else {
+            return;
+        };
+        let root = TempDir::new().unwrap();
+        let analytics = configured_analytics(&root, &extension);
+        let connection = analytics.connection().unwrap();
+        connection
+            .execute_batch(
+                r#"
+                INSERT INTO map_source_feature (
+                  tenant_key, release_key, feature_key, source_key,
+                  source_element_type, source_element_key, source_element_version,
+                  representation, geometry_digest_sha256, geometry, normalized_text,
+                  tags_json, canonical_json, source_digest_sha256,
+                  projection_attempt_key, projection_ordinal
+                ) VALUES
+                  ('tenant', 'release', 'point', 'source', 'node', 'point', '1',
+                   'center', 'point-digest', ST_GeomFromGeoJSON('{"type":"Point","coordinates":[-89.214,13.696]}'),
+                   'point', '{}', '{}', 'source-digest', 'attempt', 0),
+                  ('tenant', 'release', 'line', 'source', 'way', 'line', '1',
+                   'centerline', 'line-digest', ST_GeomFromGeoJSON('{"type":"LineString","coordinates":[[-89.22,13.69],[-89.21,13.70]]}'),
+                   'line', '{}', '{}', 'source-digest', 'attempt', 1),
+                  ('tenant', 'release', 'polygon', 'source', 'relation', 'polygon', '1',
+                   'footprint', 'polygon-digest', ST_GeomFromGeoJSON('{"type":"Polygon","coordinates":[[[-89.22,13.69],[-89.21,13.69],[-89.21,13.70],[-89.22,13.70],[-89.22,13.69]]]}'),
+                   'polygon', '{}', '{}', 'source-digest', 'attempt', 2);
+                UPDATE map_schema SET version = 9;
+                "#,
+            )
+            .unwrap();
+        drop(connection);
+        drop(analytics);
+
+        let upgraded = configured_analytics(&root, &extension);
+        let connection = upgraded.connection().unwrap();
+        let version: i64 = connection
+            .query_row("SELECT version FROM map_schema", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        let stored: u64 = connection
+            .query_row("SELECT count(*) FROM map_source_feature", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(stored, 3);
+        let indexed: u64 = connection
+            .query_row(
+                "SELECT count(*) FROM rtree_index_dump('map_source_feature_geometry') WHERE row_id IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(indexed, stored);
     }
 
     #[test]

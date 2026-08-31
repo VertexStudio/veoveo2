@@ -21,10 +21,10 @@ catalog.
 | MCP Enterprise-Managed Authorization / ID-JAG | Explicit enterprise grant profile with durable replay protection, client binding, tenant mapping, and scope reduction. |
 | HTTPS and HTTP range semantics | External acquisition, MCP transport, provider webhooks, and artifact delivery. Internal cleartext HTTP exists only inside declared cluster trust boundaries. |
 | OpenTelemetry OTLP/HTTP | Optional traces and logs from shared server instrumentation. Export remains disabled unless the installation supplies an endpoint. |
-| Veoveo recording ingest | Version `2026-08-06`; authenticated protobuf batches and distinct Blueprint publications preserve native Rerun 0.36.0 stores, ordering, idempotency, decoder-safe rollover markers, and policy-scoped single-recording replacement. |
-| Rerun 0.36.0 gRPC, RRD, Rerun Data Protocol, and `VideoStream` | Producer-local log ingestion, immutable time-and-space records, recording-scoped lazy viewer playback, and H.264 Annex B video with exact timeline indices. |
-| S3-compatible object API | Private Artifact service storage only. SurrealDB remains authoritative for occurrences, identity, grants, release state, shares, policy, and audit. Client delivery uses HTTP streaming and byte ranges through the installation origin. |
-| NVIDIA cuOpt 26.06 and CUDA 13.2 | Digest-pinned hardware-GPU execution for heterogeneous routing, BatchSolve scenarios, continuous LP/QP/QCQP/SOCP, and linear MILP. `veoveo.io/travel-model-artifact/v1` is the repository-owned Map handoff; `veoveo.io/cuopt-executor/v1` is a private pod-local adapter protocol rather than a public contract. |
+| Veoveo recording ingest | Version `2026-08-06`; authenticated protobuf batches and distinct Blueprint publications preserve native Rerun 0.36.3 stores, ordering, idempotency, decoder-safe rollover markers, and policy-scoped single-recording replacement. |
+| Rerun 0.36.3 gRPC, RRD, Rerun Data Protocol, and `VideoStream` | Producer-local log ingestion, immutable time-and-space records, recording-scoped lazy viewer playback, and H.264 Annex B video with exact timeline indices. |
+| S3-compatible object API | Private Artifact service storage only. The bundled store uses digest-pinned RustFS `1.0.0-rc.3`, the latest published non-preview release candidate because RustFS has no stable release. SurrealDB remains authoritative for occurrences, identity, grants, release state, shares, policy, and audit. Client delivery uses HTTP streaming and byte ranges through the installation origin. |
+| NVIDIA cuOpt 26.08 and CUDA 13.3 | Digest-pinned hardware-GPU execution for heterogeneous routing, BatchSolve scenarios, continuous LP/QP/QCQP/SOCP, and linear MILP. `veoveo.io/travel-model-artifact/v1` is the repository-owned Map handoff; `veoveo.io/cuopt-executor/v1` is a private pod-local adapter protocol rather than a public contract. |
 | Kubernetes, Helm, and OCI images | Canonical workload graph, declarative installation configuration, registry-first delivery, GitOps reconciliation, and offline bundle material. |
 | Domain standards | Map, Optimization, Time, Frames, View, UAV, Recording, Perception, and Reason designs pin their geospatial, solver, temporal, 3D, vehicle, and media profiles independently. |
 
@@ -202,7 +202,7 @@ to the frame.
 
 ## Durable Platform Store
 
-SurrealDB `3.2.3` is the only platform coordination store; the Rust client pins the
+SurrealDB `3.2.4` is the only platform coordination store; the Rust client pins the
 compatible `3.2.4` release. The canonical release uses
 one RocksDB-backed node. Installation bootstrap connects at root scope, applies ordered
 migrations, creates or rotates the database runtime user, and publishes the initial
@@ -218,7 +218,7 @@ migrations themselves.
   JWT revocations;
 - tasks, owners, leases, results, retention pins, provider jobs/events, and usage;
 - artifact blobs, occurrences, grants, share links, and write capabilities;
-- coordinate frames/operations, recordings/segments, agents/episodes/wakes;
+- coordinate frames/operations, recording datasets/layers, agents/episodes/wakes;
 - audit events and the transactional outbox.
 
 Cross-process state changes write their domain record and outbox event in one

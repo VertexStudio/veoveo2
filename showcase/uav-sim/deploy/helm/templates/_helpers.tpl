@@ -158,6 +158,10 @@
   value: {{ .root.Values.recording.queueCapacity | quote }}
 - name: UAV_SIM_RECORDING_MAP_PROVIDER
   value: {{ .root.Values.recording.mapProvider | quote }}
+- name: UAV_SIM_RECORDING_MAXIMUM_SEGMENT_BYTES
+  value: {{ printf "%.0f" .root.Values.recording.maximumSegmentBytes | quote }}
+- name: UAV_SIM_RECORDING_MAXIMUM_SEGMENT_SECONDS
+  value: {{ .root.Values.recording.maximumSegmentSeconds | quote }}
 - name: UAV_SIM_CAMERA_FOCAL_LENGTH_MM
   value: {{ .root.Values.session.camera.optics.focalLengthMm | quote }}
 - name: UAV_SIM_CAMERA_CLIPPING_NEAR_M
@@ -178,10 +182,6 @@
   value: {{ .root.Values.session.camera.mount.orientationWxyz.y | quote }}
 - name: UAV_SIM_CAMERA_ORIENTATION_Z
   value: {{ .root.Values.session.camera.mount.orientationWxyz.z | quote }}
-- name: UAV_SIM_RECORDING_KEY
-  valueFrom:
-    fieldRef:
-      fieldPath: metadata.uid
 {{- if .root.Values.streamPublication.enabled }}
 - name: UAV_SIM_STREAM_HOST
   value: {{ .root.Values.streamPublication.endpointHost | quote }}

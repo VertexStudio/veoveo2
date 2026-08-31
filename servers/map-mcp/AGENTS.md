@@ -9,13 +9,13 @@ Veoveo's Earth geography and logistics routing domain: places, facilities,
 borders, coordinates, transport restrictions, routes, matrices, reachable
 areas, cuOpt-ready travel models, governed source acquisition with immutable
 release activation, and Work Context owned feature authoring. Administration
-runs through the same typed MCP surface, including the admin and editor MCP
-Apps.
+runs through the same typed MCP surface and its single permission-aware Map
+workspace App.
 
 ## Invariants
 
 - Canonical identity: slug `map`, URI scheme `map://`, endpoint `/map/mcp`,
-  apps `ui://map/admin.html` and `ui://map/editor.html`. Resource identities
+  app `ui://map/workspace.html`. Resource identities
   keep the `map://` scheme under the gateway `map__` projection.
 - SurrealDB is the canonical operational catalog. The tenant keyed DuckDB
   Spatial schema is a derived analytical projection and must stay
@@ -37,9 +37,10 @@ Apps.
   `veoveo.io/travel-model-artifact/v1`. Never reconstruct these matrices in
   Optimization.
 - Domain profile pins (DESIGN.md, Standards And Protocols): GeoJSON RFC 7946,
-  OGC JSON-FG 1.0, RFC 8142 text sequences, Basic CQL2-JSON from OGC CQL2
-  1.0, GeoParquet 1.0.0, Mapbox Vector Tile 2.1, MapLibre Style 8, official
-  MCP Tasks `2026-07-28`, apps extension `2026-01-26`.
+  OGC JSON-FG 1.0, RFC 8142 text sequences, OGC GeoPackage 1.4, Basic
+  CQL2-JSON from OGC CQL2 1.0, GeoParquet 1.0.0, Mapbox Vector Tile 2.1,
+  MapLibre Style 8, official MCP Tasks `2026-07-28`, apps extension
+  `2026-01-26`.
 
 ## Build And Test
 
@@ -54,6 +55,19 @@ Apps.
 - Docker is required for SurrealDB backed tests and deployment work.
 - The image build verifies the Spatial extension digest and copies native map
   utilities from pinned sources (`servers/map-mcp/Dockerfile`).
+- R-tree plan, correctness, and million-feature performance evidence requires
+  `VEOVEO_TEST_DUCKDB_SPATIAL_EXTENSION` to name the exact pinned 1.5.5 Spatial
+  extension. A skipped performance test is not acceptance evidence.
+- `npm --prefix servers/map-mcp/app ci && npm --prefix servers/map-mcp/app run build`
+  regenerates the self-contained workspace App from exact MapLibre GL JS and
+  esbuild pins. The generated HTML must remain below the Console's 2 MiB limit.
+- Browser acceptance for the workspace map requires headed Chrome and a proven
+  hardware WebGL2 renderer. Static HTML tests or software graphics are not
+  visual acceptance.
+- `cargo xtask smoke map-workspace-browser-verify` serves the exact generated
+  App under the Console's opaque-origin sandbox and offline CSP, completes a
+  bounded immutable-publication viewport query, and records GPU and screenshot
+  evidence.
 
 ## Contract Compliance
 

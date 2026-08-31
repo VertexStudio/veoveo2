@@ -62,7 +62,7 @@ invent a parallel tenant or principal namespace.
 
 ## Durable platform store
 
-SurrealDB `3.2.3` is the required durable platform store. The canonical topology
+SurrealDB `3.2.4` is the required durable platform store. The canonical topology
 is one SurrealDB node using RocksDB storage. Application services may scale
 horizontally; database high availability is not claimed by this release.
 
@@ -104,8 +104,8 @@ those matrices without recomputing GIS costs.
 The Rust Optimization server owns public identities, authorization, validation,
 compilation, durable tasks, solver admission, artifacts, and independent
 verification. A pod-local Python sidecar owns only NVIDIA cuOpt execution through
-`veoveo.io/cuopt-executor/v1`. The sidecar runs the digest-pinned cuOpt 26.06 and
-CUDA 13.2 image, requests one NVIDIA GPU, and fails closed when the runtime,
+`veoveo.io/cuopt-executor/v1`. The sidecar runs the digest-pinned cuOpt 26.08 and
+CUDA 13.3 image, requests one NVIDIA GPU, and fails closed when the runtime,
 driver, or device is unavailable. There is no CPU solver, GPU-optional profile,
 or public executor endpoint.
 

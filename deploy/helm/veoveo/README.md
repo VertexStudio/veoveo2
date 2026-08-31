@@ -2,7 +2,7 @@
 
 This chart installs one autonomous enterprise Veoveo instance. Tenant ids are
 internal isolation boundaries; the chart has no connection to a vendor control
-plane. The platform store is exactly one SurrealDB 3.2.3 process backed by a
+plane. The platform store is exactly one SurrealDB 3.2.4 process backed by a
 RocksDB PVC. Database HA is out of scope. Back up the SurrealDB and object-store
 volumes according to the installation recovery objectives.
 
@@ -101,10 +101,10 @@ tenant-scoped DuckDB Spatial projection and activated Valhalla routing builds.
 Release activation serializes projection changes within that process.
 
 `optimization-mcp` runs as a Rust control container beside the pinned NVIDIA
-cuOpt 26.06 executor. The executor alone requests one `nvidia.com/gpu`; both
+cuOpt 26.08 executor. The executor alone requests one `nvidia.com/gpu`; both
 containers share a bounded Unix-socket volume, and the control container retains
 prepared governed problems on its `ReadWriteOnce` workspace. Startup, readiness,
-and liveness require the exact executor protocol, a CUDA 13.2-capable driver,
+and liveness require the exact executor protocol, a CUDA 13.3-capable driver,
 and one visible hardware GPU. The pod uses the `nvidia` RuntimeClass and has no
 CPU solver or GPU-optional deployment mode.
 
@@ -297,6 +297,11 @@ the database-level runtime user, applies schema migrations, and publishes the
 initial gateway control revision. Every long-running workload authenticates at
 database scope with the runtime Secret. Rotating either Secret is owned by the
 installation operator.
+
+Each gateway replica canonicalizes the mounted seed control plane and compares its
+revision with the active platform-store revision before it opens a listener. A replica
+that races ahead of `installation-bootstrap` exits and restarts instead of serving a
+stale authorization catalog.
 
 The Work Context governance schema uses a coordinated hard-cut rollout. Stop
 producers, preserve any externally required evidence, then clear SurrealDB,

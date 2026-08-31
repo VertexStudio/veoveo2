@@ -92,6 +92,19 @@ Examples include maps, recordings, time-series analysis, optimization, simulatio
 documents, and a company's private operational service. Veoveo can combine first-party
 services with extensions owned by the enterprise or another supplier.
 
+### Apps
+
+Some MCP services also provide an interactive App. An App is a specialized view for a
+domain such as maps, recordings, or analysis, but it remains inside the same governed
+boundary as the service's information and actions. The Console discovers Apps from the
+capabilities visible to the signed-in user; an unavailable service does not need to
+block the rest of the workspace.
+
+An App receives only its declared resources and linked tools. When it needs information
+owned by another service, the installation must approve that dependency explicitly.
+The App does not gain broad cross-system access, browser credentials, or direct storage
+authority merely because the two services appear in one workspace.
+
 ### Work
 
 Work represents a request or operation handled by the platform. It has a lifecycle,
@@ -106,10 +119,16 @@ to the artifact rather than depending on an unprotected storage link.
 
 ### Recordings
 
-Recordings preserve the evolving state of a supported system or simulation. They can
-support live observation and, when the recording lifecycle is complete, historical
-review. A recording is governed data: users receive an authorized view rather than
-direct access to internal storage.
+Recordings preserve the evolving state of a supported system or simulation. A governed
+dataset can contain several distinct recordings, and each recording can contain
+immutable capture, properties, or derived-data layers. This separation lets the
+platform identify exactly which data, visualization Blueprint, catalog revision, and
+access grant belong to a viewer.
+
+Recordings can support live observation and, when the recording lifecycle is complete,
+historical review. A recording is governed data: users receive an authorized view or a
+bounded projection rather than direct access to internal storage. Live availability,
+finalization, publication, and historical playback remain different states.
 
 ### Audit And Decisions
 

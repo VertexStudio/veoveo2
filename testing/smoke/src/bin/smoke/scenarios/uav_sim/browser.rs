@@ -1,4 +1,9 @@
-use std::{collections::VecDeque, future::Future, path::Path, sync::Arc};
+use std::{
+    collections::{BTreeSet, VecDeque},
+    future::Future,
+    path::Path,
+    sync::Arc,
+};
 
 #[cfg(test)]
 use anyhow::anyhow;
@@ -26,6 +31,98 @@ const SIMULTANEOUS_VIEW_BARRIER_TIMEOUT: Duration = Duration::from_secs(15);
 const MINIMUM_DELIVERED_FRAME_RATE_HZ: f64 = 12.0;
 const MAXIMUM_SOURCE_TO_RENDER_P95_MS: f64 = 85.0;
 const MAXIMUM_MOTION_TO_PHOTON_P95_MS: f64 = 250.0;
+const MINIMUM_MEAN_LUMA: f64 = 25.0;
+const MAXIMUM_MEAN_LUMA: f64 = 225.0;
+
+#[derive(Clone, Copy, Debug)]
+#[allow(dead_code, reason = "used by the focused browser-smoke binary")]
+pub(crate) struct ConsoleAppExpectation {
+    pub(crate) server: &'static str,
+    pub(crate) resource_uri: &'static str,
+    pub(crate) marker: &'static str,
+    pub(crate) settled_state: ConsoleAppSettledState,
+    pub(crate) required_selector: Option<&'static str>,
+}
+
+#[derive(Clone, Copy, Debug)]
+#[allow(dead_code, reason = "used by the focused browser-smoke binary")]
+pub(crate) enum ConsoleAppSettledState {
+    Exact(&'static [&'static str]),
+    Prefix(&'static [&'static str]),
+    MapViewport,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code, reason = "used by the focused browser-smoke binary")]
+pub(crate) struct ConsoleAppsCatalogEvidence {
+    schema: &'static str,
+    captured_at: chrono::DateTime<chrono::Utc>,
+    page_url: String,
+    screenshot_path: String,
+    screenshot_sha256: String,
+    hardware: HardwareIdentity,
+    apps: Vec<ConsoleAppCatalogEntry>,
+    server_groups: Vec<String>,
+    rendered_apps: Vec<RenderedConsoleAppEvidence>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code, reason = "used by the focused browser-smoke binary")]
+struct ConsoleAppCatalogEntry {
+    server: String,
+    resource_uri: String,
+    standalone_path: String,
+    name: String,
+    title: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code, reason = "used by the focused browser-smoke binary")]
+struct ConsoleAppCatalogDegradation {
+    server: String,
+    surface: String,
+    code: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code, reason = "used by the focused browser-smoke binary")]
+struct ConsoleAppCatalogProbe {
+    status: u16,
+    apps: Vec<ConsoleAppCatalogEntry>,
+    degradations: Vec<ConsoleAppCatalogDegradation>,
+    server_groups: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code, reason = "used by the focused browser-smoke binary")]
+struct ConsoleAppRenderState {
+    title: String,
+    heading: String,
+    status: String,
+    body: String,
+    host_display_mode: String,
+    host_bridge_error: String,
+    visible_errors: Vec<String>,
+    required_selector_found: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code, reason = "used by the focused browser-smoke binary")]
+struct RenderedConsoleAppEvidence {
+    server: String,
+    resource_uri: String,
+    page_url: String,
+    screenshot_path: String,
+    screenshot_sha256: String,
+    hardware: HardwareIdentity,
+    render: ConsoleAppRenderState,
+}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -38,6 +135,70 @@ pub(crate) struct ConsoleLiveCaptureEvidence {
     hardware: HardwareIdentity,
     video: AppVideoState,
     decode: DecodeIdentity,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code, reason = "shared by the focused browser-smoke binary")]
+pub(crate) struct MapWorkspaceCaptureEvidence {
+    schema: &'static str,
+    captured_at: chrono::DateTime<chrono::Utc>,
+    page_url: String,
+    screenshot_path: String,
+    screenshot_sha256: String,
+    hardware: HardwareIdentity,
+    bridge: MapWorkspaceBridgeEvidence,
+    theme: Value,
+    render: MapWorkspaceRenderEvidence,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ConsoleMapWorkspaceCaptureEvidence {
+    schema: &'static str,
+    captured_at: chrono::DateTime<chrono::Utc>,
+    page_url: String,
+    workspace_screenshot_path: String,
+    workspace_screenshot_sha256: String,
+    source_screenshot_path: String,
+    source_screenshot_sha256: String,
+    feature_screenshot_path: String,
+    feature_screenshot_sha256: String,
+    guided_screenshot_path: String,
+    guided_screenshot_sha256: String,
+    management_screenshot_path: String,
+    management_screenshot_sha256: String,
+    hardware: HardwareIdentity,
+    workspace: Value,
+    source: Value,
+    feature: Value,
+    guided: Value,
+    management: Value,
+    render: MapWorkspaceRenderEvidence,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code, reason = "shared by the focused browser-smoke binary")]
+struct MapWorkspaceBridgeEvidence {
+    initialized: bool,
+    query_calls: u64,
+    query_responses: u64,
+    authored_query_calls: u64,
+    source_query_calls: u64,
+    size_height: f64,
+    last_query: Value,
+    last_authored_query: Value,
+    last_source_query: Value,
+    errors: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MapWorkspaceRenderEvidence {
+    screenshot_width: u32,
+    screenshot_height: u32,
+    feature_colored_pixels: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -168,9 +329,19 @@ pub(crate) struct ConsoleRecordingArchiveCaptureEvidence {
     screenshot_sha256: String,
     hardware: HardwareIdentity,
     network: RecordingPlaybackNetworkEvidence,
+    timeline: RecordingArchiveTimelineEvidence,
     render: RerunRenderEvidence,
     camera_render: RerunRenderEvidence,
     responsiveness: RerunResponsivenessEvidence,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RecordingArchiveTimelineEvidence {
+    recording_id: String,
+    timeline: String,
+    current_time: f64,
+    newest_time: f64,
 }
 
 impl ConsoleRecordingCaptureEvidence {
@@ -430,6 +601,29 @@ pub(crate) async fn preflight_standalone_live_app(
     .with_context(|| format!("standalone UAV App preflight exceeded {timeout:?}"))?
 }
 
+#[allow(dead_code, reason = "used by the focused browser-smoke binary")]
+pub(crate) async fn capture_console_apps_catalog(
+    cdp_base: &str,
+    public_base_url: &str,
+    expectations: &[ConsoleAppExpectation],
+    evidence_directory: &Path,
+    timeout: Duration,
+) -> Result<ConsoleAppsCatalogEvidence> {
+    let page_url = console_acceptance_url(public_base_url, "/apps");
+    tokio::time::timeout(
+        timeout,
+        capture_console_apps_catalog_inner(
+            cdp_base,
+            public_base_url,
+            &page_url,
+            expectations,
+            evidence_directory,
+        ),
+    )
+    .await
+    .with_context(|| format!("Console Apps catalog acceptance exceeded {timeout:?}"))?
+}
+
 pub(crate) async fn capture_console_recording(
     cdp_base: &str,
     public_base_url: &str,
@@ -498,14 +692,8 @@ async fn preflight_console_live_app_inner(cdp_base: &str, page_url: &str) -> Res
         let hardware: HardwareIdentity =
             cdp.evaluate(&session_id, HARDWARE_PREFLIGHT, true).await?;
         hardware.validate()?;
-        wait_for_console_app_body(
-            &mut cdp,
-            &target_id,
-            &session_id,
-            "uav-sim",
-            "UAV live cameras",
-        )
-        .await?;
+        wait_for_console_app_body(&mut cdp, &target_id, &session_id, "uav-sim", "Live Cameras")
+            .await?;
         cdp.assert_no_software_renderer_events()?;
         Ok(())
     }
@@ -529,7 +717,7 @@ async fn preflight_standalone_live_app_inner(cdp_base: &str, page_url: &str) -> 
             &target_id,
             &session_id,
             "uav-sim",
-            "UAV live cameras",
+            "Live Cameras",
         )
         .await?;
         let host: Value = cdp
@@ -557,12 +745,12 @@ async fn preflight_standalone_live_app_inner(cdp_base: &str, page_url: &str) -> 
                 && host
                     .get("title")
                     .and_then(Value::as_str)
-                    .is_some_and(|title| title.contains("UAV live cameras"))
+                    .is_some_and(|title| title.contains("Live Cameras"))
                 && host.get("returnHref").and_then(Value::as_str) == Some("/console/#/apps")
                 && host
                     .get("frameTitle")
                     .and_then(Value::as_str)
-                    .is_some_and(|title| title.contains("UAV live cameras"))
+                    .is_some_and(|title| title.contains("Live Cameras"))
                 && host.get("sandbox").and_then(Value::as_str) == Some("allow-scripts")
                 && host.get("referrerPolicy").and_then(Value::as_str) == Some("no-referrer")
                 && host.get("frameStatus").and_then(Value::as_u64) == Some(200)
@@ -580,6 +768,317 @@ async fn preflight_standalone_live_app_inner(cdp_base: &str, page_url: &str) -> 
     acceptance?;
     close?;
     Ok(())
+}
+
+#[allow(dead_code, reason = "used by the focused browser-smoke binary")]
+async fn capture_console_apps_catalog_inner(
+    cdp_base: &str,
+    public_base_url: &str,
+    page_url: &str,
+    expectations: &[ConsoleAppExpectation],
+    evidence_directory: &Path,
+) -> Result<ConsoleAppsCatalogEvidence> {
+    ensure!(
+        !expectations.is_empty(),
+        "Console Apps acceptance requires at least one expected App"
+    );
+    let expected_servers = expectations
+        .iter()
+        .map(|expectation| expectation.server)
+        .collect::<BTreeSet<_>>();
+    let expected_uris = expectations
+        .iter()
+        .map(|expectation| expectation.resource_uri)
+        .collect::<BTreeSet<_>>();
+    ensure!(
+        expected_uris.len() == expectations.len(),
+        "Console Apps acceptance contains duplicate resource URIs"
+    );
+
+    let (mut cdp, target_id, session_id) = open_headed_target(cdp_base, page_url).await?;
+    let catalog_acceptance: Result<_> = async {
+        wait_for_document(&mut cdp, &session_id).await?;
+        assert_page_visible(&mut cdp, &session_id).await?;
+        let hardware: HardwareIdentity =
+            cdp.evaluate(&session_id, HARDWARE_PREFLIGHT, true).await?;
+        hardware.validate()?;
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+        let probe = loop {
+            let probe: ConsoleAppCatalogProbe = cdp
+                .evaluate(
+                    &session_id,
+                    r#"(async () => {
+                      const response=await fetch("/console/api/apps",{credentials:"same-origin",headers:{Accept:"application/json"}});
+                      let catalog={apps:[],degradations:[]};
+                      try{catalog=await response.json()}catch{}
+                      return {
+                        status:response.status,
+                        apps:(catalog.apps||[]).map(app=>({
+                          server:app.server,
+                          resourceUri:app.resourceUri,
+                          standalonePath:app.standalonePath,
+                          name:app.name,
+                          title:app.title??null
+                        })),
+                        degradations:catalog.degradations||[],
+                        serverGroups:[...document.querySelectorAll(".app-catalog-group .mono")]
+                          .map(node=>(node.textContent||"").trim()).filter(Boolean)
+                      };
+                    })()"#,
+                    true,
+                )
+                .await?;
+            let discovered = probe
+                .apps
+                .iter()
+                .map(|app| app.resource_uri.as_str())
+                .collect::<BTreeSet<_>>();
+            let groups = probe
+                .server_groups
+                .iter()
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>();
+            if probe.status == 200
+                && probe.degradations.is_empty()
+                && expected_uris.is_subset(&discovered)
+                && expected_servers.is_subset(&groups)
+            {
+                break probe;
+            }
+            ensure!(
+                tokio::time::Instant::now() < deadline,
+                "Console did not project the complete grouped App catalog: HTTP {}, Apps {:?}, groups {:?}, degradations {:?}",
+                probe.status,
+                discovered,
+                groups,
+                probe
+                    .degradations
+                    .iter()
+                    .map(|failure| format!("{}/{}/{}", failure.server, failure.surface, failure.code))
+                    .collect::<Vec<_>>()
+            );
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        };
+
+        for expectation in expectations {
+            let expected_path = format!(
+                "/apps/{}",
+                expectation
+                    .resource_uri
+                    .strip_prefix("ui://")
+                    .context("expected Console App URI must use ui://")?
+            );
+            let app = probe
+                .apps
+                .iter()
+                .find(|app| app.resource_uri == expectation.resource_uri)
+                .expect("complete expected catalog set");
+            ensure!(
+                app.server == expectation.server && app.standalone_path == expected_path,
+                "Console App {} has inconsistent identity or standalone path: {:?}",
+                expectation.resource_uri,
+                app
+            );
+        }
+
+        let screenshot_path = evidence_directory.join("catalog.png");
+        let screenshot_sha256 =
+            capture_screenshot(&mut cdp, &session_id, &screenshot_path).await?;
+        cdp.assert_no_software_renderer_events()?;
+        Ok((hardware, probe, screenshot_path, screenshot_sha256))
+    }
+    .await;
+    let close = close_target(&mut cdp, &target_id).await;
+    let (hardware, probe, screenshot_path, screenshot_sha256) = catalog_acceptance?;
+    close?;
+
+    let mut rendered_apps = Vec::with_capacity(expectations.len());
+    for expectation in expectations {
+        rendered_apps.push(
+            capture_one_console_app(cdp_base, public_base_url, expectation, evidence_directory)
+                .await
+                .with_context(|| {
+                    format!("rendering {} through Console", expectation.resource_uri)
+                })?,
+        );
+    }
+
+    Ok(ConsoleAppsCatalogEvidence {
+        schema: "veoveo.io/console-apps-browser-evidence/v1",
+        captured_at: chrono::Utc::now(),
+        page_url: page_url.to_owned(),
+        screenshot_path: screenshot_path.display().to_string(),
+        screenshot_sha256,
+        hardware,
+        apps: probe.apps,
+        server_groups: probe.server_groups,
+        rendered_apps,
+    })
+}
+
+#[allow(dead_code, reason = "used by the focused browser-smoke binary")]
+async fn capture_one_console_app(
+    cdp_base: &str,
+    public_base_url: &str,
+    expectation: &ConsoleAppExpectation,
+    evidence_directory: &Path,
+) -> Result<RenderedConsoleAppEvidence> {
+    let route = format!(
+        "/apps/{}",
+        expectation
+            .resource_uri
+            .strip_prefix("ui://")
+            .context("expected Console App URI must use ui://")?
+    );
+    let page_url = console_acceptance_url(public_base_url, &route);
+    let (mut cdp, target_id, session_id) = open_headed_target(cdp_base, &page_url).await?;
+    let acceptance: Result<_> = async {
+        wait_for_document(&mut cdp, &session_id).await?;
+        assert_page_visible(&mut cdp, &session_id).await?;
+        let hardware: HardwareIdentity =
+            cdp.evaluate(&session_id, HARDWARE_PREFLIGHT, true).await?;
+        hardware.validate()?;
+        wait_for_console_app_body(
+            &mut cdp,
+            &target_id,
+            &session_id,
+            expectation.server,
+            expectation.marker,
+        )
+        .await?;
+        let render =
+            wait_for_console_app_settled(&mut cdp, &target_id, &session_id, expectation).await?;
+        let screenshot_name = expectation
+            .resource_uri
+            .trim_start_matches("ui://")
+            .replace(['/', '.'], "-");
+        let screenshot_path = evidence_directory.join(format!("{screenshot_name}.png"));
+        let screenshot_sha256 = capture_screenshot(&mut cdp, &session_id, &screenshot_path).await?;
+        cdp.assert_no_software_renderer_events()?;
+        Ok((hardware, render, screenshot_path, screenshot_sha256))
+    }
+    .await;
+    let close = close_target(&mut cdp, &target_id).await;
+    let (hardware, render, screenshot_path, screenshot_sha256) = acceptance?;
+    close?;
+    Ok(RenderedConsoleAppEvidence {
+        server: expectation.server.to_owned(),
+        resource_uri: expectation.resource_uri.to_owned(),
+        page_url,
+        screenshot_path: screenshot_path.display().to_string(),
+        screenshot_sha256,
+        hardware,
+        render,
+    })
+}
+
+async fn wait_for_console_app_settled(
+    cdp: &mut Cdp,
+    parent_target_id: &str,
+    session_id: &str,
+    expectation: &ConsoleAppExpectation,
+) -> Result<ConsoleAppRenderState> {
+    let required_selector = serde_json::to_string(expectation.required_selector.unwrap_or(""))?;
+    let expression = format!(
+        r#"(async () => {{
+          const visible = node => {{
+            if (!node || !node.textContent?.trim()) return false;
+            const style = getComputedStyle(node);
+            return !node.hidden && style.display !== "none" && style.visibility !== "hidden"
+              && node.getClientRects().length > 0;
+          }};
+          const requestId = `veoveo-acceptance-${{crypto.randomUUID()}}`;
+          let hostDisplayMode = "";
+          let hostBridgeError = "";
+          try {{
+            hostDisplayMode = await new Promise((resolve, reject) => {{
+              const timer = setTimeout(() => {{
+                removeEventListener("message", receive);
+                reject(new Error("host bridge display-mode probe timed out"));
+              }}, 2000);
+              const receive = event => {{
+                const message = event.data;
+                if (event.source !== parent || !message || message.id !== requestId) return;
+                clearTimeout(timer);
+                removeEventListener("message", receive);
+                if (message.error) reject(new Error(message.error.message || "host bridge rejected probe"));
+                else resolve(message.result?.mode || "");
+              }};
+              addEventListener("message", receive);
+              parent.postMessage({{
+                jsonrpc:"2.0",
+                id:requestId,
+                method:"ui/request-display-mode",
+                params:{{mode:"inline"}}
+              }}, "*");
+            }});
+          }} catch (error) {{
+            hostBridgeError = error instanceof Error ? error.message : String(error);
+          }}
+          const requiredSelector = {required_selector};
+          return {{
+            title:document.title||"",
+            heading:document.querySelector("h1")?.textContent?.trim()||"",
+            status:document.getElementById("status")?.textContent?.trim()||"",
+            body:document.body?.innerText||"",
+            hostDisplayMode,
+            hostBridgeError,
+            visibleErrors:[...document.querySelectorAll('[id*="error" i]')]
+              .filter(visible).map(node=>node.textContent.trim()),
+            requiredSelectorFound:!requiredSelector || Boolean(document.querySelector(requiredSelector))
+          }};
+        }})()"#
+    );
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        let render: ConsoleAppRenderState = evaluate_console_app(
+            cdp,
+            parent_target_id,
+            session_id,
+            expectation.server,
+            &expression,
+            true,
+        )
+        .await?;
+        if console_app_has_settled(expectation, &render) {
+            return Ok(render);
+        }
+        ensure!(
+            tokio::time::Instant::now() < deadline,
+            "Console App {} did not reach its declared settled state: {:?}",
+            expectation.resource_uri,
+            render
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+fn console_app_has_settled(
+    expectation: &ConsoleAppExpectation,
+    render: &ConsoleAppRenderState,
+) -> bool {
+    if !render.heading.contains(expectation.marker)
+        || render.host_display_mode != "inline"
+        || !render.host_bridge_error.is_empty()
+        || !render.visible_errors.is_empty()
+        || !render.required_selector_found
+    {
+        return false;
+    }
+    let status = render.status.trim();
+    match expectation.settled_state {
+        ConsoleAppSettledState::Exact(values) => values.contains(&status),
+        ConsoleAppSettledState::Prefix(values) => {
+            values.iter().any(|prefix| status.starts_with(prefix))
+        }
+        ConsoleAppSettledState::MapViewport => {
+            status == "No layers are visible. Enable a layer in the catalog."
+                || status.split_once(" feature").is_some_and(|(count, rest)| {
+                    count.parse::<u64>().is_ok() && rest.contains(" visible across ")
+                })
+        }
+    }
 }
 
 async fn wait_for_console_app_body(
@@ -644,7 +1143,7 @@ async fn send_console_uav_agent_instruction_inner(
             &target_id,
             &session_id,
             "uav-sim",
-            "UAV live cameras",
+            "Live Cameras",
         )
         .await?;
 
@@ -882,11 +1381,11 @@ async fn capture_console_live_app_inner(
                 && snapshot
                     .get("appFrameTitle")
                     .and_then(Value::as_str)
-                    .is_some_and(|title| title.contains("UAV live cameras"))
+                    .is_some_and(|title| title.contains("Live Cameras"))
                 && snapshot
                     .get("bodyText")
                     .and_then(Value::as_str)
-                    .is_some_and(|body| body.contains("UAV live cameras")),
+                    .is_some_and(|body| body.contains("Live Cameras")),
             "real Console did not load its snapshot, App catalog, and UAV live view frame: \
              {snapshot}"
         );
@@ -1173,11 +1672,11 @@ async fn capture_console_stream_app_inner(
                 && console
                     .get("appFrameTitle")
                     .and_then(Value::as_str)
-                    .is_some_and(|title| title.contains("Stream"))
+                    .is_some_and(|title| title.contains("Live Monitor"))
                 && console
                     .get("bodyText")
                     .and_then(Value::as_str)
-                    .is_some_and(|body| body.contains("Stream")),
+                    .is_some_and(|body| body.contains("Live Monitor")),
             "real Console did not load its snapshot, App catalog, and Stream frame: {console}"
         );
         let screenshot_sha256 =
@@ -1350,6 +1849,7 @@ async fn capture_console_recording_archive_inner(
                 Err(error) => return Err(error).context("archived Rerun transport did not settle"),
             }
         };
+        let timeline = wait_for_rerun_archive_latest(&mut cdp, &session_id).await?;
         let responsiveness = sample_rerun_responsiveness(&mut cdp, &session_id).await?;
         responsiveness.validate()?;
         let viewer_bounds = rerun_viewer_bounds(&mut cdp, &session_id).await?;
@@ -1362,7 +1862,7 @@ async fn capture_console_recording_archive_inner(
         final_hardware.validate()?;
         cdp.assert_no_software_renderer_events()?;
         Ok(ConsoleRecordingArchiveCaptureEvidence {
-            schema: "veoveo.io/uav-console-recording-archive-capture/v1",
+            schema: "veoveo.io/uav-console-recording-archive-capture/v2",
             captured_at: chrono::Utc::now(),
             page_url: page_url.to_owned(),
             recording_id: recording_id.to_owned(),
@@ -1370,6 +1870,7 @@ async fn capture_console_recording_archive_inner(
             screenshot_sha256,
             hardware: final_hardware,
             network,
+            timeline,
             render,
             camera_render,
             responsiveness,
@@ -1380,6 +1881,59 @@ async fn capture_console_recording_archive_inner(
     let evidence = acceptance?;
     close?;
     Ok(evidence)
+}
+
+async fn wait_for_rerun_archive_latest(
+    cdp: &mut Cdp,
+    session_id: &str,
+) -> Result<RecordingArchiveTimelineEvidence> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let state: Value = cdp
+            .evaluate(
+                session_id,
+                r#"(() => {
+                  const host = document.querySelector(".rerun-web-viewer-host");
+                  return {
+                    archiveState: host?.dataset.rerunArchiveState ?? "",
+                    recordingId: host?.dataset.rerunRecordingId ?? "",
+                    timeline: host?.dataset.rerunTimeline ?? "",
+                    currentTime: Number(host?.dataset.rerunCurrentTime ?? NaN),
+                    newestTime: Number(host?.dataset.rerunNewestTime ?? NaN),
+                    error: document.querySelector(".recording-viewer-error")?.textContent ?? ""
+                  };
+                })()"#,
+                false,
+            )
+            .await?;
+        ensure!(
+            state
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .is_empty(),
+            "Console Rerun viewer failed while selecting archive time: {state}"
+        );
+        if state.get("archiveState").and_then(Value::as_str) == Some("latest") {
+            let evidence = serde_json::from_value::<RecordingArchiveTimelineEvidence>(state)?;
+            ensure!(
+                !evidence.recording_id.is_empty()
+                    && evidence.timeline == "simulation_time"
+                    && evidence.current_time.is_finite()
+                    && evidence.newest_time.is_finite()
+                    && evidence.current_time > 0.0
+                    && (evidence.current_time - evidence.newest_time).abs() <= 1.0,
+                "Rerun archive did not select its latest simulation time: {evidence:?}"
+            );
+            return Ok(evidence);
+        }
+        ensure!(
+            tokio::time::Instant::now() < deadline,
+            "Rerun archive did not select its latest simulation time: {state}"
+        );
+        assert_page_visible(cdp, session_id).await?;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 async fn wait_for_console_recording_surface(
@@ -1716,6 +2270,1074 @@ async fn sample_rerun_responsiveness(
     Ok(evidence)
 }
 
+/// Exercise the exact generated Map MCP App in the same opaque-origin sandbox
+/// and explicit tile-origin CSP used by Console. The local parent implements
+/// only the MCP App bridge calls needed to render one immutable composition.
+#[allow(dead_code, reason = "shared by the focused browser-smoke binary")]
+pub(crate) async fn capture_map_workspace_app(
+    cdp_base: &str,
+    app_html_path: &Path,
+    screenshot_path: &Path,
+    timeout: Duration,
+) -> Result<MapWorkspaceCaptureEvidence> {
+    ensure!(
+        app_html_path.is_file(),
+        "generated Map workspace App does not exist: {}",
+        app_html_path.display()
+    );
+    let app_html = fs::read(app_html_path)
+        .with_context(|| format!("reading Map workspace App {}", app_html_path.display()))?;
+    ensure!(
+        app_html
+            .windows("maplibre-gl@6.6.0".len())
+            .any(|window| window == b"maplibre-gl@6.6.0"),
+        "Map workspace acceptance requires the pinned MapLibre 6.6.0 artifact"
+    );
+    let (page_url, server) = serve_map_workspace_acceptance(app_html).await?;
+    let (mut cdp, target_id, session_id) = open_headed_target(cdp_base, &page_url).await?;
+    let acceptance: Result<(
+        HardwareIdentity,
+        MapWorkspaceBridgeEvidence,
+        Value,
+        MapWorkspaceRenderEvidence,
+        String,
+    )> = async {
+        wait_for_document(&mut cdp, &session_id).await?;
+        assert_page_visible(&mut cdp, &session_id).await?;
+        let hardware: HardwareIdentity =
+            cdp.evaluate(&session_id, HARDWARE_PREFLIGHT, true).await?;
+        hardware.validate()?;
+
+        let deadline = tokio::time::Instant::now() + timeout;
+        let bridge = loop {
+            let bridge: MapWorkspaceBridgeEvidence = cdp
+                .evaluate(&session_id, "window.__mapWorkspaceEvidence", false)
+                .await?;
+            ensure!(
+                bridge.errors.is_empty(),
+                "Map workspace bridge failed: {:?}",
+                bridge.errors
+            );
+            if bridge.initialized
+                && bridge.authored_query_calls > 0
+                && bridge.source_query_calls > 0
+                && bridge.query_responses >= 2
+            {
+                break bridge;
+            }
+            ensure!(
+                tokio::time::Instant::now() < deadline,
+                "Map workspace did not initialize and complete a viewport query within {timeout:?}: {bridge:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        };
+        ensure!(
+            bridge.size_height >= 500.0,
+            "Map workspace did not report a usable App height: {}",
+            bridge.size_height
+        );
+        ensure!(
+            bridge
+                .last_authored_query
+                .get("publication_id")
+                .and_then(Value::as_str)
+                == Some("publication-0198-map-workspace"),
+            "Map workspace did not query the immutable publication pin: {}",
+            bridge.last_authored_query
+        );
+        ensure!(
+            bridge
+                .last_authored_query
+                .get("limit")
+                .and_then(Value::as_u64)
+                == Some(1_000),
+            "Map workspace viewport query must use the bounded 1,000-feature page: {}",
+            bridge.last_authored_query
+        );
+        let bbox = bridge
+            .last_authored_query
+            .get("bbox")
+            .context("Map workspace viewport query omitted bbox")?;
+        for coordinate in ["west", "south", "east", "north"] {
+            ensure!(
+                bbox.get(coordinate).and_then(Value::as_f64).is_some_and(f64::is_finite),
+                "Map workspace viewport query had an invalid {coordinate} bound: {bbox}"
+            );
+        }
+        ensure!(
+            bridge
+                .last_source_query
+                .get("limit")
+                .and_then(Value::as_u64)
+                == Some(500),
+            "Map workspace source preview must use the bounded 500-feature page: {}",
+            bridge.last_source_query
+        );
+        ensure!(
+            bridge.last_source_query.pointer("/spatial/kind").and_then(Value::as_str)
+                == Some("bounding_box"),
+            "Map workspace source preview omitted its indexed bounding-box query: {}",
+            bridge.last_source_query
+        );
+
+        let light = loop {
+            let value: Value = evaluate_console_app(
+                &mut cdp,
+                &target_id,
+                &session_id,
+                "map",
+                r#"({
+                  theme:document.documentElement.dataset.theme ?? '',
+                  basemapTheme:document.getElementById('map')?.dataset.basemapTheme ?? '',
+                  basemapAvailable:document.getElementById('map')?.dataset.basemapAvailable ?? '',
+                  viewport:document.getElementById('viewport')?.textContent ?? '',
+                  renderedFeatureCount:Number(document.getElementById('map')?.dataset.renderedFeatureCount ?? 0)
+                })"#,
+                false,
+            )
+            .await?;
+            if value.get("theme").and_then(Value::as_str) == Some("light")
+                && value.get("basemapTheme").and_then(Value::as_str) == Some("light")
+                && value.get("basemapAvailable").and_then(Value::as_str) == Some("true")
+                && value
+                    .get("renderedFeatureCount")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0)
+                    > 0
+            {
+                break value;
+            }
+            ensure!(
+                tokio::time::Instant::now() < deadline,
+                "Map workspace did not initialize its light basemap and overlays: {value}"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        };
+        let switched: bool = cdp
+            .evaluate(
+                &session_id,
+                r#"(() => {
+                  const frame=document.getElementById('app');
+                  frame?.contentWindow?.postMessage({
+                    jsonrpc:'2.0',method:'ui/notifications/host-context-changed',
+                    params:{hostContext:{theme:'dark'}}
+                  },'*');
+                  return Boolean(frame);
+                })()"#,
+                false,
+            )
+            .await?;
+        ensure!(switched, "Map workspace acceptance frame disappeared before theme switching");
+        let dark = loop {
+            let value: Value = evaluate_console_app(
+                &mut cdp,
+                &target_id,
+                &session_id,
+                "map",
+                r#"({
+                  theme:document.documentElement.dataset.theme ?? '',
+                  basemapTheme:document.getElementById('map')?.dataset.basemapTheme ?? '',
+                  basemapAvailable:document.getElementById('map')?.dataset.basemapAvailable ?? '',
+                  viewport:document.getElementById('viewport')?.textContent ?? '',
+                  renderedFeatureCount:Number(document.getElementById('map')?.dataset.renderedFeatureCount ?? 0)
+                })"#,
+                false,
+            )
+            .await?;
+            if value.get("theme").and_then(Value::as_str) == Some("dark")
+                && value.get("basemapTheme").and_then(Value::as_str) == Some("dark")
+                && value.get("basemapAvailable").and_then(Value::as_str) == Some("true")
+                && value
+                    .get("renderedFeatureCount")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0)
+                    > 0
+            {
+                break value;
+            }
+            ensure!(
+                tokio::time::Instant::now() < deadline,
+                "Map workspace did not reactively restore its overlays on the dark basemap: {value}"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        };
+        ensure!(
+            dark.get("viewport") == light.get("viewport"),
+            "Map workspace changed its camera while switching basemap theme: {light} -> {dark}"
+        );
+
+        // GeoJSON source updates are worker-driven. Give MapLibre enough time
+        // to place and paint the returned geometries before capture.
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        assert_page_visible(&mut cdp, &session_id).await?;
+        cdp.assert_no_software_renderer_events()?;
+        let screenshot_sha256 =
+            capture_screenshot(&mut cdp, &session_id, screenshot_path).await?;
+        let render = analyze_map_workspace_render(screenshot_path)?;
+        let bridge: MapWorkspaceBridgeEvidence = cdp
+            .evaluate(&session_id, "window.__mapWorkspaceEvidence", false)
+            .await?;
+        ensure!(
+            bridge.authored_query_calls >= 2 && bridge.source_query_calls >= 2,
+            "Map workspace did not refresh both spatial previews after its theme switch: {bridge:?}"
+        );
+        Ok((hardware, bridge, dark, render, screenshot_sha256))
+    }
+    .await;
+    let acceptance = match acceptance {
+        Ok(evidence) => Ok(evidence),
+        Err(error) => {
+            let diagnostics = cdp.stream_diagnostics(&session_id).await?;
+            Err(error.context(diagnostics))
+        }
+    };
+    let close = close_target(&mut cdp, &target_id).await;
+    server.abort();
+    let (hardware, bridge, theme, render, screenshot_sha256) = acceptance?;
+    close?;
+    Ok(MapWorkspaceCaptureEvidence {
+        schema: "veoveo.io/map-workspace-capture-evidence/v2",
+        captured_at: chrono::Utc::now(),
+        page_url,
+        screenshot_path: screenshot_path.display().to_string(),
+        screenshot_sha256,
+        hardware,
+        bridge,
+        theme,
+        render,
+    })
+}
+
+/// Exercise the deployed Map workspace through the authenticated public Console.
+/// The caller supplies stable live fixture titles created through the public MCP
+/// surface so the browser proof cannot silently render unrelated tenant data.
+#[allow(dead_code)]
+pub(crate) async fn capture_console_map_workspace_app(
+    cdp_base: &str,
+    public_base_url: &str,
+    expected_composition_title: &str,
+    expected_layer_title: &str,
+    screenshot_directory: &Path,
+    timeout: Duration,
+) -> Result<ConsoleMapWorkspaceCaptureEvidence> {
+    let page_url = console_acceptance_url(public_base_url, "/apps/map/workspace.html");
+    tokio::time::timeout(
+        timeout,
+        capture_console_map_workspace_app_inner(
+            cdp_base,
+            &page_url,
+            expected_composition_title,
+            expected_layer_title,
+            screenshot_directory,
+            timeout,
+        ),
+    )
+    .await
+    .with_context(|| format!("Console Map workspace capture exceeded {timeout:?}"))?
+}
+
+async fn capture_console_map_workspace_app_inner(
+    cdp_base: &str,
+    page_url: &str,
+    expected_composition_title: &str,
+    expected_layer_title: &str,
+    screenshot_directory: &Path,
+    timeout: Duration,
+) -> Result<ConsoleMapWorkspaceCaptureEvidence> {
+    let (mut cdp, target_id, session_id) = open_headed_target(cdp_base, page_url).await?;
+    let acceptance = async {
+        wait_for_document(&mut cdp, &session_id).await?;
+        assert_page_visible(&mut cdp, &session_id).await?;
+        let hardware: HardwareIdentity =
+            cdp.evaluate(&session_id, HARDWARE_PREFLIGHT, true).await?;
+        hardware.validate()?;
+        wait_for_console_app_body(
+            &mut cdp,
+            &target_id,
+            &session_id,
+            "map",
+            "Workspace",
+        )
+        .await?;
+
+        let composition = serde_json::to_string(expected_composition_title)?;
+        let layer = serde_json::to_string(expected_layer_title)?;
+        let deadline = tokio::time::Instant::now() + timeout;
+        let workspace_script = || {
+            format!(
+                r#"(() => {{
+                  const select=document.getElementById('composition-select');
+                  const option=[...(select?.options ?? [])].find(item=>item.textContent?.includes({composition}));
+                  if(option && select.value!==option.value){{select.value=option.value;select.dispatchEvent(new Event('change',{{bubbles:true}}));}}
+                  const layerRow=[...document.querySelectorAll('#authored-list .layer-row')].find(item=>item.textContent?.includes({layer}));
+                  if(layerRow && !layerRow.classList.contains('selected')) layerRow.click();
+                  const canvas=document.querySelector('#map canvas');
+                  const gl=canvas?.getContext('webgl2');
+                  const debug=gl?.getExtension('WEBGL_debug_renderer_info');
+                  const mapRect=document.querySelector('.map-stage')?.getBoundingClientRect();
+                  return {{
+                    compositionFound:Boolean(option),selectedTitle:option?.textContent?.trim() ?? '',
+                    layerFound:Boolean(layerRow),layerTitle:layerRow?.textContent?.trim() ?? '',
+                    status:document.getElementById('status-message')?.textContent?.trim() ?? '',
+                    gpuBadge:document.getElementById('gpu-badge')?.textContent?.trim() ?? '',
+                    mapFailureHidden:Boolean(document.getElementById('map-failure')?.hidden),
+                    canvasWidth:canvas?.width ?? 0,canvasHeight:canvas?.height ?? 0,
+                    mapWidth:mapRect?.width ?? 0,mapHeight:mapRect?.height ?? 0,
+                    webglRenderer:debug ? gl.getParameter(debug.UNMASKED_RENDERER_WEBGL) : '',
+                    authoredRows:document.querySelectorAll('#authored-list .layer-row').length,
+                    sourceRows:document.querySelectorAll('#source-layer-list .layer-row').length,
+                    previewRows:document.querySelectorAll('#preview-rows tr').length,
+                    previewText:document.getElementById('preview-rows')?.textContent?.trim() ?? '',
+                    renderedFeatureCount:Number(document.getElementById('map')?.dataset.renderedFeatureCount ?? 0),
+                    attribution:document.querySelector('.maplibregl-ctrl-attrib')?.textContent?.trim() ?? '',
+                    viewerInteracted:document.documentElement.dataset.veoveoAcceptanceMapInteracted === 'true'
+                  }};
+                }})()"#
+            )
+        };
+        let workspace_ready = |value: &Value| {
+            value.get("compositionFound").and_then(Value::as_bool) == Some(true)
+                && value.get("layerFound").and_then(Value::as_bool) == Some(true)
+                && value.get("mapFailureHidden").and_then(Value::as_bool) == Some(true)
+                && value.get("canvasWidth").and_then(Value::as_u64).unwrap_or(0) >= 600
+                && value.get("canvasHeight").and_then(Value::as_u64).unwrap_or(0) >= 360
+                && value.get("mapWidth").and_then(Value::as_f64).unwrap_or(0.0) >= 600.0
+                && value.get("mapHeight").and_then(Value::as_f64).unwrap_or(0.0) >= 360.0
+                && value
+                    .get("webglRenderer")
+                    .and_then(Value::as_str)
+                    .is_some_and(|renderer| {
+                        renderer.to_ascii_lowercase().contains("nvidia")
+                            && !software_renderer(&renderer.to_ascii_lowercase())
+                    })
+                && value.get("previewRows").and_then(Value::as_u64).unwrap_or(0) > 0
+                && value
+                    .get("previewText")
+                    .and_then(Value::as_str)
+                    .is_some_and(|text| text.contains("ALPHA-7"))
+                && value
+                    .get("renderedFeatureCount")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0)
+                    > 0
+                && value
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .is_some_and(|status| status.contains("visible across"))
+                && !value
+                    .get("attribution")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .is_empty()
+        };
+        loop {
+            let value: Value = evaluate_console_app(
+                &mut cdp,
+                &target_id,
+                &session_id,
+                "map",
+                &workspace_script(),
+                false,
+            )
+            .await?;
+            if workspace_ready(&value) {
+                break;
+            }
+            ensure!(
+                tokio::time::Instant::now() < deadline,
+                "live unified Map workspace did not render its composition, basemap, and synchronized preview: {value}"
+            );
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        };
+        let toggled: bool = evaluate_console_app(
+            &mut cdp,
+            &target_id,
+            &session_id,
+            "map",
+            &format!(
+                r#"(() => {{
+                  const findVisibility=()=>[...document.querySelectorAll('#authored-list .layer-row')]
+                    .find(item=>item.textContent?.includes({layer}))?.querySelector('input[type="checkbox"]');
+                  const visibility=findVisibility();
+                  if(!visibility?.checked) return false;
+                  visibility.click();
+                  const hiddenVisibility=findVisibility();
+                  if(!hiddenVisibility || hiddenVisibility.checked) return false;
+                  hiddenVisibility.click();
+                  const restoredVisibility=findVisibility();
+                  document.documentElement.dataset.veoveoAcceptanceMapInteracted='true';
+                  return Boolean(restoredVisibility?.checked);
+                }})()"#
+            ),
+            false,
+        )
+        .await?;
+        ensure!(toggled, "live unified Map workspace did not hide and restore its authored layer");
+        let workspace = loop {
+            let value = evaluate_console_app(
+                &mut cdp,
+                &target_id,
+                &session_id,
+                "map",
+                &workspace_script(),
+                false,
+            )
+            .await?;
+            if workspace_ready(&value)
+                && value.get("viewerInteracted").and_then(Value::as_bool) == Some(true)
+            {
+                break value;
+            }
+            ensure!(
+                tokio::time::Instant::now() < deadline,
+                "live unified Map workspace did not recover after the visibility interaction: {value}"
+            );
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        };
+        cdp.assert_no_software_renderer_events()?;
+        let workspace_screenshot = screenshot_directory.join("workspace.png");
+        let workspace_screenshot_sha256 =
+            capture_screenshot(&mut cdp, &session_id, &workspace_screenshot).await?;
+        let render = analyze_map_workspace_render(&workspace_screenshot)?;
+
+        let source = loop {
+            let value: Value = evaluate_console_app(
+                &mut cdp,
+                &target_id,
+                &session_id,
+                "map",
+                r#"(() => {
+                  const row=document.querySelector('#source-layer-list .layer-row');
+                  if(row && !row.classList.contains('selected')) row.click();
+                  const zoom=[...document.querySelectorAll('#inspector-body button')]
+                    .find(item=>item.textContent?.trim()==='Zoom to data');
+                  if(zoom && document.documentElement.dataset.veoveoAcceptanceSourceZoomed!=='true'){
+                    zoom.click();
+                    document.documentElement.dataset.veoveoAcceptanceSourceZoomed='true';
+                  }
+                  const mapRect=document.querySelector('.map-stage')?.getBoundingClientRect();
+                  return {
+                    rowFound:Boolean(row),rowSelected:Boolean(row?.classList.contains('selected')),
+                    layerTitle:row?.textContent?.trim() ?? '',
+                    inspectorTitle:document.getElementById('inspector-title')?.textContent?.trim() ?? '',
+                    inspectorText:document.getElementById('inspector-body')?.textContent?.trim() ?? '',
+                    previewRows:document.querySelectorAll('#preview-rows tr').length,
+                    previewText:document.getElementById('preview-rows')?.textContent?.trim() ?? '',
+                    mapWidth:mapRect?.width ?? 0,mapHeight:mapRect?.height ?? 0,
+                    renderedFeatureCount:Number(document.getElementById('map')?.dataset.renderedFeatureCount ?? 0)
+                  };
+                })()"#,
+                false,
+            )
+            .await?;
+            if value.get("rowFound").and_then(Value::as_bool) == Some(true)
+                && value.get("rowSelected").and_then(Value::as_bool) == Some(true)
+                && value.get("inspectorTitle").and_then(Value::as_str) == Some("Source release")
+                && value
+                    .get("inspectorText")
+                    .and_then(Value::as_str)
+                    .is_some_and(|text| text.contains("Active governed release"))
+                && value.get("previewRows").and_then(Value::as_u64).unwrap_or(0) > 0
+                && !value
+                    .get("previewText")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .is_empty()
+                && value.get("mapWidth").and_then(Value::as_f64).unwrap_or(0.0) >= 600.0
+                && value.get("mapHeight").and_then(Value::as_f64).unwrap_or(0.0) >= 360.0
+                && value
+                    .get("renderedFeatureCount")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0)
+                    > 0
+            {
+                break value;
+            }
+            ensure!(
+                tokio::time::Instant::now() < deadline,
+                "live unified Map workspace did not render and preview an active source release: {value}"
+            );
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        };
+        let source_screenshot = screenshot_directory.join("source-release.png");
+        let source_screenshot_sha256 =
+            capture_screenshot(&mut cdp, &session_id, &source_screenshot).await?;
+
+        let feature = loop {
+            let value: Value = evaluate_console_app(
+                &mut cdp,
+                &target_id,
+                &session_id,
+                "map",
+                &format!(r#"(() => {{
+                  const layer=[...document.querySelectorAll('#authored-list .layer-row')]
+                    .find(item=>item.textContent?.includes({layer}));
+                  if(layer && !layer.classList.contains('selected')) layer.click();
+                  if(layer && document.documentElement.dataset.veoveoAcceptanceAuthoredReset!=='true'){{
+                    document.getElementById('reset-view')?.click();
+                    document.documentElement.dataset.veoveoAcceptanceAuthoredReset='true';
+                  }}
+                  const row=[...document.querySelectorAll('#preview-rows tr')].find(item=>item.textContent?.includes('ALPHA-7'));
+                  if(row && !row.classList.contains('selected')) row.click();
+                  const mapRect=document.querySelector('.map-stage')?.getBoundingClientRect();
+                  return {{
+                    layerFound:Boolean(layer),rowFound:Boolean(row),rowSelected:Boolean(row?.classList.contains('selected')),
+                    inspectorTitle:document.getElementById('inspector-title')?.textContent?.trim() ?? '',
+                    inspectorText:document.getElementById('inspector-body')?.textContent?.trim() ?? '',
+                    mapWidth:mapRect?.width ?? 0,mapHeight:mapRect?.height ?? 0,
+                    previewVisible:Boolean(document.querySelector('.preview-body')?.getBoundingClientRect().height)
+                  }};
+                }})()"#),
+                false,
+            )
+            .await?;
+            if value.get("layerFound").and_then(Value::as_bool) == Some(true)
+                && value.get("rowFound").and_then(Value::as_bool) == Some(true)
+                && value.get("rowSelected").and_then(Value::as_bool) == Some(true)
+                && value.get("inspectorTitle").and_then(Value::as_str) == Some("Feature")
+                && value
+                    .get("inspectorText")
+                    .and_then(Value::as_str)
+                    .is_some_and(|text| text.contains("ALPHA-7"))
+                && value.get("mapWidth").and_then(Value::as_f64).unwrap_or(0.0) >= 600.0
+                && value.get("previewVisible").and_then(Value::as_bool) == Some(true)
+            {
+                break value;
+            }
+            ensure!(
+                tokio::time::Instant::now() < deadline,
+                "live unified Map workspace did not synchronize table selection with its feature inspector: {value}"
+            );
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        };
+        let feature_screenshot = screenshot_directory.join("feature-inspector.png");
+        let feature_screenshot_sha256 =
+            capture_screenshot(&mut cdp, &session_id, &feature_screenshot).await?;
+
+        let guided: Value = evaluate_console_app(
+            &mut cdp,
+            &target_id,
+            &session_id,
+            "map",
+            r#"(() => {
+              const mapSizes=[];
+              const rememberMap=()=>{
+                const bounds=document.querySelector('.map-stage')?.getBoundingClientRect();
+                mapSizes.push({width:bounds?.width ?? 0,height:bounds?.height ?? 0});
+              };
+              const choose=(action)=>{
+                const button=document.querySelector(`#inspector-body [data-action="${action}"]`);
+                button?.click();
+                rememberMap();
+                return Boolean(button);
+              };
+              document.getElementById('add-data')?.click();
+              rememberMap();
+              const pickerText=[...document.querySelectorAll('#inspector-body .choice:not([hidden]) strong')]
+                .map(item=>item.textContent?.trim());
+              const picker=pickerText.includes('New layer') && pickerText.includes('Draw feature')
+                && pickerText.includes('Import artifact') && pickerText.includes('Acquire source');
+
+              const createOpened=choose('create-layer');
+              const create=Boolean(document.getElementById('new-layer-title')
+                && document.getElementById('new-layer-description')
+                && document.getElementById('new-layer-class'));
+              const createAdvancedClosed=Boolean(document.querySelector('#create-layer-form details:not([open])'));
+
+              choose('picker');
+              const drawOpened=choose('add-feature');
+              const draw=Boolean(document.getElementById('feature-layer')
+                && document.querySelectorAll('#add-feature-form [data-draw]').length===3
+                && document.getElementById('feature-title')
+                && document.getElementById('feature-semantic-type')
+                && document.getElementById('property-rows'));
+              const drawAdvancedClosed=Boolean(document.querySelector('#add-feature-form details:not([open])'));
+
+              choose('picker');
+              const importOpened=choose('import-artifact');
+              const format=document.getElementById('import-format');
+              const formats=[...(format?.options ?? [])].map(option=>option.value);
+              const importFormats=formats.includes('geo_json_feature_collection')
+                && formats.includes('geo_json_text_sequence') && formats.includes('geo_package');
+              if(format){format.value='geo_package';format.dispatchEvent(new Event('change',{bubbles:true}));}
+              const geopackage=Boolean(document.getElementById('inspect-geopackage')
+                && !document.getElementById('geopackage-fields')?.hidden
+                && document.getElementById('geopackage-table')
+                && document.getElementById('geopackage-identity'));
+              const authorizedArtifactCopy=document.getElementById('inspector-body')?.textContent
+                ?.includes('artifact already authorized in this Work Context') ?? false;
+
+              choose('picker');
+              const acquireOpened=choose('acquire-source');
+              const acquire=Boolean(document.getElementById('acquire-source')
+                && document.getElementById('draw-coverage')
+                && document.getElementById('bbox-west')
+                && document.getElementById('bbox-north'));
+              const acquireAdvancedClosed=Boolean(document.querySelector('#acquire-source-form details:not([open])'));
+
+              document.getElementById('save-view')?.click();
+              rememberMap();
+              const save=Boolean(document.getElementById('save-view-title')
+                && document.getElementById('save-view-summary'));
+
+              document.getElementById('add-data')?.click();
+              choose('import-artifact');
+              const finalFormat=document.getElementById('import-format');
+              if(finalFormat){finalFormat.value='geo_package';finalFormat.dispatchEvent(new Event('change',{bubbles:true}));}
+              rememberMap();
+              return {
+                picker,createOpened,create,createAdvancedClosed,
+                drawOpened,draw,drawAdvancedClosed,
+                importOpened,importFormats,geopackage,authorizedArtifactCopy,
+                acquireOpened,acquire,acquireAdvancedClosed,save,
+                finalTitle:document.getElementById('inspector-title')?.textContent?.trim() ?? '',
+                finalText:document.getElementById('inspector-body')?.textContent?.trim() ?? '',
+                minimumMapWidth:Math.min(...mapSizes.map(size=>size.width)),
+                minimumMapHeight:Math.min(...mapSizes.map(size=>size.height))
+              };
+            })()"#,
+            false,
+        )
+        .await?;
+        for field in [
+            "picker",
+            "createOpened",
+            "create",
+            "createAdvancedClosed",
+            "drawOpened",
+            "draw",
+            "drawAdvancedClosed",
+            "importOpened",
+            "importFormats",
+            "geopackage",
+            "authorizedArtifactCopy",
+            "acquireOpened",
+            "acquire",
+            "acquireAdvancedClosed",
+            "save",
+        ] {
+            ensure!(
+                guided.get(field).and_then(Value::as_bool) == Some(true),
+                "live unified Map workspace guided workflow `{field}` failed: {guided}"
+            );
+        }
+        ensure!(
+            guided.get("finalTitle").and_then(Value::as_str) == Some("Import artifact")
+                && guided
+                    .get("finalText")
+                    .and_then(Value::as_str)
+                    .is_some_and(|text| {
+                        text.contains("GeoJSON FeatureCollection")
+                            && text.contains("GeoJSON Text Sequence")
+                            && text.contains("GeoPackage")
+                            && text.contains("Inspect GeoPackage")
+                    })
+                && guided
+                    .get("minimumMapWidth")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.0)
+                    >= 600.0
+                && guided
+                    .get("minimumMapHeight")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.0)
+                    >= 360.0,
+            "live unified Map workspace did not retain its map through every guided workflow: {guided}"
+        );
+        let guided_screenshot = screenshot_directory.join("guided-geopackage-import.png");
+        let guided_screenshot_sha256 =
+            capture_screenshot(&mut cdp, &session_id, &guided_screenshot).await?;
+
+        let management = loop {
+            let value: Value = evaluate_console_app(
+                &mut cdp,
+                &target_id,
+                &session_id,
+                "map",
+                r#"(() => {
+                  document.getElementById('add-data')?.click();
+                  const disclosure=document.querySelector('#inspector-body details[data-admin]');
+                  if(disclosure) disclosure.open=true;
+                  document.querySelector('#inspector-body [data-action="manage-data"]')?.click();
+                  const mapRect=document.querySelector('.map-stage')?.getBoundingClientRect();
+                  return {
+                    inspectorTitle:document.getElementById('inspector-title')?.textContent?.trim() ?? '',
+                    inspectorText:document.getElementById('inspector-body')?.textContent?.trim() ?? '',
+                    mapWidth:mapRect?.width ?? 0,mapHeight:mapRect?.height ?? 0,
+                    catalogVisible:Boolean(document.querySelector('.catalog')?.getBoundingClientRect().width),
+                    acquisitionRecords:document.querySelectorAll('#manage-acquisitions .record').length,
+                    releaseRecords:document.querySelectorAll('#manage-releases .record').length
+                  };
+                })()"#,
+                false,
+            )
+            .await?;
+            if value.get("inspectorTitle").and_then(Value::as_str) == Some("Governed data")
+                && value
+                    .get("inspectorText")
+                    .and_then(Value::as_str)
+                    .is_some_and(|text| text.contains("Acquisitions and releases"))
+                && value.get("mapWidth").and_then(Value::as_f64).unwrap_or(0.0) >= 600.0
+                && value.get("catalogVisible").and_then(Value::as_bool) == Some(true)
+            {
+                break value;
+            }
+            ensure!(
+                tokio::time::Instant::now() < deadline,
+                "live unified Map workspace did not retain the map and catalog while opening governed data management: {value}"
+            );
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        };
+        let management_screenshot = screenshot_directory.join("governed-data.png");
+        let management_screenshot_sha256 =
+            capture_screenshot(&mut cdp, &session_id, &management_screenshot).await?;
+        cdp.assert_no_software_renderer_events()?;
+
+        Ok(ConsoleMapWorkspaceCaptureEvidence {
+            schema: "veoveo.io/console-map-workspace-capture-evidence/v3",
+            captured_at: chrono::Utc::now(),
+            page_url: page_url.to_owned(),
+            workspace_screenshot_path: workspace_screenshot.display().to_string(),
+            workspace_screenshot_sha256,
+            source_screenshot_path: source_screenshot.display().to_string(),
+            source_screenshot_sha256,
+            feature_screenshot_path: feature_screenshot.display().to_string(),
+            feature_screenshot_sha256,
+            guided_screenshot_path: guided_screenshot.display().to_string(),
+            guided_screenshot_sha256,
+            management_screenshot_path: management_screenshot.display().to_string(),
+            management_screenshot_sha256,
+            hardware,
+            workspace,
+            source,
+            feature,
+            guided,
+            management,
+            render,
+        })
+    }
+    .await;
+    let acceptance = match acceptance {
+        Ok(evidence) => Ok(evidence),
+        Err(error) => {
+            let diagnostics = cdp.stream_diagnostics(&session_id).await?;
+            Err(error.context(diagnostics))
+        }
+    };
+    let close = close_target(&mut cdp, &target_id).await;
+    let evidence = acceptance?;
+    close?;
+    Ok(evidence)
+}
+
+fn analyze_map_workspace_render(screenshot_path: &Path) -> Result<MapWorkspaceRenderEvidence> {
+    let image = image::open(screenshot_path)
+        .with_context(|| {
+            format!(
+                "decoding Map workspace screenshot {}",
+                screenshot_path.display()
+            )
+        })?
+        .to_rgb8();
+    let (width, height) = image.dimensions();
+    ensure!(
+        width >= 1_280 && height >= 720,
+        "Map workspace screenshot is below the acceptance viewport: {width}x{height}"
+    );
+    let left = width * 35 / 100;
+    let right = width * 75 / 100;
+    let top = height * 20 / 100;
+    let bottom = height * 60 / 100;
+    let mut feature_colored_pixels = 0_u64;
+    for y in top..bottom {
+        for x in left..right {
+            let [red, green, blue] = image.get_pixel(x, y).0;
+            let minimum = red.min(green).min(blue);
+            let maximum = red.max(green).max(blue);
+            if red < 210 && maximum.saturating_sub(minimum) > 20 {
+                feature_colored_pixels += 1;
+            }
+        }
+    }
+    ensure!(
+        feature_colored_pixels >= 500,
+        "Map workspace screenshot did not contain the expected rendered feature colors in the central map viewport ({feature_colored_pixels} qualifying pixels)"
+    );
+    Ok(MapWorkspaceRenderEvidence {
+        screenshot_width: width,
+        screenshot_height: height,
+        feature_colored_pixels,
+    })
+}
+
+#[allow(dead_code, reason = "shared by the focused browser-smoke binary")]
+async fn serve_map_workspace_acceptance(
+    app_html: Vec<u8>,
+) -> Result<(String, tokio::task::JoinHandle<Result<()>>)> {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
+    let address = listener.local_addr()?;
+    let harness = Arc::<[u8]>::from(map_workspace_acceptance_harness(address).into_bytes());
+    let app_html = Arc::<[u8]>::from(app_html);
+    let light_style = Arc::<[u8]>::from(serde_json::to_vec(&serde_json::json!({
+        "version": 8,
+        "sources": {},
+        "layers": [{
+            "id": "acceptance-light",
+            "type": "background",
+            "paint": {"background-color": "#dfe8ee"}
+        }]
+    }))?);
+    let dark_style = Arc::<[u8]>::from(serde_json::to_vec(&serde_json::json!({
+        "version": 8,
+        "sources": {},
+        "layers": [{
+            "id": "acceptance-dark",
+            "type": "background",
+            "paint": {"background-color": "#111820"}
+        }]
+    }))?);
+    let app_csp = format!(
+        "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; \
+         img-src data: blob: http://{address}; media-src blob:; connect-src data: http://{address}; \
+         worker-src blob:; frame-ancestors 'self'; object-src 'none'; base-uri 'none'"
+    );
+    let server = tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = listener.accept().await?;
+            let mut request = [0_u8; 8_192];
+            let count = stream.read(&mut request).await?;
+            if count == 0 {
+                continue;
+            }
+            let target = std::str::from_utf8(&request[..count])?
+                .lines()
+                .next()
+                .and_then(|line| line.split_whitespace().nth(1))
+                .unwrap_or("/");
+            let (status, content_type, csp, body): (&str, &str, Option<&str>, &[u8]) =
+                if target.starts_with("/app") || target.starts_with("/console/api/apps/frame") {
+                    (
+                        "200 OK",
+                        "text/html; charset=utf-8",
+                        Some(app_csp.as_str()),
+                        &app_html,
+                    )
+                } else if target.starts_with("/style-light.json") {
+                    ("200 OK", "application/json", None, &light_style)
+                } else if target.starts_with("/style-dark.json") {
+                    ("200 OK", "application/json", None, &dark_style)
+                } else if target == "/" || target.starts_with("/?") {
+                    ("200 OK", "text/html; charset=utf-8", None, &harness)
+                } else {
+                    ("204 No Content", "text/plain", None, &[])
+                };
+            let mut headers = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n",
+                body.len()
+            );
+            if let Some(csp) = csp {
+                headers.push_str("Content-Security-Policy: ");
+                headers.push_str(csp);
+                headers.push_str("\r\n");
+            }
+            headers.push_str("\r\n");
+            stream.write_all(headers.as_bytes()).await?;
+            stream.write_all(body).await?;
+            stream.shutdown().await?;
+        }
+    });
+    Ok((format!("http://{address}/"), server))
+}
+
+#[allow(dead_code, reason = "shared by the focused browser-smoke binary")]
+fn map_workspace_acceptance_harness(address: std::net::SocketAddr) -> String {
+    let resources = serde_json::json!({
+        "map://workspace": {
+            "administration": true,
+            "dataset_read": true,
+            "feature_read": true,
+            "feature_write": true,
+            "feature_publish": true,
+                "basemap": {
+                    "id": "acceptance_basemap",
+                    "title": "Acceptance basemap",
+                    "light_style_url": format!("http://{address}/style-light.json"),
+                    "dark_style_url": format!("http://{address}/style-dark.json")
+                }
+        },
+        "map://feature-layers": [{
+            "layer_id": "layer-0198-map-workspace",
+            "title": "San Salvador operations",
+            "content_class": "operational",
+            "schema": {"version": 1},
+            "revision": 3
+        }],
+        "map://publications": [{
+            "publication_id": "publication-0198-map-workspace",
+            "layer_id": "layer-0198-map-workspace",
+            "layer_revision": 3,
+            "schema_version": 1,
+            "style_revision_id": "style-revision-0198-map-workspace",
+            "title": "Operations publication"
+        }],
+        "map://compositions": [{
+            "composition_id": "composition-0198-map-workspace",
+            "title": "San Salvador operational picture",
+            "current": {
+                "revision": 2,
+                "layers": [{
+                    "layer_id": "layer-0198-map-workspace",
+                    "publication_id": "publication-0198-map-workspace",
+                    "style_revision_id": "style-revision-0198-map-workspace",
+                    "visible": true,
+                    "opacity": 1.0
+                }],
+                "view": {
+                    "center": {"longitude_deg": -89.2182, "latitude_deg": 13.6929},
+                    "zoom": 12.5,
+                    "bearing_deg": 0.0,
+                    "pitch_deg": 0.0
+                }
+            }
+        }],
+        "map://feature-style/style-revision-0198-map-workspace": {
+            "style_revision_id": "style-revision-0198-map-workspace",
+            "layer_id": "layer-0198-map-workspace",
+            "version": 1,
+            "style": {"rules": [
+                {"geometry_type": "Polygon", "fill_color": "#287e8e", "fill_opacity": 0.32, "line_color": "#164d59", "line_width_px": 2.0},
+                {"geometry_type": "LineString", "line_color": "#b8683b", "line_width_px": 4.0},
+                {"geometry_type": "Point", "circle_color": "#b34f68", "circle_radius_px": 7.0}
+            ]}
+        },
+        "map://sources": [{
+            "source_id": "source-0198-map-workspace",
+            "dataset_id": "dataset-0198-map-workspace",
+            "name": "San Salvador reference source",
+            "enabled": true,
+            "adapter_kind": "authority_vector",
+            "record_version": 1
+        }],
+        "map://datasets": {
+            "dataset-0198-map-workspace": [{
+                "release_id": "release-0198-map-workspace",
+                "dataset_id": "dataset-0198-map-workspace",
+                "source_id": "source-0198-map-workspace",
+                "version_label": "acceptance-2026-08",
+                "coverage": {"west": -89.24, "south": 13.67, "east": -89.19, "north": 13.72},
+                "license": {"attribution": "Veoveo acceptance source"},
+                "state": "active",
+                "record_version": 1,
+                "updated_at": "2026-08-25T00:00:00Z"
+            }]
+        },
+        "map://active-releases": [{
+            "dataset_id": "dataset-0198-map-workspace",
+            "release_id": "release-0198-map-workspace",
+            "record_version": 1
+        }],
+        "map://acquisitions": [],
+        "map://mobility-profiles": []
+    });
+    let features = serde_json::json!([
+        {
+            "type": "Feature",
+            "id": "feature-0198-command",
+            "geometry": {"type": "Point", "coordinates": [-89.2182, 13.6929]},
+            "properties": {"role": "command"},
+            "featureType": "command_post",
+            "layer_id": "layer-0198-map-workspace",
+            "title": "Command post"
+        },
+        {
+            "type": "Feature",
+            "id": "feature-0198-route",
+            "geometry": {"type": "LineString", "coordinates": [[-89.229, 13.688], [-89.2182, 13.6929], [-89.207, 13.699]]},
+            "properties": {"role": "supply_route"},
+            "featureType": "route",
+            "layer_id": "layer-0198-map-workspace",
+            "title": "Supply route"
+        },
+        {
+            "type": "Feature",
+            "id": "feature-0198-sector",
+            "geometry": {"type": "Polygon", "coordinates": [[[-89.225, 13.688], [-89.211, 13.688], [-89.211, 13.699], [-89.225, 13.699], [-89.225, 13.688]]]},
+            "properties": {"role": "operating_sector"},
+            "featureType": "sector",
+            "layer_id": "layer-0198-map-workspace",
+            "title": "Operating sector"
+        }
+    ]);
+    let source_features = serde_json::json!([{
+        "feature": {
+            "feature_id": "source-feature-0198-reference",
+            "source_id": "source-0198-map-workspace",
+            "release_id": "release-0198-map-workspace",
+            "source_element_type": "feature",
+            "source_element_id": "reference-zone",
+            "representation": "polygon",
+            "geometry": {"type": "Polygon", "coordinates": [[[-89.232, 13.682], [-89.195, 13.682], [-89.195, 13.708], [-89.232, 13.708], [-89.232, 13.682]]]},
+            "normalized_tags": {"name": "Reference coverage"}
+        }
+    }]);
+    format!(
+        r#"<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Map workspace acceptance host</title>
+<style>html,body{{margin:0;width:100%;height:100%;overflow:hidden;background:#d8d5cd}}iframe{{display:block;width:100%;height:100%;border:0}}</style>
+<script>
+const resources={resources};
+const features={features};
+const sourceFeatures={source_features};
+window.__mapWorkspaceEvidence={{initialized:false,queryCalls:0,queryResponses:0,authoredQueryCalls:0,sourceQueryCalls:0,sizeHeight:0,lastQuery:null,lastAuthoredQuery:null,lastSourceQuery:null,errors:[]}};
+addEventListener("error",event=>window.__mapWorkspaceEvidence.errors.push(String(event.message||event.error||"host error")));
+addEventListener("unhandledrejection",event=>window.__mapWorkspaceEvidence.errors.push(String(event.reason||"host rejection")));
+addEventListener("message",event=>{{
+  const frame=document.getElementById("app");
+  if(!frame||event.source!==frame.contentWindow) return;
+  const message=event.data;
+  if(!message||message.jsonrpc!=="2.0") return;
+  const reply=(result)=>event.source.postMessage({{jsonrpc:"2.0",id:message.id,result}},"*");
+  const fail=(detail)=>{{window.__mapWorkspaceEvidence.errors.push(detail);event.source.postMessage({{jsonrpc:"2.0",id:message.id,error:{{code:-32601,message:detail}}}},"*");}};
+  if(message.method==="ui/initialize") return reply({{protocolVersion:"2026-01-26",hostContext:{{theme:"light"}}}});
+  if(message.method==="ui/notifications/initialized"){{window.__mapWorkspaceEvidence.initialized=true;return;}}
+  if(message.method==="ui/notifications/size-changed"){{window.__mapWorkspaceEvidence.sizeHeight=Number(message.params?.height||0);return;}}
+  if(message.method==="resources/read"){{
+    const uri=message.params?.uri;
+    if(!Object.hasOwn(resources,uri)) return fail(`unexpected resource ${{uri}}`);
+    return reply({{contents:[{{uri,mimeType:"application/json",text:JSON.stringify(resources[uri])}}]}});
+  }}
+  if(message.method==="tools/call"){{
+    const name=message.params?.name;
+    const args=message.params?.arguments||{{}};
+    window.__mapWorkspaceEvidence.queryCalls+=1;
+    window.__mapWorkspaceEvidence.lastQuery=args;
+    if(name==="query_features"){{
+      window.__mapWorkspaceEvidence.authoredQueryCalls+=1;
+      window.__mapWorkspaceEvidence.lastAuthoredQuery=args;
+      window.__mapWorkspaceEvidence.queryResponses+=1;
+      return reply({{structuredContent:{{layer_id:"layer-0198-map-workspace",features,next_cursor:null,projection_sequence:3}}}});
+    }}
+    if(name==="query_source_features"){{
+      window.__mapWorkspaceEvidence.sourceQueryCalls+=1;
+      window.__mapWorkspaceEvidence.lastSourceQuery=args;
+      window.__mapWorkspaceEvidence.queryResponses+=1;
+      return reply({{structuredContent:{{release_id:"release-0198-map-workspace",features:sourceFeatures,next_cursor:null,query_digest_sha256:"acceptance"}}}});
+    }}
+    return fail(`unexpected tool ${{name}}`);
+  }}
+  if(message.method==="subscriptions/listen") return reply({{}});
+  if(message.id!==undefined) return fail(`unexpected request ${{message.method}}`);
+}});
+</script></head><body><iframe id="app" class="app-frame" title="Workspace" sandbox="allow-scripts" referrerpolicy="no-referrer" src="/console/api/apps/frame?uri=ui%3A%2F%2Fmap%2Fworkspace.html"></iframe></body></html>"#,
+        resources = resources,
+        features = features,
+        source_features = source_features,
+    )
+}
+
 async fn open_headed_target(cdp_base: &str, page_url: &str) -> Result<(Cdp, String, String)> {
     open_headed_target_in_window(cdp_base, page_url, false).await
 }
@@ -1769,6 +3391,7 @@ async fn open_headed_target_in_window(
         Some(&session_id),
     )
     .await?;
+    wait_for_requested_document(&mut cdp, &session_id, page_url).await?;
     Ok((cdp, target_id, session_id))
 }
 
@@ -2832,8 +4455,8 @@ impl AppVideoState {
         );
         ensure!(
             self.pixel_sample_error.is_empty()
-                && self.mean_luma > 2.0
-                && self.mean_luma < 253.0
+                && self.mean_luma >= MINIMUM_MEAN_LUMA
+                && self.mean_luma <= MAXIMUM_MEAN_LUMA
                 && self.luma_standard_deviation >= 5.0
                 && self.minimum_luma < self.maximum_luma,
             "authoritative live-view App displayed a blank or uniform GPU frame: {self:?}"
@@ -3110,6 +4733,39 @@ async fn wait_for_document(cdp: &mut Cdp, session_id: &str) -> Result<()> {
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+}
+
+async fn wait_for_requested_document(
+    cdp: &mut Cdp,
+    session_id: &str,
+    requested_url: &str,
+) -> Result<()> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let document = cdp
+            .evaluate(
+                session_id,
+                r#"({href:location.href,readyState:document.readyState})"#,
+                false,
+            )
+            .await?;
+        if document_is_ready_at(&document, requested_url) {
+            return Ok(());
+        }
+        ensure!(
+            tokio::time::Instant::now() < deadline,
+            "headed browser target did not load requested URL {requested_url:?}: {document}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+fn document_is_ready_at(document: &Value, requested_url: &str) -> bool {
+    document.get("href").and_then(Value::as_str) == Some(requested_url)
+        && document
+            .get("readyState")
+            .and_then(Value::as_str)
+            .is_some_and(|state| state == "complete" || state == "interactive")
 }
 
 struct Cdp {
@@ -3772,6 +5428,19 @@ const RERUN_LIVE_FOLLOW_STATE: &str = r#"(() => {
 mod tests {
     use super::*;
 
+    fn console_app_render(status: &str) -> ConsoleAppRenderState {
+        ConsoleAppRenderState {
+            title: "Workbench".to_owned(),
+            heading: "Workbench".to_owned(),
+            status: status.to_owned(),
+            body: "Workbench".to_owned(),
+            host_display_mode: "inline".to_owned(),
+            host_bridge_error: String::new(),
+            visible_errors: Vec::new(),
+            required_selector_found: true,
+        }
+    }
+
     fn rerun_follow_state(timeline_ready: bool) -> RerunLiveFollowState {
         RerunLiveFollowState {
             document_epoch_ms: 1.0,
@@ -3871,6 +5540,19 @@ mod tests {
     }
 
     #[test]
+    fn requested_document_readiness_rejects_the_initial_about_blank_target() {
+        let requested = "https://installation.example/console/#/apps";
+        assert!(!document_is_ready_at(
+            &serde_json::json!({"href": "about:blank", "readyState": "complete"}),
+            requested
+        ));
+        assert!(document_is_ready_at(
+            &serde_json::json!({"href": requested, "readyState": "interactive"}),
+            requested
+        ));
+    }
+
+    #[test]
     fn standalone_acceptance_url_uses_the_canonical_no_store_route() {
         let page = Url::parse(&standalone_acceptance_url(
             "https://installation.example/",
@@ -3886,14 +5568,61 @@ mod tests {
     fn console_app_body_must_finish_after_the_transient_empty_document() {
         assert!(!console_app_body_ready(
             &serde_json::json!({"readyState": "complete", "body": ""}),
-            "UAV live cameras"
+            "Live Cameras"
         ));
         assert!(console_app_body_ready(
             &serde_json::json!({
                 "readyState": "complete",
-                "body": "UAV live cameras\nNVIDIA NVENC · H.264"
+                "body": "Live Cameras\nNVIDIA NVENC · H.264"
             }),
-            "UAV live cameras"
+            "Live Cameras"
+        ));
+    }
+
+    #[test]
+    fn console_app_acceptance_rejects_transient_and_visible_error_states() {
+        let expectation = ConsoleAppExpectation {
+            server: "duckdb",
+            resource_uri: "ui://duckdb/workbench.html",
+            marker: "Workbench",
+            settled_state: ConsoleAppSettledState::Exact(&["ready"]),
+            required_selector: None,
+        };
+        assert!(!console_app_has_settled(
+            &expectation,
+            &console_app_render("reading")
+        ));
+        let mut errored = console_app_render("ready");
+        errored.visible_errors.push("resource failed".to_owned());
+        assert!(!console_app_has_settled(&expectation, &errored));
+        assert!(console_app_has_settled(
+            &expectation,
+            &console_app_render("ready")
+        ));
+    }
+
+    #[test]
+    fn console_map_acceptance_requires_a_completed_viewport_status() {
+        let expectation = ConsoleAppExpectation {
+            server: "map",
+            resource_uri: "ui://map/workspace.html",
+            marker: "Workspace",
+            settled_state: ConsoleAppSettledState::MapViewport,
+            required_selector: Some(".maplibregl-canvas"),
+        };
+        assert!(!console_app_has_settled(
+            &expectation,
+            &ConsoleAppRenderState {
+                heading: "Workspace".to_owned(),
+                ..console_app_render("Map resources loaded.")
+            }
+        ));
+        assert!(console_app_has_settled(
+            &expectation,
+            &ConsoleAppRenderState {
+                heading: "Workspace".to_owned(),
+                ..console_app_render("0 features visible across 2 layers.")
+            }
         ));
     }
 

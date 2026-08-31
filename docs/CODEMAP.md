@@ -27,10 +27,11 @@ component:
 | [`LOCAL_DEVELOPMENT_DEPLOYMENT.md`](LOCAL_DEVELOPMENT_DEPLOYMENT.md) | canonical ordered developer and agent runbook for the local k3d SUMO installation, acceptance, restart, diagnosis, and destructive cleanup boundaries |
 | [`LOCAL_DEPLOYMENT_PROFILES.md`](LOCAL_DEPLOYMENT_PROFILES.md) | disposable k3d showcase profile contract |
 | [`CODEMAP.md`](CODEMAP.md) | documentation index, code ownership, and change routing |
-| [`RECORDINGS.md`](RECORDINGS.md) | recording ingest, catalog, sealing, and governed read path |
+| [`RECORDINGS.md`](RECORDINGS.md) | durable recording datasets and layers, Artifact publication, governed Redap, bounded Arrow projection, playback, disk safety, and the recording change checklist |
 | [`RECORDING_INGEST.md`](RECORDING_INGEST.md) | external/LAN producer protocol, auth, durability, and routing |
 | [`DEVELOPMENT_ITERATION.md`](DEVELOPMENT_ITERATION.md) | affected-target staging, digest-locked development rollout, focused acceptance, runtime pressure diagnostics, and iteration budgets |
 | [`CONTINUOUS_INTEGRATION.md`](CONTINUOUS_INTEGRATION.md) | temporary host-local test reporting, informational GitHub presentation, and the future full GPU CI architecture |
+| [`MCP_APPS_LIVE_AUDIT.md`](MCP_APPS_LIVE_AUDIT.md) | non-normative live investigation register for MCP App usefulness, Console behavior, authorization, and cluster evidence |
 | [`connectors/README.md`](connectors/README.md) | third-party MCP connector catalog, recipe contract, and governed upstream path |
 
 Exploratory documents preserve open design work. They are not normative and do not
@@ -40,8 +41,9 @@ authorize implementation:
 |---|---|
 | [`SELF_IMPROVING_HARNESS.md`](SELF_IMPROVING_HARNESS.md) | auth-aware profile strategies, MCP dynamics evidence, evaluation, measured acceptance through the scorer primitive, and possible self-improving harness boundaries |
 | [`HARNESS_MEDIATED_MODEL_POST_TRAINING.md`](HARNESS_MEDIATED_MODEL_POST_TRAINING.md) | exact-call trajectories through the deployed harness, rollout-level post-training semantics, governed evaluation, and candidate-model admission boundaries |
-| [`FACTORY_ISOLATION.md`](FACTORY_ISOLATION.md) | kernel-isolated runtime for the factory loop: candidate policy domains, the container-socket question, trial acceptance criteria, and the adoption path |
+| [`FACTORY_ISOLATION.md`](FACTORY_ISOLATION.md) | harness-neutral software-factory product plan: developer specification and deployment journey, staged author/verifier/broker architecture, OpenShell isolation, typed contracts, implementation sequence, trial acceptance, and adoption path |
 | [`REGULATED_READINESS.md`](REGULATED_READINESS.md) | shared responsibility model, control fabric, gap register, and remediation backlog for regulated work |
+| [`ARTIFACT_PREVIEW_AND_APP_HANDOFF.md`](ARTIFACT_PREVIEW_AND_APP_HANDOFF.md) | artifact catalog, preview dispatch, producer and external-App registration paths, governed App handoff constraints, handler models, and open design questions |
 
 Implementation plans describe future hard cuts. A plan's status line records whether
 its execution is approved. Existing contracts remain authoritative until each planned
@@ -51,7 +53,9 @@ change lands:
 |---|---|
 | [`REPOSITORY_HARDENING_PLAN.md`](REPOSITORY_HARDENING_PLAN.md) | compiled repository tooling, contract enforcement, test and smoke ownership, architecture policy, supply-chain hardening, external-extension seams, and governance |
 | [`RMCP_3_MIGRATION.md`](RMCP_3_MIGRATION.md) | hard cut to MCP `2026-07-28` and `rmcp` 3, official Tasks and multi-round requests, stateless transport, subscription and replica redesign, Rig migration, duplicate protocol deletion, and acceptance |
-| [`PLATFORM_IMPROVEMENTS_PLAN.md`](PLATFORM_IMPROVEMENTS_PLAN.md) | test-driven agent resource continuity and correction, owner-supplied Secret closure, standalone MCP Apps, canonical domain resource handoff, compiler-ready provenance, spatial correctness, and optional or evidence-gated deployment, model, GPU, and private-build work |
+| [`PLATFORM_IMPROVEMENTS_PLAN.md`](PLATFORM_IMPROVEMENTS_PLAN.md) | canonical multi-cycle platform-improvement plan and delivery record: completed agent, Secret, App-host, resource, provenance, and spatial work from `001`–`013`; current exact App authority, governed upload, Rerun-native recording catalog, extension release, tracing, live-view packaging, GPU memory, reasoning, and component-scoped deployment work from `014`–`023` |
+| [`RECORDING_CATALOG_HARD_CUT_PLAN.md`](RECORDING_CATALOG_HARD_CUT_PLAN.md) | focused implementation plan for request `016`: durable recording datasets, immutable Artifact-backed Rerun layers, governed virtual catalogs, bounded Arrow projection, disk safety, activation, and acceptance |
+| [`CAPABILITY_ADOPTION_PLAN.md`](CAPABILITY_ADOPTION_PLAN.md) | hosted weather domain server, hosted tabular prediction server over governed tables, and adoption of the MCP skills extension as a contract crate with profile-scoped projection |
 
 MCP designs live with the crate whose public contract they specify:
 
@@ -63,7 +67,8 @@ MCP designs live with the crate whose public contract they specify:
 | [`platform/runtimes/simulation/DESIGN.md`](../platform/runtimes/simulation/DESIGN.md) | canonical hardware-GPU Isaac Sim and Isaac Lab runtime, selected extension profile, and conformance probes |
 | [`servers/duckdb-mcp/DESIGN.md`](../servers/duckdb-mcp/DESIGN.md) | analytical SQL, Spatial, sandboxing, tasks, and governed data movement |
 | [`servers/frames-mcp/DESIGN.md`](../servers/frames-mcp/DESIGN.md) | local coordinate frames and bounded transformations |
-| [`mcp/apps-extension/DESIGN.md`](../mcp/apps-extension/DESIGN.md) | the MCP Apps server↔core↔UI contract for domain views and administration |
+| [`mcp/apps-extension/DESIGN.md`](../mcp/apps-extension/DESIGN.md) | the MCP Apps server↔core↔UI contract for domain views and administration, including the reusable structured-resource workbench shell |
+| [`MAP_APP_INTEGRATION.md`](MAP_APP_INTEGRATION.md) | consumer guide for using Map MCP resources and the reusable Map App from another MCP server |
 | [`servers/map-mcp/DESIGN.md`](../servers/map-mcp/DESIGN.md) | Earth geography, map data administration, logistics routing, and immutable Optimization travel models |
 | [`servers/optimization-mcp/DESIGN.md`](../servers/optimization-mcp/DESIGN.md) | NVIDIA cuOpt routing, route scenarios, convex and MILP models, independent verification, and GPU execution |
 | [`servers/stream-mcp/DESIGN.md`](../servers/stream-mcp/DESIGN.md) | admitted live and replay GStreamer graphs, typed pipeline profiles, live results, and the Stream MCP App |
@@ -248,14 +253,15 @@ path-free content provenance.
 
 ### `platform/recordings/rrd`
 
-Owns cross-domain Rerun/RRD spacetime types, adapters, and encoded-video boundary
-inspection. Domain results that do not overlap Rerun concepts stay local to their MCP
-crate.
+Owns cross-domain Rerun/RRD spacetime types, adapters, encoded-video boundary
+inspection, canonical recording-layer Store ID normalization, deterministic properties
+layers, and bounded Arrow IPC projection. Domain results that do not overlap Rerun
+concepts stay local to their MCP crate.
 
 ### `platform/recordings/video`
 
 Owns governed video selection and task-start materialization shared by Stream replay and
-Reason. It consumes Recording MCP read plans, combines immutable archive shards with
+Reason. It consumes Recording MCP read plans, combines immutable Artifact-backed layers with
 complete acknowledged live ingest parts, and remuxes the bounded H.264 range without
 re-encoding.
 
@@ -277,6 +283,7 @@ The only durable platform persistence layer.
 | `migrations.rs` | ordered SurrealDB 3.2 schema migrations |
 | `models.rs` | persisted Rust record and enum definitions |
 | `ids.rs`, `table.rs` | domain-specific record IDs and table identities |
+| `recording_catalog.rs` | recording datasets and layers, durable read grants, projection receipts, expiry, and cleanup |
 | `administration.rs` | bootstrap, runtime user, migration administration |
 | `identity.rs` | tenant/principal/group resolution |
 | `gateway_runtime.rs` | control revisions, auth state, refresh/JWT runtime records |
@@ -286,7 +293,7 @@ The only durable platform persistence layer.
 | `map_authoring.rs` | Work Context-scoped feature layers, immutable schema/style/feature revisions, atomic changesets, heads, publications, and authoring outbox events |
 | `map_presentations.rs` | Immutable publication products plus governed, publication-pinned map compositions and revisions |
 | `time.rs` | authority sources and releases, active pointers, acquisitions, calendars, epochs, clock policy, and events |
-| `recordings.rs` | recording and segment catalog |
+| `recordings.rs` | recording lifecycle and visibility |
 | `recording_ingest.rs`, `recording_blueprints.rs` | producer streams, idempotent batch checkpoints, immutable producer Blueprint revisions, and journal state |
 | `usage.rs` | shared domain/media usage records |
 | `outbox.rs`, `changefeed.rs` | transactional events, checkpoints, LIVE acceleration |
@@ -421,7 +428,7 @@ Current MCP crates under `servers/` are indexed here:
 | `servers/timeseries-mcp/src/bin/server/usage_index.rs` | bounded authority-filtered usage discovery with stable task ordering and opaque cursors |
 | `servers/time-mcp` | temporal authority, clock assessment, operational calendars, mission timelines, and events |
 | `servers/view-mcp` | immutable governed scene compositions, owner and Work Context scoped geospatial views, shared 3D Tiles streaming, GPU overlays, and captured frames |
-| `servers/uav-sim-mcp` | provider-neutral UAV simulation sessions, principal-to-vehicle grants, Map route admission, exclusive command leases, missions, telemetry, tasks, recording references, authoritative logical cameras, one GPU product per streamable camera, authenticated H.264 fanout, and the UAV App |
+| `servers/uav-sim-mcp` | provider-neutral UAV simulation sessions, principal-to-vehicle grants, Map route admission, exclusive command leases, missions, telemetry, tasks, recording references, authoritative logical cameras, one shared tiled GPU product, authenticated H.264 fanout, and the UAV App |
 
 The packaged Node chart server keeps its Veoveo boundary beside the image:
 
@@ -447,7 +454,7 @@ The packaged Node chart server keeps its Veoveo boundary beside the image:
 | `showcase/uav-sim/runtime/veoveo_uav_sim/operator_camera.py` | operator-camera orchestration over focused rig, smoothing, product, and health modules |
 | `showcase/uav-sim/runtime/veoveo_uav_sim/operator_camera_rigs.py` | authoritative target sampling and desired poses for every supported camera rig |
 | `showcase/uav-sim/runtime/veoveo_uav_sim/operator_camera_smoothing.py` | frame-rate-independent position and shortest-arc orientation filters with typed reset rules |
-| `showcase/uav-sim/runtime/veoveo_uav_sim/operator_products.py` | one continuous RTX/NVENC product and keyframe-aware H.264 access-unit ring per streamable logical camera |
+| `showcase/uav-sim/runtime/veoveo_uav_sim/operator_products.py` | one continuous tiled RTX/NVENC product and keyframe-aware H.264 access-unit ring shared by every streamable logical camera |
 | `showcase/uav-sim/runtime/veoveo_uav_sim/render_pose.py` | bounded agreement diagnostics between authoritative camera poses and rendered Hydra frames |
 | `showcase/uav-sim/runtime/veoveo_uav_sim/physical_camera.py` | exact authoritative body-and-mount USD sensor camera, distinct from smoothed operator views |
 | `showcase/uav-sim/runtime/veoveo_uav_sim/hydra_camera.py` | physical-camera Hydra product, CUDA AOV-to-native-RTSP configuration, encoded-frame pairing, and nonblocking sensor health |
@@ -464,7 +471,8 @@ The packaged Node chart server keeps its Veoveo boundary beside the image:
 | `examples/bioma/uav-sim-values.yaml` | reference authoritative camera, product, public gateway origin, and recording tenant binding |
 | `testing/smoke/src/bin/smoke/scenarios/uav_sim.rs` | runtime world publication plus credentialed Google tiles, PX4, independent live Stream processing, Recording Hub replay, Reason, and concurrent GPU acceptance |
 | `testing/smoke/src/bin/smoke/scenarios/uav_sim/showcase.rs` | showcase-owned authoritative UAV cameras and products, real authenticated Console checkpoints, governed Rerun playback, and revision-qualified evidence |
-| `testing/smoke/src/bin/smoke/scenarios/uav_sim/browser.rs` | headed authenticated Chrome attachment, hardware WebGPU-or-WebGL enforcement, dedicated simultaneous-viewer windows, shared Console/standalone-App boundary checks, Console live-view interaction, and screenshots |
+| `testing/smoke/src/bin/smoke/scenarios/uav_sim/browser.rs` | shared headed Chrome attachment, hardware WebGPU-or-WebGL enforcement, opaque-origin App hosting, Map workspace viewport acceptance, dedicated simultaneous-viewer windows, Console live-view interaction, and screenshots |
+| `testing/browser-smoke/src/main.rs` | focused headed-browser commands and versioned evidence manifests for the Map workspace and UAV visual workflows |
 | `testing/browser-smoke/src/restart.rs` | focused same-document native live-view recovery across independent MCP-pod and simulator-container restarts, including proof that MCP replacement leaves the GPU pod unchanged |
 | `testing/smoke/src/bin/smoke/scenarios/uav_sim/browser/recording_acceptance.rs` | scoped Redap network evidence, live-source continuity, archive-request rejection, and nonblank Rerun viewport measurement |
 
@@ -474,7 +482,7 @@ The geospatial hard cut has three canonical servers:
 
 | Path | Responsibility |
 |---|---|
-| `servers/map-mcp` | Earth geography, complete immutable source features, governed COG rasters and terrain derivations, reusable spatial geometry and mobility validation, authored GeoJSON/JSON-FG layers, source acquisition, release activation, DuckDB Spatial analytics, CRS and geodesic work, geofences, restrictions, Valhalla land routing, governed network routing, matrices, Optimization travel models, and reachable areas |
+| `servers/map-mcp` | Earth geography, complete immutable source features, governed COG rasters and terrain derivations, reusable spatial geometry and mobility validation, authored GeoJSON/JSON-FG layers, bounded OGC GeoPackage vector transfer, source acquisition, release activation, DuckDB Spatial analytics, CRS and geodesic work, geofences, restrictions, Valhalla land routing, governed network routing, matrices, Optimization travel models, and reachable areas |
 | `servers/frames-mcp` | ECEF-rooted world trees, geodetic/static/dynamic transforms, immutable revisions, bounded coordinate conversion, durable batch work, operation provenance, artifacts, and usage |
 | `servers/view-mcp` | governed static scene compositions, configured 3D scene layers, camera rigs, exact Map/Frames/Artifact inputs, bounded overlays, NVIDIA-accelerated rendering, and frame resources |
 
@@ -495,12 +503,19 @@ composition contracts. `src/contract/transfers.rs` owns durable import, export, 
 vector-product task contracts. `src/authoring/service.rs` applies Work Context policy
 and optimistic concurrency. `src/authoring/projection.rs` consumes canonical SurrealDB outbox events,
 while `src/authoring/query.rs` owns the parameterized DuckDB Spatial and bounded CQL2
-query projection. `src/authoring/presentations.rs` governs immutable products and
-composition revisions. `src/authoring/transfers.rs` owns bounded GeoJSON and RFC 8142
-imports, GeoJSON Sequence and GeoParquet 1.0 exports, and MVT 2.1 bundles.
+query projection. `src/authoring/query/performance.rs` owns the 10k, 100k, and
+million-feature R-tree plan, correctness, maintenance, latency, throughput, and
+storage gates. `src/authoring/presentations.rs` governs immutable products and
+composition revisions. `src/authoring/transfers.rs` owns canonical bounded GeoJSON
+and RFC 8142 transfer plus GeoParquet 1.0 and MVT 2.1 products.
+`data/src/map_data/feature_package.py` and `src/feature_packages.rs` own the
+pinned-GDAL OGC GeoPackage inspection and conversion boundary.
 `src/mcp/authoring.rs` publishes the write and query tools. `src/server/tasks.rs` owns
-durable execution and task-local staging. `assets/editor-app.html` is the MCP-only
-feature editor. The canonical SurrealDB schemas are
+durable execution and task-local staging, while
+`src/server/tasks/feature_transfers.rs` owns GeoPackage-aware transfer execution.
+`app/` owns the exact MapLibre bundle pipeline and the permission-aware source,
+while `assets/workspace-app.html` is the generated self-contained Map MCP App
+for composition viewing, feature authoring, and administration. The canonical SurrealDB schemas are
 `platform/store/migrations/0025_map_authoring.surql`
 and `platform/store/migrations/0026_map_authoring_products.surql`.
 
@@ -515,6 +530,9 @@ durable artifact publication. `src/geography.rs` owns direct governed
 position, location, and corridor inspection plus restriction publication,
 surfaced through tools such as `inspect_position`, while `src/analytics.rs`
 owns the sandboxed DuckDB Spatial engine behind those reads.
+`src/analytics/performance.rs` owns the active-source 10k, 100k, and
+million-feature R-tree plan, correctness, latency, throughput, and storage
+gates.
 
 Reusable spatial planning is split from routing. `src/contract/spatial.rs`
 owns the bounded operation and persisted-result schemas. `src/spatial/derive.rs`
@@ -534,7 +552,7 @@ provenance, and DuckDB persistence.
 | `servers/optimization-mcp/src/compiler/` | deterministic conversion into cuOpt routing arrays and sparse mathematical structures |
 | `servers/optimization-mcp/src/verification/` | cuOpt-independent routing feasibility, mathematical feasibility, integrality, and objective checks |
 | `servers/optimization-mcp/src/executor/` | private bounded Unix-socket protocol and Rust client |
-| `servers/optimization-mcp/executor/` | pinned Python cuOpt 26.06 GPU adapter and hardware health check |
+| `servers/optimization-mcp/executor/` | pinned Python cuOpt 26.08 GPU adapter and hardware health check |
 | `servers/optimization-mcp/src/bin/server/` | MCP tasks, GPU queue, problem/run/solution resources, artifact publication, prompts, and identity |
 | `servers/optimization-mcp/src/bin/server/index.rs` | authority-scoped exact domain lookup, compact stable pages, opaque collection cursors, bounded completion search, and usage discovery |
 | `deploy/contract/src/lib.rs` | portable Optimization capability, exact Optimization image closure, and mandatory `cuopt-executor` GPU scheduling declaration |
@@ -605,7 +623,7 @@ Authoritative simulation live-view ownership:
 | `showcase/uav-sim/runtime/veoveo_uav_sim/operator_camera.py` | simulator-tick camera orchestration, frame transforms, and shared camera/target time |
 | `showcase/uav-sim/runtime/veoveo_uav_sim/operator_camera_rigs.py` | desired-pose computation for follow, chase, orbit, look-at, stabilized-mounted, formation, and fixed rigs |
 | `showcase/uav-sim/runtime/veoveo_uav_sim/operator_camera_smoothing.py` | half-life translation/quaternion filtering and reset rules |
-| `showcase/uav-sim/runtime/veoveo_uav_sim/operator_products.py` | continuous one-per-camera RTX/NVENC products, RTSP receivers, and viewer-independent H.264 rings |
+| `showcase/uav-sim/runtime/veoveo_uav_sim/operator_products.py` | one continuous tiled RTX/NVENC product, RTSP receiver, and viewer-independent H.264 ring for the complete logical-camera set |
 | `showcase/uav-sim/runtime/veoveo_uav_sim/operator_health.py` | CUDA, RTX, NVENC, camera-product, frame, and latency evidence |
 | `showcase/uav-sim/runtime/veoveo_uav_sim/runtime_events.py` | retained nonblocking adapter-ready edge before world admission and final-ready edge after authoritative visual admission |
 | `showcase/uav-sim/runtime/veoveo_uav_sim/tile_lifecycle.py` | reactive, deduplicated provider generation state derived from native Cesium lifecycle events and render coverage observations, including expired provider-session reset |
@@ -626,13 +644,14 @@ types.
 | File | Responsibility |
 |---|---|
 | `ingest_http.rs` | cluster-internal authenticated protobuf routes and typed error projection |
-| `ingest.rs` | producer authorization, atomic no-clobber journal and Blueprint publication, quota-bound append, ordered live parts, rollover merge, and restart reconciliation |
-| `diagnostics.rs` | bounded authenticated-ingest acceptance, duplication, materialization-backlog, and last-success counters |
+| `ingest.rs` | producer authorization, atomic no-clobber journal and Blueprint publication, quota-bound append, ordered live parts, capture-layer rollover, publication recovery, and restart reconciliation |
+| `diagnostics.rs` | bounded authenticated-ingest acceptance, duplication, publication backlog, spool reservations, free-space headroom, and last-success counters |
 | `blueprint.rs` | complete Blueprint-store validation, application association, and confined immutable paths |
-| `spool.rs` | segment encode/flush/fsync/freeze, idle completion, and recovery |
-| `catalog.rs` | per-stream identity, capture timestamps, segment verification, and catalog publication |
-| `query.rs` | governed RRD query/readback |
-| `config.rs` | validated raw gRPC spool and segment limits |
+| `spool.rs` | capture-layer encode, flush, fsync, freeze, idle completion, and recovery |
+| `catalog.rs` | dataset and recording identity, capture timestamps, layer verification, and durable catalog transitions |
+| `layer_files.rs` | confined discovery of writing and committed capture-layer files |
+| `publication.rs` | scoped Gateway streaming publication, occurrence verification, and local recovery cleanup |
+| `config.rs` | validated raw gRPC spool and capture-layer limits |
 | `archive.rs` | one-time object-store compaction, GoP rebatching, footer encoding, and atomic archive publication |
 | `ingest.rs` | authenticated durable-part journal projection, compact static-context snapshots, and decoder-reentrant rollover |
 | `spool.rs` | direct loopback writer, decoder-reentrant rollover, and archive freeze |
@@ -662,18 +681,19 @@ instead of a private video path.
 
 ### `servers/recording-mcp`
 
-`contract.rs` owns query, publication, playback-manifest v8, archive-catalog, Blueprint, and live
-descriptor types. `service.rs` resolves authorized MCP and playback plans.
-`playback.rs` owns stable dataset identity, bounded playback sessions, the derived
-append-only Rerun catalog, finite governed Blueprint source, and the recording-scoped read-only Redap service.
+`contract.rs` owns recording, layer, seal, playback-manifest v9, Blueprint, and live
+descriptor types. `service.rs` resolves authorized MCP and playback plans and publishes
+properties layers. `service/projection.rs` owns projection receipts, concurrency,
+scratch, and Arrow downloads. `layer_cache.rs` owns verified bounded Artifact-to-PVC
+materialization and eviction. `playback.rs` owns durable grants, dataset-scoped virtual
+Rerun catalogs, finite governed Blueprint sources, and the scoped read-only Redap service.
 `live_playback.rs` retains recording-scoped static context across ingest generations, filters
 bounded temporal history, and rewrites messages to the stable playback identity.
 `live_stream.rs` frames complete RRD batches for the authorized WebViewer `LogChannel` and
 distinguishes an empty-channel bootstrap from a current-head transport resume.
-`uris.rs` owns recording identities, and `bin/server.rs` composes
-the authenticated manifest, framed live route, Redap, and MCP transports.
-`bin/server/state.rs` composes platform store, spool access, playback, subscriptions, and
-artifact publication.
+`uris.rs` owns recording identities. `bin/server.rs` composes the authenticated manifest,
+framed live route, Redap, projections, MCP transports, storage readiness and diagnostics,
+and Artifact publication.
 
 ### `servers/stream-mcp`
 
@@ -692,10 +712,11 @@ artifact publication.
 | `gst-runner/` | native operator-admitted GStreamer graph execution with NVIDIA decode/inference and typed event output |
 | `Dockerfile` | DeepStream 9 development/runtime multi-stage image |
 
-`recording-mcp::service::read` owns the reusable governed local read plan, and
+`recording-mcp::service::read` owns the reusable governed Artifact-backed read plan, and
 `platform/recordings/video` owns selection and materialization over it;
-Stream replay persists recording identities rather than segment paths. Live Stream
-sessions consume their admitted ingress directly and do not depend on Recording Hub.
+Recording-based durable Stream replay remains fail-closed until its own design supplies
+a fresh Artifact-read capability after restart. Live Stream sessions consume their
+admitted ingress directly and do not depend on Recording Hub.
 
 ### `servers/reason-mcp`
 
@@ -712,10 +733,9 @@ sessions consume their admitted ingress directly and do not depend on Recording 
 | `runner/` | Python world-model runner: typed protocol, frame sampling, vLLM inference |
 | `Dockerfile` | vLLM runtime image with the server binary and installed runner |
 
-Reason consumes governed video through `platform/recordings/video` exactly as
-Stream replay does and embeds a bounded grounding subset in the durable request at
-submission time; it persists neither segment paths, artifact URLs, nor caller
-bearers. The runner binary belongs to
+Reason embeds a bounded grounding subset in the durable request at submission time. Its
+recording-video materialization remains fail-closed until a fresh Artifact-read
+capability can be recovered without persisting a caller bearer. The runner binary belongs to
 the deployable image and the engine is a site-compiled deployment input, so the
 server fails readiness until both are present.
 
@@ -854,6 +874,9 @@ There should be no smoke lifecycle, retry, assertion, or cleanup logic in shell 
   bespoke admin REST router, BFF proxy route, or hardcoded console page.
 - Change browser behavior through `apps/console/bff` plus `apps/console/web`; do not expose gateway
   tokens to JavaScript.
+- Change Recording Explorer bulk projection delivery through
+  `apps/console/web/src/apps/recordingProjectionStream.ts`. Only the exact Recording
+  Explorer may receive its transferable stream.
 - Change public routes in Helm ingress, then extend the Rust deployment smoke.
 - Change installation image/config content in Helm, the offline lock/builder, and
   deployment contract together.

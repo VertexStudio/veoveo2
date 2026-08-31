@@ -67,7 +67,8 @@
         "prompts": true,
         "completions": true,
         "tasks": true,
-        "resources_list_changed": true
+        "resources_list_changed": true,
+        "apps": true
       },
       "tools": [
         "artifact",
@@ -99,7 +100,8 @@
           "purpose": "provider_fetchable_files"
         }
       ],
-      "metadata": {}
+      "metadata": {},
+      "resource_projection": "server_owned"
     },
     {
       "slug": "uav-sim",
@@ -219,7 +221,8 @@
         "prompts": true,
         "completions": true,
         "tasks": true,
-        "resources_list_changed": true
+        "resources_list_changed": true,
+        "apps": true
       },
       "tools": [
         "analyze_recording"
@@ -231,7 +234,8 @@
       "required_scopes": [
         "operator:use"
       ],
-      "metadata": {}
+      "metadata": {},
+      "resource_projection": "server_owned"
     },
     {
       "slug": "timeseries",
@@ -285,7 +289,8 @@
         "prompts": false,
         "completions": false,
         "tasks": true,
-        "resources_list_changed": false
+        "resources_list_changed": false,
+        "apps": true
       },
       "tools": [
         "query",
@@ -296,7 +301,8 @@
       "required_scopes": [
         "operator:use"
       ],
-      "metadata": {}
+      "metadata": {},
+      "resource_projection": "server_owned"
     },
     {
       "slug": "optimization",
@@ -317,7 +323,8 @@
         "prompts": true,
         "completions": true,
         "tasks": true,
-        "resources_list_changed": true
+        "resources_list_changed": true,
+        "apps": true
       },
       "tools": [
         "optimize_routes",
@@ -336,7 +343,7 @@
       ],
       "metadata": {
         "contract_revision": 3,
-        "engine": "nvidia-cuopt-26.06"
+        "engine": "nvidia-cuopt-26.08"
       },
       "resource_projection": "server_owned",
       "referenced_resource_schemes": [
@@ -363,7 +370,8 @@
         "prompts": true,
         "completions": true,
         "tasks": true,
-        "resources_list_changed": false
+        "resources_list_changed": false,
+        "apps": true
       },
       "tools": [
         "batch_transform",
@@ -381,7 +389,8 @@
       ],
       "metadata": {
         "contract_revision": 3
-      }
+      },
+      "resource_projection": "server_owned"
     },
     {
       "slug": "map",
@@ -421,6 +430,7 @@
         "geodesic_direct",
         "geodesic_inverse",
         "inspect_corridor",
+        "inspect_geopackage",
         "inspect_location",
         "inspect_position",
         "import_feature_layer",
@@ -521,7 +531,8 @@
         "prompts": true,
         "completions": true,
         "tasks": true,
-        "resources_list_changed": true
+        "resources_list_changed": true,
+        "apps": true
       },
       "tools": [
         "assess_clock",
@@ -543,7 +554,8 @@
       ],
       "metadata": {
         "contract_revision": 3
-      }
+      },
+      "resource_projection": "server_owned"
     },
     {
       "slug": "datasheet",
@@ -564,7 +576,8 @@
         "prompts": true,
         "completions": true,
         "tasks": true,
-        "resources_list_changed": false
+        "resources_list_changed": false,
+        "apps": true
       },
       "tools": [
         "column_stats",
@@ -578,7 +591,8 @@
       "required_scopes": [
         "operator:use"
       ],
-      "metadata": {}
+      "metadata": {},
+      "resource_projection": "server_owned"
     },
     {
       "slug": "artifact",
@@ -599,7 +613,8 @@
         "prompts": true,
         "completions": true,
         "tasks": false,
-        "resources_list_changed": true
+        "resources_list_changed": true,
+        "apps": true
       },
       "tools": [
         "create_share_link",
@@ -616,7 +631,8 @@
       "required_scopes": [
         "operator:use"
       ],
-      "metadata": {}
+      "metadata": {},
+      "resource_projection": "server_owned"
     },
     {
       "slug": "recording",
@@ -637,15 +653,16 @@
         "prompts": true,
         "completions": true,
         "tasks": false,
-        "resources_list_changed": true
+        "resources_list_changed": true,
+        "apps": true
       },
       "tools": [
-        "query_recording",
+        "create_recording_projection",
         "seal_recording"
       ],
       "prompts": [
         "recording-inspect",
-        "recording-query",
+        "recording-project",
         "recording-seal"
       ],
       "required_scopes": [
@@ -659,7 +676,8 @@
       ],
       "metadata": {
         "raw_ingest": "internal_only"
-      }
+      },
+      "resource_projection": "server_owned"
     },
     {
       "slug": "charts",
@@ -680,7 +698,8 @@
         "prompts": true,
         "completions": false,
         "tasks": false,
-        "resources_list_changed": false
+        "resources_list_changed": false,
+        "apps": true
       },
       "resource_projection": "server_owned",
       "tools": [
@@ -688,6 +707,7 @@
         "compile_chart",
         "validate_chart",
         "list_chart_types",
+        "list_themes",
         "create_chart_view"
       ],
       "prompts": [
@@ -771,6 +791,10 @@
               {
                 "kind": "scheme",
                 "scheme": "media"
+              },
+              {
+                "kind": "uri_prefix",
+                "prefix": "ui://media/"
               }
             ]
           },
@@ -847,6 +871,10 @@
               {
                 "kind": "scheme",
                 "scheme": "reason"
+              },
+              {
+                "kind": "uri_prefix",
+                "prefix": "ui://reason/"
               }
             ]
           },
@@ -900,6 +928,10 @@
               {
                 "kind": "scheme",
                 "scheme": "duckdb"
+              },
+              {
+                "kind": "uri_prefix",
+                "prefix": "ui://duckdb/"
               }
             ]
           },
@@ -927,6 +959,10 @@
               {
                 "kind": "scheme",
                 "scheme": "optimization"
+              },
+              {
+                "kind": "uri_prefix",
+                "prefix": "ui://optimization/"
               }
             ]
           },
@@ -953,6 +989,10 @@
               {
                 "kind": "scheme",
                 "scheme": "frames"
+              },
+              {
+                "kind": "uri_prefix",
+                "prefix": "ui://frames/"
               }
             ]
           },
@@ -970,6 +1010,7 @@
               "geodesic_direct",
               "geodesic_inverse",
               "inspect_corridor",
+              "inspect_geopackage",
               "inspect_location",
               "inspect_position",
               "build_vector_tiles",
@@ -1055,6 +1096,10 @@
               {
                 "kind": "scheme",
                 "scheme": "time"
+              },
+              {
+                "kind": "uri_prefix",
+                "prefix": "ui://time/"
               }
             ]
           },
@@ -1080,6 +1125,10 @@
               {
                 "kind": "scheme",
                 "scheme": "datasheet"
+              },
+              {
+                "kind": "uri_prefix",
+                "prefix": "ui://datasheet/"
               }
             ]
           },
@@ -1108,6 +1157,10 @@
               {
                 "kind": "scheme",
                 "scheme": "artifact"
+              },
+              {
+                "kind": "uri_prefix",
+                "prefix": "ui://artifact/"
               }
             ]
           },
@@ -1122,7 +1175,7 @@
           "tools": {
             "mode": "listed",
             "items": [
-              "query_recording"
+              "create_recording_projection"
             ]
           },
           "resources": {
@@ -1131,6 +1184,10 @@
               {
                 "kind": "scheme",
                 "scheme": "recording"
+              },
+              {
+                "kind": "uri_prefix",
+                "prefix": "ui://recording/"
               }
             ]
           },
@@ -1138,7 +1195,7 @@
             "mode": "listed",
             "items": [
               "recording-inspect",
-              "recording-query"
+              "recording-project"
             ]
           },
           "completions": "enabled",
@@ -1153,6 +1210,7 @@
               "compile_chart",
               "validate_chart",
               "list_chart_types",
+              "list_themes",
               "create_chart_view"
             ]
           },
@@ -1261,7 +1319,8 @@
       ],
       "required_scopes": [
         "operator:use",
-        "admin:manage"
+        "admin:manage",
+        "time:read"
       ],
       "servers": [
         {
@@ -1355,6 +1414,10 @@
               {
                 "kind": "scheme",
                 "scheme": "reason"
+              },
+              {
+                "kind": "uri_prefix",
+                "prefix": "ui://reason/"
               }
             ]
           },
@@ -1381,6 +1444,10 @@
               {
                 "kind": "scheme",
                 "scheme": "media"
+              },
+              {
+                "kind": "uri_prefix",
+                "prefix": "ui://media/"
               }
             ]
           },
@@ -1434,6 +1501,10 @@
               {
                 "kind": "scheme",
                 "scheme": "duckdb"
+              },
+              {
+                "kind": "uri_prefix",
+                "prefix": "ui://duckdb/"
               }
             ]
           },
@@ -1461,6 +1532,10 @@
               {
                 "kind": "scheme",
                 "scheme": "optimization"
+              },
+              {
+                "kind": "uri_prefix",
+                "prefix": "ui://optimization/"
               }
             ]
           },
@@ -1487,6 +1562,10 @@
               {
                 "kind": "scheme",
                 "scheme": "frames"
+              },
+              {
+                "kind": "uri_prefix",
+                "prefix": "ui://frames/"
               }
             ]
           },
@@ -1531,6 +1610,10 @@
               {
                 "kind": "scheme",
                 "scheme": "time"
+              },
+              {
+                "kind": "uri_prefix",
+                "prefix": "ui://time/"
               }
             ]
           },
@@ -1556,6 +1639,10 @@
               {
                 "kind": "scheme",
                 "scheme": "datasheet"
+              },
+              {
+                "kind": "uri_prefix",
+                "prefix": "ui://datasheet/"
               }
             ]
           },
@@ -1584,6 +1671,10 @@
               {
                 "kind": "scheme",
                 "scheme": "artifact"
+              },
+              {
+                "kind": "uri_prefix",
+                "prefix": "ui://artifact/"
               }
             ]
           },
@@ -1598,7 +1689,7 @@
           "tools": {
             "mode": "listed",
             "items": [
-              "query_recording",
+              "create_recording_projection",
               "seal_recording"
             ]
           },
@@ -1608,6 +1699,10 @@
               {
                 "kind": "scheme",
                 "scheme": "recording"
+              },
+              {
+                "kind": "uri_prefix",
+                "prefix": "ui://recording/"
               }
             ]
           },
@@ -1626,6 +1721,7 @@
               "compile_chart",
               "validate_chart",
               "list_chart_types",
+              "list_themes",
               "create_chart_view"
             ]
           },
@@ -1654,6 +1750,39 @@
       ],
       "metadata": {
         "tenant": "bioma"
+      }
+    },
+    {
+      "id": "recording-publish",
+      "identity_provider": "enterprise",
+      "authorization_server": "veoveo",
+      "protected_resource": "https://veoveo.bioma.ai/recordings/publish",
+      "policy_version": "2026-07-02",
+      "auth_modes": [
+        "oauth_client_credentials"
+      ],
+      "required_scopes": [
+        "recording:publish"
+      ],
+      "servers": [
+        {
+          "server": "recording",
+          "tools": {
+            "mode": "none"
+          },
+          "resources": {
+            "mode": "none"
+          },
+          "prompts": {
+            "mode": "none"
+          },
+          "completions": "disabled",
+          "tasks": "disabled"
+        }
+      ],
+      "metadata": {
+        "tenant": "bioma",
+        "service_boundary": "recording_layer_publication"
       }
     },
     {
@@ -1804,7 +1933,8 @@
             "run"
           ],
           "resource_schemes": [
-            "media"
+            "media",
+            "ui"
           ],
           "prompts": [
             "media-model-select",
@@ -1855,7 +1985,8 @@
             "run"
           ],
           "resource_schemes": [
-            "media"
+            "media",
+            "ui"
           ],
           "prompts": [
             "media-model-select",
@@ -1903,7 +2034,8 @@
             "run"
           ],
           "resource_schemes": [
-            "media"
+            "media",
+            "ui"
           ],
           "prompts": [
             "media-model-select",
@@ -1954,7 +2086,8 @@
             "run"
           ],
           "resource_schemes": [
-            "media"
+            "media",
+            "ui"
           ],
           "prompts": [
             "media-model-select",
@@ -2000,7 +2133,8 @@
             "set_release_state"
           ],
           "resource_schemes": [
-            "artifact"
+            "artifact",
+            "ui"
           ],
           "prompts": [
             "artifact-access-review",
@@ -2047,7 +2181,8 @@
             "set_release_state"
           ],
           "resource_schemes": [
-            "artifact"
+            "artifact",
+            "ui"
           ],
           "prompts": [
             "artifact-access-review",
@@ -2091,7 +2226,8 @@
             "set_release_state"
           ],
           "resource_schemes": [
-            "artifact"
+            "artifact",
+            "ui"
           ],
           "prompts": [
             "artifact-access-review",
@@ -2138,7 +2274,8 @@
             "set_release_state"
           ],
           "resource_schemes": [
-            "artifact"
+            "artifact",
+            "ui"
           ],
           "prompts": [
             "artifact-access-review",
@@ -2321,6 +2458,7 @@
             "compile_chart",
             "validate_chart",
             "list_chart_types",
+            "list_themes",
             "create_chart_view"
           ],
           "resource_schemes": [
@@ -2363,6 +2501,7 @@
             "compile_chart",
             "validate_chart",
             "list_chart_types",
+            "list_themes",
             "create_chart_view"
           ],
           "resource_schemes": [
@@ -2402,6 +2541,7 @@
             "compile_chart",
             "validate_chart",
             "list_chart_types",
+            "list_themes",
             "create_chart_view"
           ],
           "resource_schemes": [
@@ -2444,6 +2584,7 @@
             "compile_chart",
             "validate_chart",
             "list_chart_types",
+            "list_themes",
             "create_chart_view"
           ],
           "resource_schemes": [
@@ -2648,7 +2789,8 @@
             "verify_solution"
           ],
           "resource_schemes": [
-            "optimization"
+            "optimization",
+            "ui"
           ],
           "prompts": [
             "formulate_routing_problem",
@@ -2699,7 +2841,8 @@
             "verify_solution"
           ],
           "resource_schemes": [
-            "optimization"
+            "optimization",
+            "ui"
           ],
           "prompts": [
             "formulate_routing_problem",
@@ -2747,7 +2890,8 @@
             "verify_solution"
           ],
           "resource_schemes": [
-            "optimization"
+            "optimization",
+            "ui"
           ],
           "prompts": [
             "formulate_routing_problem",
@@ -2798,7 +2942,8 @@
             "verify_solution"
           ],
           "resource_schemes": [
-            "optimization"
+            "optimization",
+            "ui"
           ],
           "prompts": [
             "formulate_routing_problem",
@@ -2845,7 +2990,8 @@
             "publish_world"
           ],
           "resource_schemes": [
-            "frames"
+            "frames",
+            "ui"
           ],
           "prompts": [
             "frames-frame-audit",
@@ -2895,7 +3041,8 @@
             "publish_world"
           ],
           "resource_schemes": [
-            "frames"
+            "frames",
+            "ui"
           ],
           "prompts": [
             "frames-frame-audit",
@@ -2942,7 +3089,8 @@
             "publish_world"
           ],
           "resource_schemes": [
-            "frames"
+            "frames",
+            "ui"
           ],
           "prompts": [
             "frames-frame-audit",
@@ -2992,7 +3140,8 @@
             "publish_world"
           ],
           "resource_schemes": [
-            "frames"
+            "frames",
+            "ui"
           ],
           "prompts": [
             "frames-frame-audit",
@@ -3189,6 +3338,32 @@
           "required_scopes": [
             "operator:use",
             "map:feature:write"
+          ],
+          "metadata": {}
+        },
+        {
+          "id": "allow_map_geopackage_inspection_task",
+          "effect": "allow",
+          "actions": [
+            "tools_call",
+            "tasks_get",
+            "tasks_update",
+            "tasks_cancel",
+            "subscriptions_listen"
+          ],
+          "profiles": [
+            "operator",
+            "admin"
+          ],
+          "servers": [
+            "map"
+          ],
+          "tools": [
+            "inspect_geopackage"
+          ],
+          "required_scopes": [
+            "operator:use",
+            "map:feature:read"
           ],
           "metadata": {}
         },
@@ -3707,7 +3882,8 @@
             "export"
           ],
           "resource_schemes": [
-            "duckdb"
+            "duckdb",
+            "ui"
           ],
           "required_scopes": [
             "operator:use"
@@ -3749,7 +3925,8 @@
             "export"
           ],
           "resource_schemes": [
-            "duckdb"
+            "duckdb",
+            "ui"
           ],
           "required_scopes": [
             "operator:use"
@@ -3788,7 +3965,8 @@
             "export"
           ],
           "resource_schemes": [
-            "duckdb"
+            "duckdb",
+            "ui"
           ],
           "required_scopes": [
             "operator:use"
@@ -3830,7 +4008,8 @@
             "export"
           ],
           "resource_schemes": [
-            "duckdb"
+            "duckdb",
+            "ui"
           ],
           "required_scopes": [
             "operator:use"
@@ -3839,6 +4018,30 @@
           "principal_ids": [
             "https://veoveo.bioma.ai/oauth#admin-service"
           ]
+        },
+        {
+          "id": "allow_recording_layer_publication",
+          "effect": "allow",
+          "actions": [
+            "recording_layer_publish"
+          ],
+          "profiles": [
+            "recording-publish"
+          ],
+          "servers": [
+            "recording"
+          ],
+          "principal_ids": [
+            "https://veoveo.bioma.ai/oauth#recording-hub",
+            "https://veoveo.bioma.ai/oauth#recording-mcp-publisher"
+          ],
+          "tenant_ids": [
+            "bioma"
+          ],
+          "required_scopes": [
+            "recording:publish"
+          ],
+          "metadata": {}
         },
         {
           "id": "allow_operator_recording_use",
@@ -3862,14 +4065,15 @@
             "recording"
           ],
           "tools": [
-            "query_recording"
+            "create_recording_projection"
           ],
           "resource_schemes": [
-            "recording"
+            "recording",
+            "ui"
           ],
           "prompts": [
             "recording-inspect",
-            "recording-query"
+            "recording-project"
           ],
           "required_scopes": [
             "operator:use"
@@ -3904,14 +4108,15 @@
             "recording"
           ],
           "tools": [
-            "query_recording"
+            "create_recording_projection"
           ],
           "resource_schemes": [
-            "recording"
+            "recording",
+            "ui"
           ],
           "prompts": [
             "recording-inspect",
-            "recording-query"
+            "recording-project"
           ],
           "principal_ids": [
             "https://veoveo.bioma.ai/oauth#operator-service"
@@ -3943,15 +4148,16 @@
             "recording"
           ],
           "tools": [
-            "query_recording",
+            "create_recording_projection",
             "seal_recording"
           ],
           "resource_schemes": [
-            "recording"
+            "recording",
+            "ui"
           ],
           "prompts": [
             "recording-inspect",
-            "recording-query",
+            "recording-project",
             "recording-seal"
           ],
           "required_scopes": [
@@ -4095,7 +4301,8 @@
             "analyze_recording"
           ],
           "resource_schemes": [
-            "reason"
+            "reason",
+            "ui"
           ],
           "prompts": [
             "reason-analyze-recording",
@@ -4143,11 +4350,111 @@
             "analyze_recording"
           ],
           "resource_schemes": [
-            "reason"
+            "reason",
+            "ui"
           ],
           "prompts": [
             "reason-analyze-recording",
             "reason-answer-question"
+          ],
+          "principal_ids": [
+            "https://veoveo.bioma.ai/oauth#operator-service",
+            "https://veoveo.bioma.ai/oauth#admin-service"
+          ],
+          "required_scopes": [
+            "operator:use"
+          ],
+          "metadata": {}
+        },
+        {
+          "id": "allow_datasheet_use",
+          "effect": "allow",
+          "actions": [
+            "tools_list",
+            "tools_call",
+            "resources_list",
+            "resources_templates_list",
+            "resources_read",
+            "subscriptions_listen",
+            "prompts_list",
+            "prompts_get",
+            "completion_complete",
+            "tasks_get",
+            "tasks_update",
+            "tasks_cancel",
+            "artifact_read",
+            "usage_read"
+          ],
+          "profiles": [
+            "operator",
+            "admin"
+          ],
+          "servers": [
+            "datasheet"
+          ],
+          "tools": [
+            "column_stats",
+            "preview_dataset",
+            "profile_dataset"
+          ],
+          "resource_schemes": [
+            "datasheet",
+            "ui"
+          ],
+          "prompts": [
+            "datasheet-profile-dataset",
+            "datasheet-report-review"
+          ],
+          "required_scopes": [
+            "operator:use"
+          ],
+          "tenant_ids": [
+            "bioma"
+          ],
+          "roles": [
+            "operator",
+            "administrator"
+          ],
+          "metadata": {}
+        },
+        {
+          "id": "allow_service_datasheet_use",
+          "effect": "allow",
+          "actions": [
+            "tools_list",
+            "tools_call",
+            "resources_list",
+            "resources_templates_list",
+            "resources_read",
+            "subscriptions_listen",
+            "prompts_list",
+            "prompts_get",
+            "completion_complete",
+            "tasks_get",
+            "tasks_update",
+            "tasks_cancel",
+            "artifact_read",
+            "usage_read"
+          ],
+          "profiles": [
+            "operator",
+            "admin"
+          ],
+          "servers": [
+            "datasheet"
+          ],
+          "tools": [
+            "column_stats",
+            "preview_dataset",
+            "profile_dataset"
+          ],
+          "resource_schemes": [
+            "datasheet",
+            "ui"
+          ],
+          "prompts": [
+            "datasheet-profile-dataset",
+            "datasheet-report-review"
           ],
           "principal_ids": [
             "https://veoveo.bioma.ai/oauth#operator-service",
@@ -4459,15 +4766,16 @@
             "recording"
           ],
           "tools": [
-            "query_recording",
+            "create_recording_projection",
             "seal_recording"
           ],
           "resource_schemes": [
-            "recording"
+            "recording",
+            "ui"
           ],
           "prompts": [
             "recording-inspect",
-            "recording-query",
+            "recording-project",
             "recording-seal"
           ],
           "principal_ids": [
@@ -4544,9 +4852,12 @@
         {
           "level": "contributor",
           "principals": [
-            "https://veoveo.local/services#recording-hub"
+            "https://veoveo.local/services#recording-hub",
+            "https://veoveo.local/services#recording-mcp-publisher"
           ],
           "oauth_clients": [
+            "recording-hub",
+            "recording-mcp-publisher",
             "recording-producer",
             "operator-local-public",
             "operator-hosted-public",
@@ -4608,6 +4919,62 @@
       "tenant": "bioma",
       "metadata": {
         "client_boundary": "recording_producer"
+      }
+    },
+    {
+      "id": "recording-hub",
+      "authorization_server": "veoveo",
+      "default_work_context": "operations",
+      "invocation_mode": "automated",
+      "display_name": "Recording Hub Publisher",
+      "client_surface": "full_mcp",
+      "allowed_resources": [
+        "https://veoveo.bioma.ai/recordings/publish"
+      ],
+      "grant_types": [
+        "client_credentials"
+      ],
+      "auth_methods": [
+        "private_key_jwt"
+      ],
+      "allowed_scopes": [
+        "recording:publish"
+      ],
+      "jwks": {
+        "source": "file",
+        "path": "/etc/veoveo/gateway/recording-hub-jwks.json"
+      },
+      "tenant": "bioma",
+      "metadata": {
+        "client_boundary": "recording_layer_publisher"
+      }
+    },
+    {
+      "id": "recording-mcp-publisher",
+      "authorization_server": "veoveo",
+      "default_work_context": "operations",
+      "invocation_mode": "automated",
+      "display_name": "Recording MCP Properties Publisher",
+      "client_surface": "full_mcp",
+      "allowed_resources": [
+        "https://veoveo.bioma.ai/recordings/publish"
+      ],
+      "grant_types": [
+        "client_credentials"
+      ],
+      "auth_methods": [
+        "private_key_jwt"
+      ],
+      "allowed_scopes": [
+        "recording:publish"
+      ],
+      "jwks": {
+        "source": "file",
+        "path": "/etc/veoveo/gateway/recording-mcp-publisher-jwks.json"
+      },
+      "tenant": "bioma",
+      "metadata": {
+        "client_boundary": "recording_properties_publisher"
       }
     },
     {

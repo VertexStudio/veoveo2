@@ -13,6 +13,8 @@ use crate::{
     artifacts::ArtifactRepository,
     authoring::AuthoringService,
     catalog::{MapCatalog, MapScope},
+    contract::MapWorkspaceBasemap,
+    feature_packages::FeaturePackageService,
     geography::GeographyService,
     raster::RasterService,
     release_products::ReleaseProducts,
@@ -23,6 +25,7 @@ use crate::{
 
 #[derive(Clone)]
 pub struct MapApplication {
+    pub workspace_basemap: MapWorkspaceBasemap,
     pub tasks: TaskRuntime,
     pub catalog: MapCatalog,
     pub analytics: MapAnalytics,
@@ -30,6 +33,7 @@ pub struct MapApplication {
     pub routes: RouteService,
     pub geography: GeographyService,
     pub raster: RasterService,
+    pub feature_packages: FeaturePackageService,
     pub spatial: SpatialService,
     pub acquisitions: Arc<AcquisitionService>,
     pub artifacts: ArtifactRepository,

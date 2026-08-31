@@ -6,12 +6,13 @@ import type { AppDescriptor } from "./types.ts";
 
 const descriptor: AppDescriptor = {
   server: "map",
-  resourceUri: "ui://map/admin.html",
+  resourceUri: "ui://map/workspace.html",
   standalonePath: "/apps/map/admin.html",
   name: "map-admin",
   title: "Map administration",
   tools: [],
   resourceDependencies: [],
+  toolDependencies: [],
   agentMessageTargets: [],
 };
 

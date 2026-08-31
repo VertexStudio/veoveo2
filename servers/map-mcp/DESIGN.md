@@ -8,9 +8,16 @@ one strongly typed MCP surface to find places, inspect facilities and borders,
 work with coordinates, apply transport restrictions, calculate routes, build
 matrices, publish cuOpt-ready travel models, inspect reachable areas, and
 author governed feature layers. Source administration runs through the same
-MCP surface: scoped tools for mutations, `map://` resources for reads, and MCP
-App views that hosts render
+MCP surface: scoped tools for mutations, `map://` resources for reads, and one
+permission-aware MCP App that renders immutable compositions
 (see `mcp/apps-extension/DESIGN.md`).
+
+Map MCP is also a reusable capability for other MCP servers. Consumers use the
+canonical `map://` resources and Map tools through the gateway, or declare a
+typed App dependency when their own App needs Map data. They do not connect to
+Map storage, private HTTP routes, or renderer internals. The installation's
+profile, policy, scopes, tenant, labels, and Work Context remain authoritative
+for every consumer.
 
 ## Status
 
@@ -19,7 +26,7 @@ Implemented in this workspace.
 The implementation includes the Map domain contract, SurrealDB records,
 tenant-scoped DuckDB Spatial tables, a supervised Valhalla land engine, a
 governed network planner, source acquisition, release activation, MCP discovery
-surfaces, administrative MCP tools, the administration MCP App view, gateway
+surfaces, administrative MCP tools, the Map workspace MCP App, gateway
 proxying, Helm, offline image registration, governed spatial and raster
 derivations, and the immutable travel-model handoff to Optimization MCP.
 
@@ -31,8 +38,7 @@ folder      servers/map-mcp
 slug        map
 URI scheme  map
 MCP         /map/mcp
-admin app   ui://map/admin.html
-editor app  ui://map/editor.html
+workspace   ui://map/workspace.html
 health      /map/healthz
 ```
 
@@ -45,16 +51,17 @@ the `map://` scheme.
 |---|---|
 | [Model Context Protocol](https://modelcontextprotocol.io/specification/) | JSON-RPC 2.0 over Streamable HTTP with tools, resources and templates, prompts, completions, subscriptions, notifications, and typed structured content. |
 | MCP Tasks extension `io.modelcontextprotocol/tasks` | Version `2026-07-28`; acquisition, routing, import, export, publication, and vector-product operations use durable task semantics where declared. |
-| [MCP Apps SEP-1865](../../mcp/apps-extension/DESIGN.md) | `ext-apps` version `2026-01-26`; `ui://map/admin.html` and `ui://map/editor.html` use the sandboxed host bridge and canonical Map tools and resources. |
+| [MCP Apps SEP-1865](../../mcp/apps-extension/DESIGN.md) | `ext-apps` version `2026-01-26`; `ui://map/workspace.html` uses the sandboxed host bridge and canonical Map tools and resources. |
 | [JSON Schema Draft 2020-12](https://json-schema.org/draft/2020-12/) | MCP schemas and immutable authored-layer property contracts. Layer schemas reject remote references. |
 | WGS 84 and EPSG identifiers | Longitude, latitude, and ellipsoidal height are the geographic exchange. PROJ handles bounded projected-CRS conversion; EPSG:4978 and vertical transformations are outside that 2D operation. |
 | DuckDB 1.5.5 and DuckDB Spatial | Map selects `geometry_always_xy = true`, constructs longitude/latitude as `POINT_2D`, and uses one materialized spherical-distance score per candidate. |
 | [GeoJSON RFC 7946](https://www.rfc-editor.org/rfc/rfc7946.html), OGC JSON-FG 1.0, and [GeoJSON Text Sequences RFC 8142](https://www.rfc-editor.org/rfc/rfc8142.html) | Canonical feature geometry, semantic feature types, valid time, bulk import, and immutable export. |
+| [OGC GeoPackage 1.4](https://www.geopackage.org/spec140/) | Bounded vector-table inspection, selected-table import, and one-table export. Raster tiles, related tables, and non-linear or measured geometry are outside this profile. GDAL 3.13.3 performs full conformance validation and controlled conversion. |
 | OGC CQL2 1.0 | Bounded Basic CQL2-JSON predicates over top-level authored properties. Arbitrary CQL2 and spatial predicates are not claimed. |
 | GeoParquet 1.0.0 | WKB primary geometry and verified `geo` metadata for immutable analytical products. |
 | OGC Cloud Optimized GeoTIFF 1.0 and GeoTIFF 1.1 | Environmental sources normalize to immutable COG products with explicit CRS, affine transform, extent, resolution, bands, units, nodata values, value interpretation, checksum, license, and attribution. |
 | Veoveo spatial derivation profile `map-spatial-local-equirectangular-wgs84-v1` | Advisory operations use a WGS84 local equirectangular plane with the exact 6,371,008.8 m mean Earth radius. Each operation is bounded to two degrees on either axis and records its origin and algorithm revision. This is a repository-owned profile, not a projected-CRS standard. |
-| Mapbox Vector Tile 2.1 and MapLibre Style 8 | Deterministic bounded XYZ tile bundles and safe literal presentation styles. |
+| Mapbox Vector Tile 2.1, MapLibre Style 8, MapLibre GL JS 6.6.0, and the OpenFreeMap hosted style profile | Deterministic bounded XYZ tile bundles, safe literal presentation styles, a keyless vector basemap, and a self-contained WebGL2 composition viewer. |
 | OSM PBF, GTFS Schedule, S-57/S-100, AIXM, and FAA NASR exchange sets | Registered acquisition adapters accept only their documented snapshot profiles. Product-specific operational validation remains explicit. |
 | HTTPS and mounted exchange sets | Registered sources control hosts, redirects, media types, credentials, byte limits, elapsed time, and filesystem roots before an adapter runs. |
 | Valhalla HTTP/JSON | A supervised loopback-only routing-engine protocol. The travel-model adapter uses one concise many-to-many request per requested vehicle type. It is an internal projection, never a public Map API. |
@@ -217,6 +224,33 @@ from its pinned local path. Map selects the shared runtime's closed
 `GeoJsonLongitudeLatitude` axis policy before configuration is locked. Startup and
 health read `current_setting('geometry_always_xy')` and require `true`.
 
+Selective geometry reads use the existing DuckDB Spatial R-tree indexes on
+boundaries, immutable source features, authored revisions, and authored heads.
+The schema 9 to 10 upgrade drops and recreates those four derived indexes before any
+index is bound. It preserves every base-table row, advances the schema marker in the
+replacement transaction only after all indexes exist, and then eagerly verifies each
+index. An interruption leaves schema 9 in place, making the replacement sequence
+repeatable at the next startup.
+Other obsolete schema markers fail closed with an explicit projection-rebuild error.
+The query shape first obtains geometry-only candidates from the indexed base
+table. Tenant, Work Context, release, layer, revision, and exact spatial
+predicates remain on the authoritative outer query. This separation prevents
+non-spatial selectivity estimates from hiding the R-tree from DuckDB's planner.
+Dateline-crossing boxes use two candidate branches joined by `UNION`, because
+an `OR` between spatial predicates does not produce two R-tree scans.
+
+`src/authoring/query/performance.rs` is the executable performance contract for
+feature-layer viewport reads. It loads 10,000, 100,000, and 1,000,000 indexed
+features under the production 1 GiB memory and four-thread settings. Every
+scale must expose `RTREE_INDEX_SCAN` in the production query plan and match an
+independent numeric point oracle. The same gate covers dateline branches,
+publication revision selection, moved features, delete and reinsert index
+maintenance, R-tree leaf cardinality, and database size. On the test host,
+selective reads must remain below two seconds cold and 250 ms warm p95. Indexed
+fixture loading must sustain 5,000 rows per second and the million-feature
+database must remain below 2 GiB. These generous regression ceilings are local
+acceptance budgets, not service latency claims.
+
 Release-product projection is attempt scoped. Each preparation receives a
 private UUIDv7 attempt and writes complete source features in transactions of
 at most 256 features or 32 MiB of canonical source-feature data. Stable logical
@@ -307,6 +341,15 @@ interval, geometry type, opaque keyset cursor, and a bounded Basic CQL2-JSON sub
 Property paths and literal values remain parameters. A dateline-crossing box is
 split into two query polygons.
 
+Map eagerly binds and inspects every persisted R-tree during startup before accepting
+projection writes. Projection writes then use ordinary `INSERT` statements after
+deterministic replay checks. They do not use DuckDB conflict-merge insertion against
+R-tree tables, because lazy index binding can replay non-flat Spatial vectors when one
+transaction mixes point, line, and polygon geometries. Duplicate projected identities
+fail the transaction. The pinned Spatial regression test reopens the database, commits
+all three geometry families together, inspects both authored R-tree leaf sets, and
+executes an indexed intersection before acceptance.
+
 The artifact plane stores bulk input bytes and immutable output products. The
 task root stages a verified import under its parsed task identity. It survives
 process restart and is deleted after a terminal task state. Export tasks receive
@@ -326,9 +369,11 @@ silently change an existing layer or product contract.
 | [JSON Schema Draft 2020-12](https://json-schema.org/draft/2020-12/json-schema-core) | local property schemas; remote references are rejected |
 | [OGC CQL2 1.0, OGC 21-065r2](https://docs.ogc.org/is/21-065r2/21-065r2.html) | bounded Basic CQL2-JSON equality, ordering, null, boolean, and logical predicates over top-level properties |
 | [GeoJSON Text Sequences, RFC 8142](https://www.rfc-editor.org/rfc/rfc8142.html) | record-separator and LF-framed import/export |
+| [OGC GeoPackage 1.4](https://www.geopackage.org/spec140/) | full validation and bounded vector-table inspection through pinned GDAL 3.13.3; explicit table and metadata-column mappings on import; one two-dimensional WGS84 vector table with an R-tree on export |
 | [GeoParquet 1.0.0](https://github.com/opengeospatial/geoparquet/blob/v1.0.0/format-specs/geoparquet.md) | WKB primary geometry and GeoParquet metadata emitted by pinned DuckDB Spatial |
 | [Mapbox Vector Tile Specification 2.1](https://github.com/mapbox/vector-tile-spec/tree/master/2.1) | requested XYZ tiles with canonical feature identity retained as an attribute |
-| [MapLibre Style Specification 8](https://maplibre.org/maplibre-style-spec/) | vector source plus safe literal point, line, polygon, label, opacity, and zoom projections |
+| [MapLibre Style Specification 8](https://maplibre.org/maplibre-style-spec/) and MapLibre GL JS 6.6.0 | vector source plus safe literal point, line, polygon, label, opacity, and zoom projections; self-contained WebGL2 workspace viewing |
+| [OpenFreeMap](https://openfreemap.org/quick_start/) hosted MapLibre Style profile | Credential-free MapLibre Style 8 URLs supply vector geographic context for both Console themes. The defaults are OpenFreeMap Positron for light mode and OpenFreeMap Dark for dark mode. Map MCP validates both URLs, requires one exact HTTPS origin, and declares that origin in MCP App CSP metadata. The supported profile requires both style documents, sprites, glyphs, TileJSON, and tiles to remain on that origin; an installation may replace the pair with controlled or self-hosted styles that preserve this boundary. This is a basemap presentation profile, not complete conformance to an external tile-service API. |
 
 The image pins [DuckDB Spatial](https://duckdb.org/docs/stable/core_extensions/spatial/overview)
 to DuckDB 1.5.5. Export verification rejects a generated Parquet file unless
@@ -340,21 +385,38 @@ Parquet geometry logical type.
 ### Editing, Transfer, And Publication
 
 The public MCP surface includes create, update, validate, commit, query, restore,
-publish, and archive tools. Layer heads, schema revisions, style revisions,
+publish, and archive tools. Layer heads, schema revisions, style revisions by
+layer version or stable style identity,
 feature queries, feature heads and revisions, changesets, and publications are
 URI-addressed resources. Mutable heads and indexes support MCP subscriptions and
 resource-update notifications. Individual features are never expanded into the
 resource list; agents traverse them through the paginated query template.
 
-An import task accepts one authorized GeoJSON FeatureCollection or GeoJSON text
-sequence artifact. It stages and hashes the bounded input before task creation,
-maps external string or numeric identifiers to stable typed feature ids, and
-commits at most 10,000 features in one SurrealDB transaction. The request supplies
-a default semantic type for plain GeoJSON. JSON-FG records that declare
-`featureType` must declare the supported conformance classes.
+An import task accepts one authorized GeoJSON FeatureCollection, GeoJSON text
+sequence, or GeoPackage artifact. It stages and hashes the bounded input before
+task creation, maps external string or numeric identifiers to stable typed feature
+ids, and commits at most 10,000 features in one SurrealDB transaction. GeoPackage
+import selects one feature table and explicitly maps identity, semantic type,
+title, and valid-time columns. The pinned GDAL adapter validates the complete
+package, rejects unsupported dimensions and geometry types, converts the declared
+CRS to two-dimensional OGC:CRS84, and emits the same canonical RFC 8142 boundary
+used by native bulk import. The request supplies a default semantic type when the
+source has none. JSON-FG records that declare `featureType` must declare the
+supported conformance classes.
+
+`inspect_geopackage` validates an authorized artifact before import and returns a
+bounded manifest of feature tables, fields, declared CRS identifiers, extensions,
+feature counts, WGS84 extents where safely available, and R-tree declarations.
+The manifest does not grant access to the underlying artifact and never selects a
+table implicitly.
 
 An immutable publication is the only input to export and presentation. Export
-tasks produce GeoJSON text sequence or GeoParquet 1.0. A vector task accepts at
+tasks produce GeoJSON text sequence, GeoParquet 1.0, or GeoPackage 1.4. A
+GeoPackage product contains one explicitly named WGS84 feature table and its
+standard R-tree spatial index. Canonical feature metadata uses reserved
+`veoveo_*` fields. Top-level properties use `property:` columns with OGR scalar
+or JSON subtypes, which preserves their types across Map export and re-import.
+A vector task accepts at
 most 512 distinct XYZ coordinates through zoom 22 and emits a deterministic tar
 bundle containing MVT 2.1 tiles, a manifest, and a MapLibre Style 8 document.
 Every product retains the publication, layer revision, digest, size, format,
@@ -366,11 +428,63 @@ bounded WGS84 view and literal opacity and visibility settings. The mutable head
 immutable revisions, root indexes, completions, and update subscriptions are MCP
 resources. A composition is the stable handoff to map presentation clients.
 
-The editor app at `ui://map/editor.html` uses the MCP Apps bridge. It reads
-canonical resources and invokes canonical tools; it has no feature-specific REST
-API. The initial app supports JSON-oriented layer creation, validation, commit,
-query, publication, and composition authoring. It does not claim interactive
-canvas editing.
+The workspace app at `ui://map/workspace.html` uses the MCP Apps bridge. It
+reads `map://workspace` first and exposes only the dataset, administration,
+feature-read, feature-write, and publication controls admitted for the caller.
+The map remains visible while the user discovers layers, previews records,
+inspects a feature, authors geometry, imports an artifact, acquires a source, or
+saves a composition. Authoring and administration live in contextual drawers
+instead of replacing the map with unrelated forms.
+
+The left catalog presents authored layers and active governed source releases
+through one visibility model. Authored layers render their current heads by
+default; selecting a saved composition switches them to its exact publication
+and style-revision pins. Active source releases render through
+`query_source_features`. The bottom preview is a bounded table synchronized
+with the visible map, and the right inspector follows the selected catalog item
+or feature. A map or table selection highlights the same feature in both
+places. Raw JSON is an advanced diagnostic view, never the primary workflow.
+
+MapLibre GL JS 6.6.0 is bundled into the self-contained App with a classic
+worker emitted from the same pinned source. The opaque-origin sandbox admits
+the worker through its `connect-src data:` and `worker-src blob:` boundaries.
+Map MCP supplies one validated basemap descriptor with credential-free light
+and dark MapLibre Style URLs and declares their shared exact HTTPS resource
+origin to the host. The workspace follows the initial host theme and reacts to
+host-context changes without losing its camera, governed overlays, selection,
+or bounded preview. The style profile keeps both documents, sprites, glyphs,
+TileJSON, and tiles on that origin, while governed feature bytes continue to
+cross only the MCP bridge. Basemap failure leaves governed layers usable and
+reports the degraded context locally without taking down the workspace.
+
+Each enabled authored layer issues R-tree-backed, viewport-bounded
+`query_features` calls in pages of 1,000 and stops at 5,000 features per layer
+and viewport. Each enabled active release issues DuckDB Spatial R-tree-backed
+`query_source_features` calls in pages of 500 and stops at 5,000 features per
+release and viewport. Generation cancellation prevents stale responses from
+painting after a camera or visibility change. The visible cap is reported
+instead of silently dropping the condition. The UI reports a successful
+refresh only after MapLibre reaches an idle paint with returned geometry
+visible. Resource subscriptions wake the App to reread canonical state.
+
+The Add data workflow distinguishes three actions. Create layer uses ordinary
+fields with a permissive JSON Schema default. Add feature uses map drawing,
+title, semantic type, and a property editor. Import artifact accepts an
+authorized artifact id and explicit GeoJSON FeatureCollection, RFC 8142, or
+GeoPackage settings; GeoPackage inspection runs first and the user selects one
+reported feature table. Task-only imports use the MCP Tasks lifecycle inside
+the App. Source acquisition chooses a governed source and draws its WGS84
+extent on the persistent map. Canonical source, schema, profile, and request
+JSON remain available under an Advanced disclosure for operators who need the
+complete typed contract.
+
+The map fails closed unless WebGL2 creation succeeds with the major-performance
+caveat check, the debug renderer extension identifies the adapter, and the
+renderer fingerprint is not a known software path. Browser acceptance must
+prove the same condition in a headed browser. The App is a two-dimensional
+feature and source-release workspace. It does not provide raster presentation,
+3D geometry authoring, collaborative geometry editing, or server-side
+rendering.
 
 ### Deliberate Boundaries
 
@@ -383,7 +497,7 @@ release-promotion operation.
 The implementation does not provide arbitrary CQL2, spatial CQL2 predicates,
 GeoParquet 2.0, mutable raster authoring, 3D authoring, an OGC API Features
 HTTP service, collaborative locks or CRDTs, or automatic promotion of a
-`network_candidate`. View MCP does not yet render authored compositions.
+`network_candidate`.
 These are new contracts, not compatibility details, and must be added through
 their owning components.
 
@@ -394,8 +508,7 @@ caller bearer.
 
 The next implementation phase should add a validated network-candidate promotion
 task, a true GeoParquet 2.0 encoder, streaming artifact ingest for datasets above
-the transactional import bound, schema migration tasks, and a hardware-GPU map
-renderer that consumes composition resources. Property flattening and packaged
+the transactional import bound, and schema migration tasks. Property flattening and packaged
 tile pyramids belong in the vector product path when client requirements justify
 their storage cost.
 
@@ -559,7 +672,7 @@ contours, polygonization, skeletonization, and line derivation. A controlled
 GDAL helper reads only the already-authorized staged source and writes into
 the task directory. The task publishes one governed artifact and records the
 source checksum, CRS and affine transform, every operation parameter, the
-exact `gdal-3.13.2-veoveo-raster-v1` algorithm revision, output digest,
+exact `gdal-3.13.3-veoveo-raster-v1` algorithm revision, output digest,
 output CRS and affine transform where applicable, principal, and Work
 Context. Sampling and raster products preserve their declared CRS. GeoJSON
 derivations are transformed to WGS84 before publication.
@@ -813,7 +926,8 @@ as every other raster derivation.
 | `update_map_composition` | direct | `map:feature:write` | optimistic immutable composition revision |
 | `archive_map_composition` | direct | `map:feature:admin` | archived composition head with history retained |
 | `import_feature_layer` | task only | `map:feature:write` | atomic import changeset from an authorized artifact |
-| `export_feature_layer` | task only | `map:feature:publish` | immutable GeoJSON sequence or GeoParquet 1.0 product |
+| `inspect_geopackage` | task only | `map:feature:read` | validated bounded vector-table manifest for an authorized artifact |
+| `export_feature_layer` | task only | `map:feature:publish` | immutable GeoJSON sequence, GeoParquet 1.0, or GeoPackage 1.4 product |
 | `build_vector_tiles` | task only | `map:feature:publish` | immutable MVT 2.1 bundle and MapLibre style |
 | `derive_raster` | task only | `map:raster:derive` | governed raster sample, terrain-corridor maximum, window, mask, contour, polygon, skeleton, or line artifact |
 | `derive_spatial_geometry` | direct | `map:dataset:read`, `map:spatial:derive` | persisted advisory geometry and complete mobility findings |
@@ -948,20 +1062,21 @@ Administration crosses the same MCP boundary as every other operation
 | `quarantine_release` | quarantine an inactive release |
 | `register_mobility_profile` | register an immutable profile version |
 
-Administrative reads are resources: `map://sources`, `map://datasets`,
-`map://acquisitions` and `map://acquisition/{acquisition_id}` (map:admin),
-`map://active-releases` (map:admin), and `map://mobility-profiles`. Creation
-tools use idempotency keys; source and release mutations use expected record
+Dataset readers use `map://sources`, `map://datasets`,
+`map://active-releases`, and `map://mobility-profiles`. Administrative job
+reads use `map://acquisitions` and `map://acquisition/{acquisition_id}`.
+Creation tools use idempotency keys; source and release mutations use expected record
 versions; activation also uses the expected active-pointer version.
 Validation failures surface as MCP invalid-params errors and concurrency
 conflicts name the changed version.
 
-The administration app view ships as `ui://map/admin.html` from
-`assets/admin-app.html`: a self-contained document listed for `map:admin`
-identities, linked to every administrative tool, discovered and hosted by any
-MCP Apps host. The gateway projects it under `resource_projection:
-server_owned`, and the Console renders it from its generic app catalog — no
-map-specific console page, BFF route, or REST router exists.
+The Map workspace ships as `ui://map/workspace.html` from
+`assets/workspace-app.html`. It is listed when the caller has
+`map:dataset:read`, `map:feature:read`, or `map:admin`, while
+`map://workspace` tells the App which sections and controls to present. Every
+operation remains scope-gated by its canonical resource or tool handler. The gateway projects the App under
+`resource_projection: server_owned`, and the Console renders it from its generic
+catalog; no map-specific Console page, BFF route, or REST router exists.
 
 ## Isolation And Security
 
@@ -1013,6 +1128,14 @@ endpoint unavailable.
   no more than 64 cross-track offsets.
 - Raster helpers inherit the 256 MiB artifact limit and terminate their process
   group after the configured five-minute deadline or task cancellation.
+- The authored-feature R-tree performance gate uses 10,000, 100,000, and
+  1,000,000 row fixtures, a two-second cold ceiling, a 250 ms warm p95 ceiling,
+  a 5,000 indexed-row/s floor, and a 2 GiB database-size ceiling.
+- The source-feature R-tree performance gate applies the same scales and
+  latency, ingest-rate, and storage ceilings to the exact viewport query used
+  by the workspace. It asserts the physical R-tree plan at every scale, checks
+  results against a full-scan point oracle, verifies two index scans across the
+  antimeridian, and inspects one million index leaves.
 
 Unavailable coverage, invalid profile versions, disallowed advisory status,
 unsupported objectives, source digest mismatch, unsafe archives, and
@@ -1042,6 +1165,8 @@ Important arguments include:
 --spatial-extension
 --duckdb-memory-limit
 --duckdb-threads
+--workspace-basemap-light-style-url
+--workspace-basemap-dark-style-url
 --valhalla-url
 --valhalla-executable
 --valhalla-config
@@ -1144,8 +1269,12 @@ servers/map-mcp/
     state.rs
     uris.rs
   assets/
-    admin-app.html
-    editor-app.html
+    workspace-app.html
+  app/
+    build.mjs
+    package.json
+    workspace.js
+    workspace.template.html
   data/
     src/map_data/
       adapters/
@@ -1178,6 +1307,18 @@ The implementation is checked at several boundaries:
   atomic release activation under record versions;
 - Console TypeScript and production Vite builds validate the administrative
   projection;
+- Map workspace contract tests verify one permission-aware App resource, the
+  validated same-origin light and dark basemap contract and CSP declaration, exact MCP bridge operations,
+  immutable publication and active-release queries, guided GeoPackage tasks,
+  subscription wiring, the embedded MapLibre pin, and fail-closed hardware
+  WebGL2 checks;
+- the Rust Map workspace browser smoke serves the exact generated App under the
+  Console's opaque-origin sandbox and an exact local MapLibre Style CSP. Headed Chrome
+  must prove an NVIDIA WebGL adapter before the App completes bounded
+  publication-pinned and active-release viewport queries, switches from light
+  to dark basemap without moving the camera or losing overlays, synchronizes
+  map and table selection, retains the map during governed-data inspection,
+  and emits screenshot evidence;
 - the container build verifies the pinned Spatial extension and packages GDAL,
   Osmium, Valhalla, and the Python application;
 - the Rust Map smoke launches that image with a real SurrealDB 3.2 catalog and
@@ -1200,9 +1341,12 @@ The principal local commands are:
 cargo test -p veoveo-map-mcp --lib
 cargo test -p veoveo-platform-store --lib
 uv run --project servers/map-mcp/data --frozen python -m unittest discover -s servers/map-mcp/data/tests -v
+npm --prefix servers/map-mcp/app ci
+npm --prefix servers/map-mcp/app run build
 npm --prefix apps/console/web run build
 cargo xtask image build --target map-mcp
 cargo xtask smoke map-mcp
+cargo xtask smoke map-workspace-browser-verify
 ```
 
 The risk-based suite targets representative acquisition, land routing,

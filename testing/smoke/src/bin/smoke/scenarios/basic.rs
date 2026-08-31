@@ -50,7 +50,7 @@ pub(crate) async fn surreal_integration() -> Result<()> {
             format!("127.0.0.1:{port}:8000").into(),
             "--tmpfs".into(),
             "/data:rw,size=1073741824,uid=65532,gid=65532,mode=0700".into(),
-            "surrealdb/surrealdb:v3.2.3".into(),
+            "surrealdb/surrealdb:v3.2.4".into(),
             "start".into(),
             "--bind".into(),
             "0.0.0.0:8000".into(),
@@ -73,7 +73,7 @@ pub(crate) async fn surreal_integration() -> Result<()> {
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
     if !ready {
-        bail!("timed out waiting for SurrealDB 3.2.3 at {ready_url}");
+        bail!("timed out waiting for SurrealDB 3.2.4 at {ready_url}");
     }
 
     let endpoint = format!("ws://127.0.0.1:{port}");
@@ -245,13 +245,24 @@ pub(crate) async fn helm_config() -> Result<()> {
             document.contains("kind: Service") && document.contains("name: mcp-gateway\n")
         })
         .context("finding rendered mcp-gateway service")?;
+    let recording_deployment = platform
+        .split("\n---\n")
+        .find(|document| {
+            document.contains("kind: Deployment") && document.contains("name: recording\n")
+        })
+        .context("finding rendered recording deployment")?;
     contains(gateway_service, "sessionAffinity: ClientIP")?;
     contains(gateway_service, "timeoutSeconds: 10800")?;
     contains(gateway_deployment, "startupProbe:")?;
     contains(gateway_deployment, "failureThreshold: 24")?;
+    contains(
+        recording_deployment,
+        "- name: recordings\n              mountPath: /recordings\n              readOnly: false\n            - name: recording-mcp-tmp",
+    )
+    .context("Recording MCP must remove Artifact-backed Blueprint staging files")?;
     for expected in [
-        "image: surrealdb/surrealdb:v3.2.3",
-        "image: rustfs/rustfs:1.0.0-beta.8",
+        "image: surrealdb/surrealdb:v3.2.4",
+        "image: rustfs/rustfs@sha256:800cf3f352a0a27e3275ca854a51f0027975d7acc7a0d52089a35bcc9fcbf0b5",
         "image: amazon/aws-cli:2.35.23",
         "name: mcp-gateway",
         "name: artifact-service",
@@ -421,6 +432,8 @@ pub(crate) async fn helm_config() -> Result<()> {
         "name: view-mcp",
         "name: stream-mcp",
         "name: reason-mcp",
+        "--expected-control-plane",
+        "/etc/veoveo/gateway/gateway.json",
         "value: \"artifact,media,timeseries,optimization,duckdb,frames,map,recording,stream,reason,datasheet,uav-sim\"",
         "checksum/reason-runtime:",
     ] {
@@ -449,8 +462,6 @@ pub(crate) async fn helm_config() -> Result<()> {
         &bioma,
         &format!("checksum/control-plane: \"{control_plane_revision}\""),
     )?;
-    contains(&bioma, "- --control-plane")?;
-    contains(&bioma, "- /etc/veoveo/gateway/gateway.json")?;
     contains(&bioma, "veoveo.ai/bootstrap-revision:")?;
     not_contains(&bioma, "veoveo.ai/bootstrap-revision: \"bootstrap-1\"")?;
     for forbidden in ["name: otel-collector", "secretName: bioma-ingress-tls"] {
@@ -623,7 +634,7 @@ pub(crate) async fn helm_config() -> Result<()> {
         "GOOGLE_MAPS_API_KEY",
         "UAV_SIM_POSE_",
         "simulation-view",
-        "name: uav-sim-live",
+        "\n  name: uav-sim-live\n",
         "path: /webrtc",
         "name: stream-signal",
         "name: stream-media",
@@ -871,11 +882,11 @@ pub(crate) async fn helm_config() -> Result<()> {
             && uav_dependencies
                 .pointer("/components/rerun/version")
                 .and_then(Value::as_str)
-                == Some("0.36.0")
+                == Some("0.36.3")
             && uav_dependencies
                 .pointer("/components/python_runtime/rerun_sdk")
                 .and_then(Value::as_str)
-                == Some("0.36.0"),
+                == Some("0.36.3"),
         "UAV dependency lock omitted a canonical release or Google tiles identity"
     );
     let simulation_lock_bytes =
@@ -970,7 +981,7 @@ pub(crate) async fn helm_config() -> Result<()> {
         "PX4_COMMIT=d6f12ad1c4f70ad3230afd7d86e971421e02fef4",
         "cesium-0.29.0-preinstalled-vendor.patch",
         "lxml-6.0.2-cp312-cp312",
-        "ARG RERUN_SDK_VERSION=0.36.0",
+        "ARG RERUN_SDK_VERSION=0.36.3",
         "rerun-sdk==${RERUN_SDK_VERSION}",
         "FROM --platform=${TARGETPLATFORM} ${SIMULATION_RUNTIME_IMAGE} AS uav-overlay",
         "FROM uav-sim-dependencies AS runtime",
@@ -990,10 +1001,13 @@ pub(crate) async fn helm_config() -> Result<()> {
     }
     contains(
         &fs::read_to_string("platform/recordings/hub/Dockerfile")?,
-        "rerun-sdk==0.36.0",
+        "ARG RERUN_VERSION=0.36.3",
     )?;
     let stdio_bridge_dockerfile = fs::read_to_string("mcp/bridges/stdio/Dockerfile")?;
-    contains(&stdio_bridge_dockerfile, "ARG RERUN_VERSION=0.36.0")?;
+    contains(&stdio_bridge_dockerfile, "ARG RERUN_VERSION=0.36.3")?;
+    contains(&stdio_bridge_dockerfile, r#""rerun-sdk==${RERUN_VERSION}""#)?;
+    contains(&stdio_bridge_dockerfile, "ARG PYARROW_VERSION=25.0.1")?;
+    contains(&stdio_bridge_dockerfile, "rerun analytics disable")?;
     contains(
         &stdio_bridge_dockerfile,
         r#"rerun --version | grep -F "rerun-cli ${RERUN_VERSION} ""#,
@@ -1003,6 +1017,7 @@ pub(crate) async fn helm_config() -> Result<()> {
     }
     not_contains(&stdio_bridge_dockerfile, "mesa-vulkan-drivers")?;
     not_contains(&stdio_bridge_dockerfile, "lavapipe")?;
+    not_contains(&stdio_bridge_dockerfile, "releases/download")?;
     let cesium_patch = fs::read_to_string(
         "showcase/uav-sim/runtime/patches/cesium-0.29.0-preinstalled-vendor.patch",
     )?;

@@ -3,6 +3,7 @@ use std::{
     io::BufReader,
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -173,6 +174,10 @@ struct FluxCondition {
     #[serde(rename = "type")]
     condition_type: String,
     status: String,
+    #[serde(default)]
+    reason: String,
+    #[serde(default)]
+    message: String,
 }
 
 struct Deadline {
@@ -197,7 +202,7 @@ impl Deadline {
 }
 
 pub(crate) fn converge(arguments: GitopsConvergeArgs) -> Result<()> {
-    validate_revision("--revision", &arguments.revision)?;
+    validate_local_revision("--revision", &arguments.revision)?;
     ensure!(
         !arguments.releases.is_empty(),
         "at least one --release is required"
@@ -288,12 +293,12 @@ fn converge_inner(
 
     run_phase(phases, "desired_state_apply", || {
         request_reconciliation(arguments, KUSTOMIZATION_RESOURCE, root)?;
-        wait_for_resource::<FluxKustomization>(
+        wait_for_kustomization_or_release_failure(
             arguments,
-            KUSTOMIZATION_RESOURCE,
             root,
+            releases,
             deadline,
-            |kustomization| kustomization_ready_at(kustomization, &arguments.revision),
+            &arguments.revision,
         )
     })?;
 
@@ -369,6 +374,36 @@ fn converge_inner(
         }
         Ok(())
     })
+}
+
+fn wait_for_kustomization_or_release_failure(
+    arguments: &GitopsConvergeArgs,
+    root: &ObjectRef,
+    releases: &[ObjectRef],
+    deadline: &Deadline,
+    revision: &str,
+) -> Result<()> {
+    loop {
+        let kustomization =
+            get_resource::<FluxKustomization>(arguments, KUSTOMIZATION_RESOURCE, root)?;
+        if kustomization_ready_at(&kustomization, revision) {
+            return Ok(());
+        }
+        for release in releases {
+            let observed = get_resource::<HelmRelease>(arguments, HELM_RELEASE_RESOURCE, release)?;
+            if let Some(diagnostic) = helm_release_terminal_failure(&observed) {
+                bail!(
+                    "HelmRelease {}/{} stalled while applying Git revision {}: {}",
+                    release.namespace,
+                    release.name,
+                    revision,
+                    diagnostic
+                );
+            }
+        }
+        let remaining = deadline.remaining("root Kustomization convergence")?;
+        thread::sleep(remaining.min(Duration::from_secs(2)));
+    }
 }
 
 fn run_phase(
@@ -583,6 +618,30 @@ fn helm_release_ready(release: &HelmRelease) -> bool {
             .is_some_and(|inventory| !inventory.entries.is_empty())
 }
 
+fn helm_release_terminal_failure(release: &HelmRelease) -> Option<String> {
+    if !generation_observed(
+        release.metadata.generation,
+        release.status.observed_generation,
+    ) {
+        return None;
+    }
+    release
+        .status
+        .conditions
+        .iter()
+        .find(|condition| {
+            condition.condition_type == "Stalled" && condition.status.eq_ignore_ascii_case("true")
+        })
+        .map(
+            |condition| match (condition.reason.as_str(), condition.message.as_str()) {
+                ("", "") => "Stalled=True".to_owned(),
+                ("", message) => message.to_owned(),
+                (reason, "") => reason.to_owned(),
+                (reason, message) => format!("{reason}: {message}"),
+            },
+        )
+}
+
 fn generation_observed(generation: i64, observed_generation: Option<i64>) -> bool {
     generation > 0 && observed_generation == Some(generation)
 }
@@ -604,6 +663,28 @@ fn validate_revision(argument: &str, revision: &str) -> Result<()> {
     ensure!(
         matches!(revision.len(), 40 | 64) && revision.bytes().all(|byte| byte.is_ascii_hexdigit()),
         "{argument} must be one complete 40- or 64-character hexadecimal Git object ID"
+    );
+    Ok(())
+}
+
+fn validate_local_revision(argument: &str, revision: &str) -> Result<()> {
+    validate_revision(argument, revision)?;
+    let revision_expression = format!("{revision}^{{commit}}");
+    let output = Command::new("git")
+        .args(["rev-parse", "--verify", &revision_expression])
+        .output()
+        .context("resolving the expected GitOps revision from the local repository")?;
+    ensure!(
+        output.status.success(),
+        "{argument} `{revision}` is not a local commit; pass the exact output of `git rev-parse HEAD`"
+    );
+    let resolved = String::from_utf8(output.stdout)
+        .context("local Git commit ID is not UTF-8")?
+        .trim()
+        .to_owned();
+    ensure!(
+        resolved.eq_ignore_ascii_case(revision),
+        "{argument} `{revision}` resolved to `{resolved}`; pass the exact output of `git rev-parse HEAD`"
     );
     Ok(())
 }
@@ -736,6 +817,42 @@ mod tests {
     }
 
     #[test]
+    fn reports_only_generation_current_stalled_helm_releases() {
+        let current: HelmRelease = serde_json::from_value(json!({
+            "metadata": {"generation": 9},
+            "status": {
+                "observedGeneration": 9,
+                "conditions": [{
+                    "type": "Stalled",
+                    "status": "True",
+                    "reason": "RetriesExceeded",
+                    "message": "Failed to upgrade after 6 attempt(s)"
+                }]
+            }
+        }))
+        .unwrap();
+        let stale: HelmRelease = serde_json::from_value(json!({
+            "metadata": {"generation": 10},
+            "status": {
+                "observedGeneration": 9,
+                "conditions": [{
+                    "type": "Stalled",
+                    "status": "True",
+                    "reason": "RetriesExceeded",
+                    "message": "old failure"
+                }]
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(
+            helm_release_terminal_failure(&current).as_deref(),
+            Some("RetriesExceeded: Failed to upgrade after 6 attempt(s)")
+        );
+        assert_eq!(helm_release_terminal_failure(&stale), None);
+    }
+
+    #[test]
     fn parses_namespaced_references_and_requires_full_revision() {
         let deployment = DeploymentRef::parse("platform/console-bff").unwrap();
         assert_eq!(deployment.namespace, "platform");
@@ -743,6 +860,23 @@ mod tests {
         assert!(DeploymentRef::parse("console-bff").is_err());
         assert!(validate_revision("--revision", REVISION).is_ok());
         assert!(validate_revision("--revision", "01234567").is_err());
+    }
+
+    #[test]
+    fn requires_the_expected_revision_to_be_an_exact_local_commit() {
+        let output = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let head = String::from_utf8(output.stdout).unwrap();
+        let head = head.trim();
+
+        assert!(validate_local_revision("--revision", head).is_ok());
+        assert!(
+            validate_local_revision("--revision", "ffffffffffffffffffffffffffffffffffffffff")
+                .is_err()
+        );
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{collections::BTreeMap, net::SocketAddr, sync::Arc};
 
 use anyhow::Context;
 use axum::{
@@ -44,21 +44,26 @@ use super::{
     host::validate_host,
     oauth::{authorization_callback, authorize_endpoint, revoke_refresh_token, token_endpoint},
     recording_ingest::recording_ingest_router,
-    recording_playback::{playback_blueprint, playback_live_recording, playback_manifest},
+    recording_layer_publication::publish_recording_layer,
+    recording_playback::{
+        catalog_grant, playback_blueprint, playback_live_recording, playback_manifest,
+        projection_data,
+    },
     runtime::{
         AdminState, AppState, ArtifactDownloadState, DynamicMcpState, GatewayRetentionPolicy,
         ProfileAuthState, ProfileMcpService, Readiness, RecordingIngestGatewayState,
-        RecordingPlaybackState, build_http_client, current_catalog, profile_id_from_gateway_path,
-        run_gateway_retention_gc, spawn_gateway_retention_gc_loop, spawn_refresh_delivery_gc_loop,
+        RecordingLayerPublicationState, RecordingPlaybackState, build_http_client, current_catalog,
+        profile_id_from_gateway_path, spawn_gateway_retention_gc_loop,
+        spawn_refresh_delivery_gc_loop,
     },
 };
 
 pub(super) struct ServeConfig {
     pub(super) port: u16,
     pub(super) public_base_url: String,
-    pub(super) control_plane: PathBuf,
     pub(super) artifact_service_url: String,
     pub(super) control_store: GatewayControlStore,
+    pub(super) expected_control_plane_sha256: Option<String>,
     pub(super) internal_signing_key_der_b64: SecretString,
     pub(super) internal_signing_key_id: String,
     pub(super) refresh_delivery_cipher: RefreshTokenDeliveryCipher,
@@ -72,9 +77,9 @@ pub(super) async fn serve(config: ServeConfig) -> anyhow::Result<()> {
     let ServeConfig {
         port,
         public_base_url,
-        control_plane,
         artifact_service_url,
         control_store,
+        expected_control_plane_sha256,
         internal_signing_key_der_b64,
         internal_signing_key_id,
         refresh_delivery_cipher,
@@ -86,17 +91,10 @@ pub(super) async fn serve(config: ServeConfig) -> anyhow::Result<()> {
     let gateway_state =
         veoveo_mcp_gateway::GatewayState::new(control_store.platform_store().clone());
     let agent_control = AgentControl::new(control_store.platform_store().clone())?;
-    run_gateway_retention_gc(&gateway_state, retention).await?;
     spawn_gateway_retention_gc_loop(gateway_state.clone(), retention);
     spawn_refresh_delivery_gc_loop(gateway_state.clone());
-    let expected_catalog = GatewayCatalog::load_json(&control_plane).with_context(|| {
-        format!(
-            "failed to load expected control plane {}",
-            control_plane.display()
-        )
-    })?;
-    let expected_sha256 = super::control_plane_sha256(expected_catalog.control_plane())?;
-    let initial_catalog = load_initial_catalog(&control_store, &expected_sha256).await?;
+    let initial_catalog =
+        load_initial_catalog(&control_store, expected_control_plane_sha256.as_deref()).await?;
     let catalog = GatewayCatalogHandle::new(initial_catalog.clone());
     let internal_signing_key_der = BASE64_STANDARD
         .decode(internal_signing_key_der_b64.expose_secret().trim())
@@ -191,7 +189,27 @@ pub(super) async fn serve(config: ServeConfig) -> anyhow::Result<()> {
         ));
     router = router.merge(artifact_download_router);
 
+    let recording_publication_router = Router::new()
+        .route(
+            "/recordings/{profile}/layers",
+            axum::routing::post(publish_recording_layer),
+        )
+        .with_state(RecordingLayerPublicationState {
+            catalog: catalog.clone(),
+            gateway_state: gateway_state.clone(),
+            http: http.clone(),
+            internal_token_issuer: internal_token_issuer.clone(),
+            artifact_server: veoveo_mcp_contract::ServerSlug::new("artifact")?,
+            artifact_service_url: artifact_service_url.trim_end_matches('/').to_owned(),
+        })
+        .layer(middleware::from_fn_with_state(
+            auth_state.clone(),
+            authenticate_mcp,
+        ));
+    router = router.merge(recording_publication_router);
+
     let recording_playback_router = Router::new()
+        .route("/recordings/{profile}/catalog-grants", post(catalog_grant))
         .route(
             "/recordings/{profile}/{recording_id}/playback",
             get(playback_manifest),
@@ -204,11 +222,16 @@ pub(super) async fn serve(config: ServeConfig) -> anyhow::Result<()> {
             "/recordings/{profile}/{recording_id}/blueprints/{revision}/data.rrd",
             get(playback_blueprint),
         )
+        .route(
+            "/recordings/{profile}/{recording_id}/projections/{projection_id}/data.arrow",
+            get(projection_data),
+        )
         .with_state(RecordingPlaybackState {
             catalog: catalog.clone(),
             gateway_state: gateway_state.clone(),
             internal_token_issuer: internal_token_issuer.clone(),
             upstream_http: upstream_http.clone(),
+            artifact_server: veoveo_mcp_contract::ServerSlug::new("artifact")?,
         })
         .layer(middleware::from_fn_with_state(
             auth_state.clone(),
@@ -339,11 +362,18 @@ pub(super) async fn serve(config: ServeConfig) -> anyhow::Result<()> {
 
 async fn load_initial_catalog(
     store: &GatewayControlStore,
-    expected_sha256: &str,
+    expected_sha256: Option<&str>,
 ) -> anyhow::Result<Arc<GatewayCatalog>> {
-    let revision = store
-        .load_active_revision_after_seed(expected_sha256)
-        .await?;
+    let revision = match expected_sha256 {
+        Some(expected_sha256) => {
+            store
+                .load_active_revision_after_seed(expected_sha256)
+                .await?
+        }
+        None => store.load_active_revision().await?.context(
+            "SurrealDB platform store has no active gateway control-plane revision; run installation-bootstrap first",
+        )?,
+    };
     let catalog = Arc::new(GatewayCatalog::from_control_plane(revision.control_plane)?);
     tracing::info!(
         revision_id = %revision.revision_id,
@@ -383,23 +413,17 @@ fn build_profile_mcp_service(
     state: &DynamicMcpState,
     profile_id: GatewayProfileId,
 ) -> ProfileMcpService {
-    let internal_token_issuer = state.internal_token_issuer.clone();
+    // Every stateless request gets its own handler clone while the profile's
+    // discovery cache and change broadcaster remain process-wide.
+    let gateway_mcp = GatewayMcp::new(
+        state.catalog.clone(),
+        profile_id.clone(),
+        state.gateway_state.clone(),
+        state.internal_token_issuer.clone(),
+        state.upstream_http.clone(),
+    );
     let mcp_service = StreamableHttpService::new(
-        {
-            let catalog = state.catalog.clone();
-            let gateway_state = state.gateway_state.clone();
-            let profile_id = profile_id.clone();
-            let upstream_http = state.upstream_http.clone();
-            move || {
-                Ok(GatewayMcp::new(
-                    catalog.clone(),
-                    profile_id.clone(),
-                    gateway_state.clone(),
-                    internal_token_issuer.clone(),
-                    upstream_http.clone(),
-                ))
-            }
-        },
+        move || Ok(gateway_mcp.clone()),
         veoveo_mcp_contract::stateless_session_manager(),
         veoveo_mcp_contract::canonical_streamable_http_server_config()
             .with_allowed_hosts(state.allowed_hosts.iter().cloned())

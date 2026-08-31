@@ -6,6 +6,7 @@ import struct
 import tempfile
 import threading
 import unittest
+import uuid
 from collections import deque
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,7 +16,11 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from pymavlink import mavutil
 from veoveo_uav_sim.adapter_auth import authorization_middleware
-from veoveo_uav_sim.app import kit_live_render_arguments, kit_newton_arguments
+from veoveo_uav_sim.app import (
+    kit_live_render_arguments,
+    kit_newton_arguments,
+    kit_rtpt_visual_arguments,
+)
 from veoveo_uav_sim.config import (
     FleetLoopConfig,
     RuntimeConfig,
@@ -100,7 +105,6 @@ from veoveo_uav_sim.world_config import (
 VALID_ENVIRONMENT = {
     "CESIUM_ION_ACCESS_TOKEN": "test-token",
     "UAV_SIM_CESIUM_ION_ASSET_ID": "2275207",
-    "UAV_SIM_RECORDING_KEY": "019f7122-3d89-7d21-8312-8940d1e0f510",
     "UAV_SIM_SESSION_ID": "uav-showcase",
     "UAV_SIM_ADAPTER_BEARER_TOKEN": "test-adapter-token-0000000000000000",
     "UAV_SIM_TILE_CACHE_POLICY": "persistent",
@@ -137,6 +141,8 @@ VALID_ENVIRONMENT = {
         ]
     ),
 }
+
+RECORDING_KEY = uuid.UUID("019f7122-3d89-7d21-8312-8940d1e0f510")
 
 WORLD = WorldConfiguration(
     revision_uri="frames://world/uav-showcase-new-york/revision/revision-1",
@@ -208,6 +214,18 @@ class RuntimeConfigTests(unittest.TestCase):
                 "--/exts/isaacsim.core.simulation_manager/default_engine=newton",
             ],
         )
+
+    def test_rtpt_uses_fixed_iray_exposure_for_the_complete_atlas(self) -> None:
+        arguments = kit_rtpt_visual_arguments()
+        self.assertIn("--/rtx/post/histogram/enabled=false", arguments)
+        self.assertIn("--/rtx/post/tonemap/op=7", arguments)
+        self.assertIn(
+            "--/rtx/post/tonemap/irayReinhard/crushBlacks=0.0", arguments
+        )
+        self.assertIn(
+            "--/rtx/post/tonemap/irayReinhard/burnHighlights=0.35", arguments
+        )
+        self.assertIn("--/rtx/rtpt/fireflyFilter/enabled=true", arguments)
 
     def test_google_tiles_are_mandatory_and_exact(self) -> None:
         with patch.dict(os.environ, VALID_ENVIRONMENT, clear=True):
@@ -334,6 +352,8 @@ class RuntimeAdapterHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(config.recording.telemetry_hz, 5)
         self.assertEqual(config.recording.queue_capacity, 256)
         self.assertEqual(config.recording.map_provider.value, "openStreetMap")
+        self.assertEqual(config.recording.maximum_segment_bytes, 4 * 1024**3)
+        self.assertEqual(config.recording.maximum_segment_seconds, 4 * 60 * 60)
 
         app_source = (
             Path(__file__).parents[1] / "veoveo_uav_sim" / "app.py"
@@ -473,12 +493,16 @@ class RuntimeAdapterHttpTests(unittest.IsolatedAsyncioTestCase):
             "UAV_SIM_RECORDING_MAP_PROVIDER": "mapboxSatellite",
             "UAV_SIM_RECORDING_TELEMETRY_HZ": "4",
             "UAV_SIM_RECORDING_QUEUE_CAPACITY": "128",
+            "UAV_SIM_RECORDING_MAXIMUM_SEGMENT_BYTES": str(2 * 1024**3),
+            "UAV_SIM_RECORDING_MAXIMUM_SEGMENT_SECONDS": "7200",
         }
         with patch.dict(os.environ, environment, clear=True):
             config = RuntimeConfig.from_environment()
         self.assertEqual(config.recording.map_provider.value, "mapboxSatellite")
         self.assertEqual(config.recording.telemetry_hz, 4)
         self.assertEqual(config.recording.queue_capacity, 128)
+        self.assertEqual(config.recording.maximum_segment_bytes, 2 * 1024**3)
+        self.assertEqual(config.recording.maximum_segment_seconds, 7200)
 
         invalid = {
             **VALID_ENVIRONMENT,
@@ -598,7 +622,9 @@ class RuntimeAdapterHttpTests(unittest.IsolatedAsyncioTestCase):
             {**VALID_ENVIRONMENT, "UAV_SIM_VEHICLE_COUNT": "4"},
             clear=True,
         ):
-            state = RuntimeState(RuntimeConfig.from_environment(), WORLD).snapshot()
+            state = RuntimeState(
+                RuntimeConfig.from_environment(), WORLD, RECORDING_KEY
+            ).snapshot()
         self.assertEqual(len(state["cameras"]), 1)
         camera = state["cameras"][0]
         camera_path = camera["entity_path"]
@@ -610,6 +636,9 @@ class RuntimeAdapterHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(camera["encoder"], "nvidia_nvenc")
         self.assertEqual(camera["transport"], "rtsp_rtp")
         self.assertEqual(state["recordings"][0]["camera_streams"], [camera_path])
+        self.assertEqual(
+            state["recordings"][0]["recording_key"], str(RECORDING_KEY)
+        )
 
         recording_source = (
             Path(__file__).parents[1] / "veoveo_uav_sim" / "recording.py"
@@ -699,7 +728,7 @@ class RuntimeAdapterHttpTests(unittest.IsolatedAsyncioTestCase):
     def test_recording_degradation_is_visible_without_blocking_readiness(self) -> None:
         with patch.dict(os.environ, VALID_ENVIRONMENT, clear=True):
             config = RuntimeConfig.from_environment()
-        state = RuntimeState(config, WORLD)
+        state = RuntimeState(config, WORLD, RECORDING_KEY)
         state.update_recording_publisher("degraded", 17, 9, "network unavailable")
         recording = state.snapshot()["recordings"][0]
         self.assertTrue(recording["active"])
@@ -711,7 +740,9 @@ class RuntimeAdapterHttpTests(unittest.IsolatedAsyncioTestCase):
 
     def test_streamable_cameras_share_one_persistent_atlas(self) -> None:
         with patch.dict(os.environ, VALID_ENVIRONMENT, clear=True):
-            state = RuntimeState(RuntimeConfig.from_environment(), WORLD)
+            state = RuntimeState(
+                RuntimeConfig.from_environment(), WORLD, RECORDING_KEY
+            )
         products = state.snapshot()["stream_products"]
 
         state.update_stream_products(products)
@@ -729,7 +760,9 @@ class RuntimeAdapterHttpTests(unittest.IsolatedAsyncioTestCase):
 
     def test_camera_health_tracks_its_persistent_product(self) -> None:
         with patch.dict(os.environ, VALID_ENVIRONMENT, clear=True):
-            state = RuntimeState(RuntimeConfig.from_environment(), WORLD)
+            state = RuntimeState(
+                RuntimeConfig.from_environment(), WORLD, RECORDING_KEY
+            )
         state.update_stream_products(
             [
                 {
@@ -757,7 +790,9 @@ class RuntimeAdapterHttpTests(unittest.IsolatedAsyncioTestCase):
 
     def test_render_timing_separates_native_update_from_complete_cycle(self) -> None:
         with patch.dict(os.environ, VALID_ENVIRONMENT, clear=True):
-            state = RuntimeState(RuntimeConfig.from_environment(), WORLD)
+            state = RuntimeState(
+                RuntimeConfig.from_environment(), WORLD, RECORDING_KEY
+            )
         state.observe_render_cycle(
             0.02,
             0.03,
@@ -1106,9 +1141,19 @@ class NativeCadenceTests(unittest.TestCase):
         asset_source = (runtime_root / "assets" / "iris.usda").read_text()
 
         self.assertIn('switch_physics_engine("newton"', app_source)
-        self.assertIn('"renderer": "MinimalRendering"', app_source)
-        self.assertIn('"minimal_shading_mode": 2', app_source)
-        self.assertIn('"anti_aliasing": 2', app_source)
+        self.assertIn('"renderer": "RealTimePathTracing"', app_source)
+        self.assertIn('"anti_aliasing": 3', app_source)
+        self.assertIn('"max_bounces": 2', app_source)
+        self.assertIn('"max_specular_transmission_bounces": 1', app_source)
+        self.assertIn('"max_volume_bounces": 0', app_source)
+        self.assertIn('"/rtx/post/histogram/enabled": "false"', app_source)
+        self.assertIn('"/rtx/post/tonemap/op": str(RTX_TONEMAP_IRAY)', app_source)
+        self.assertIn(
+            "sky.CreateExposureAttr(DAYLIGHT_SKY_EXPOSURE_STOPS)", app_source
+        )
+        self.assertIn(
+            "sun.CreateExposureAttr(DAYLIGHT_SUN_EXPOSURE_STOPS)", app_source
+        )
         hydra_source = (module_root / "hydra_camera.py").read_text()
         self.assertIn("is_async_low_latency=True", hydra_source)
         self.assertIn("newton_stage.cfg.time_step_app = False", app_source)

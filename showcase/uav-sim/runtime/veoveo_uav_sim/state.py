@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import threading
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -55,7 +56,12 @@ def initial_runtime_timing(config: RuntimeConfig) -> dict[str, int | float]:
 
 
 class RuntimeState:
-    def __init__(self, config: RuntimeConfig, world: WorldConfiguration) -> None:
+    def __init__(
+        self,
+        config: RuntimeConfig,
+        world: WorldConfiguration,
+        recording_key: uuid.UUID,
+    ) -> None:
         self._config = config
         self._world = world
         self._condition = threading.Condition()
@@ -111,7 +117,7 @@ class RuntimeState:
             "recordings": [
                 {
                     "application_id": "veoveo-uav-sim",
-                    "recording_key": str(config.recording_key),
+                    "recording_key": str(recording_key),
                     "active": True,
                     "publisher_lifecycle": "connecting",
                     "queue_capacity": config.recording.queue_capacity,
@@ -317,6 +323,7 @@ class RuntimeState:
         queued_events: int,
         dropped_events: int,
         diagnostic: str | None,
+        recording_key: str | None = None,
     ) -> None:
         with self._condition:
             recording = self._state["recordings"][0]
@@ -325,6 +332,9 @@ class RuntimeState:
                 queued_events=max(0, queued_events),
                 dropped_events=max(0, dropped_events),
             )
+            if recording_key is not None and recording_key != recording["recording_key"]:
+                recording["recording_key"] = recording_key
+                recording["started_at"] = _timestamp()
             if diagnostic:
                 recording["diagnostic"] = diagnostic
             else:

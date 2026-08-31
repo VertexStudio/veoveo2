@@ -66,6 +66,14 @@ A server shipping a view (see `servers/timeseries-mcp` and
    scope (e.g. `map:admin`) exactly like any other scoped tool; resources
   carry the scope their data warrants.
 
+Servers whose operator surface is primarily structured resource inspection and
+typed tool invocation may render `WorkbenchApp` from this crate. The server still
+owns every title, resource URI, tool name, and starter argument. The shared shell
+only implements the MCP Apps bridge, task observation, resource subscriptions,
+theme projection, and generic JSON presentation; it has no domain catalog and no
+authority of its own. A purpose-built App remains appropriate when the domain
+requires maps, charts, video, spatial interaction, or another specialized visual.
+
 ## Host obligations
 
 The hosting core (gateway + console BFF + console web) stays fully generic:
@@ -88,7 +96,12 @@ The hosting core (gateway + console BFF + console web) stays fully generic:
 - **Catalog** — the BFF discovers apps dynamically from `resources/list`
   (`is_app_resource`), derives ownership from the `ui://{server}/…` prefix,
   and attaches only that server's app-visible linked tools. There is no
-  manual registration step anywhere.
+  manual registration step anywhere. The initial catalog may be empty or
+  partial while hosted servers discover. Each auth-scoped BFF client opens one
+  resource-and-tool list-change listener before taking its first snapshot, then
+  streams complete caller-visible catalog snapshots to the browser. The shell
+  renders immediately and replaces its catalog query data as each server
+  responds; one unresponsive server cannot retain the page's loading state.
 - **Frame** — app HTML is served same-origin with `default-src 'none'` into an
   `<iframe sandbox="allow-scripts">`. The BFF validates every declared CSP
   origin, sorts and deduplicates the result, and adds only those exact sources
@@ -135,8 +148,10 @@ The hosting core (gateway + console BFF + console web) stays fully generic:
 - **Navigation** — the host's menu merges its static platform views with one
   entry per discovered app (label from the resource title, icon from the
   resource icons). Discovery failures are isolated by server and surface.
-  Healthy Apps remain available beside a typed degradation notice, and a
-  failed server never blocks the shell or the rest of the catalog.
+  Healthy Apps appear independently beside a typed degradation notice, and a
+  failed server never blocks the shell or the rest of the catalog. Catalog
+  arrivals use MCP `listChanged` through the BFF event stream; timer-based
+  refresh is not part of the correctness path.
 - **Context links** — an App may send `ui/open-link` for another exact `ui://`
   resource or one of the two declared platform targets. The Console resolves
   App targets against its current caller-visible catalog and never accepts a
@@ -171,6 +186,30 @@ filters valid declarations against the active profile, actor scopes, and actor
 data labels before adding
 `_meta["io.veoveo/app-resource-dependencies"]` to the listed App resource.
 Dependencies are sorted for deterministic projection.
+
+### Reusable domain Apps
+
+An App may build on another domain without copying that domain's data or
+embedding a private service client. The App owner declares the exact dependency
+in its server manifest, and the installation binding decides whether the owner
+and target are exposed to the same caller. For Map integrations, the target is
+the registered Map server, the scheme is `map`, and the prefix names the
+smallest required `map://` resource family. A consumer should prefer immutable
+Map compositions, publications, and bounded feature-layer reads over broad
+collection access.
+
+The existing Map workspace, `ui://map/workspace.html`, is the canonical reusable
+Map experience. A host may open it through normal App discovery and navigation.
+An integrating server may instead ship its own App and read authorized Map
+resources through the projected dependency, then add its own domain overlays.
+It must preserve Map attribution, provenance, resource identity, and update
+semantics. App dependencies do not grant tool access; Map mutations remain
+ordinary linked tools with their own scopes.
+
+Apps must fail closed when a Map dependency is absent or unauthorized. They must
+not accept browser-supplied server aliases, arbitrary `map://` prefixes, direct
+Map service URLs, or credentials. A reusable visual component is a protocol
+surface over governed resources, not a second Map authority.
 
 The Console trusts only that gateway projection. It re-lists the exact App
 resource before each cross-server read and accepts the URI only when it matches

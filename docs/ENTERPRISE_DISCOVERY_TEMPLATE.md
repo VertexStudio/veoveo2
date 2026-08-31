@@ -370,24 +370,36 @@ Validate discovery and direct invocation separately. Human users must not inheri
 internal tools used by an orchestrating service. Machine identities require their own
 minimum capability profiles.
 
+When a service supplies an interactive App, record its exact `ui://` resource, linked
+tools, readable resources, and any cross-server resource dependency. Decide whether the
+App needs reactive updates, durable tasks, internal navigation, or agent messaging.
+Each dependency must name the smallest required resource family and must remain subject
+to the caller's Gateway policy; App discovery is not an independent authorization path.
+
 ### Recording Requirements
 
 Complete this section only when the workflow uses recordings.
 
 | Question | Decision |
 |---|---|
-| Which producer, dataset, application, and recording key identify the stream? | |
+| Which producer, tenant-local dataset key, application, and recording key identify the source? | |
+| What are the durable dataset UUID and recording UUID, and who creates each? | |
+| Which capture, properties, derived, and Blueprint layers are required? | |
 | How is the recording correlated durably to a business execution? | |
 | Must attachment occur before an external action? | |
 | What proves Live availability? | |
 | Who finalizes the producer stream? | |
-| What operation publishes a sealed History manifest? | |
+| What operation publishes the selected release's sealed playback manifest? | |
+| Which catalog revision and admitted recording set must the access grant bind? | |
+| Does an App require a bounded Arrow projection rather than complete RRD access? | |
+| What cache, projection scratch, spool, and free-space budgets are required? | |
 | What retention, export, legal hold, and deletion rules apply? | |
 | Which roles may read, seal, administer, or export recordings? | |
 
 Treat discovery, Live, finalization, sealing, manifest publication, and History as
 different lifecycle states. Timestamps alone do not prove that a recording belongs to
-a business execution.
+a business execution. The producer recording key is source metadata, not the durable
+dataset or recording identity.
 
 ## Delivery Risks And Assumptions
 

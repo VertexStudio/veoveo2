@@ -91,6 +91,17 @@ pub(super) struct RecordingPlaybackState {
     pub(super) gateway_state: GatewayState,
     pub(super) internal_token_issuer: GatewayInternalTokenIssuer,
     pub(super) upstream_http: GatewayUpstreamHttpClientPool,
+    pub(super) artifact_server: ServerSlug,
+}
+
+#[derive(Clone)]
+pub(super) struct RecordingLayerPublicationState {
+    pub(super) catalog: SharedCatalog,
+    pub(super) gateway_state: GatewayState,
+    pub(super) http: SharedHttpClient,
+    pub(super) internal_token_issuer: GatewayInternalTokenIssuer,
+    pub(super) artifact_server: ServerSlug,
+    pub(super) artifact_service_url: String,
 }
 
 #[derive(Clone)]
@@ -194,10 +205,10 @@ pub(super) fn spawn_gateway_retention_gc_loop(
 ) {
     tokio::spawn(async move {
         loop {
-            tokio::time::sleep(Duration::from_secs(60 * 60)).await;
             if let Err(err) = run_gateway_retention_gc(&gateway_state, retention).await {
                 tracing::error!("gateway retention gc failed: {err}");
             }
+            tokio::time::sleep(Duration::from_secs(60 * 60)).await;
         }
     });
 }

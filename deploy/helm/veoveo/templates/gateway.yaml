@@ -68,10 +68,10 @@ spec:
             - "8788"
             - --public-base-url
             - {{ .Values.global.publicBaseUrl | quote }}
-            - --control-plane
-            - /etc/veoveo/gateway/{{ .Values.gateway.controlPlaneKey }}
             - --artifact-service-url
             - http://artifact-service:8790
+            - --expected-control-plane
+            - /etc/veoveo/gateway/{{ .Values.gateway.controlPlaneKey }}
           env:
             {{- include "veoveo.surrealEnv" . | nindent 12 }}
             - name: VEOVEO_INTERNAL_SIGNING_KEY_DER_B64

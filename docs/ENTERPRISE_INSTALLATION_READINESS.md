@@ -231,6 +231,10 @@ material and installation material as an in-place repair.
 | Runtime user | Non-root identity, filesystem, capabilities, and mounts pass | | | |
 | Network policy | Required Gateway, identity, DNS, and domain egress pass without broad access | | | |
 | Conformance | Hosted-server conformance passes for the published image | | | |
+| App discovery | Caller-visible `ui://` resources, titles, icons, and linked tools match the approved catalog | | | |
+| App isolation | Sandbox, CSP, cookies, storage, and bridge permissions match the selected App contract | | | |
+| Reactive catalog | Partial discovery and resource notifications update without blocking unrelated Apps | | | |
+| Cross-server resources | Every dependency is installation-declared, prefix-bounded, policy-filtered, and read through Gateway | | | |
 
 ### Capability Exposure Matrix
 
@@ -311,19 +315,27 @@ that the selected operation produced the intended effect.
 | Requirement | Expected proof | Evidence | Status |
 |---|---|---|---|
 | Governed discovery | Recording is found through an authorized catalog | | |
-| Exact selection | Dataset, application, key, tenant, and Work Context match | | |
+| Exact selection | Dataset UUID/key, recording UUID, application, producer key, tenant, and Work Context match | | |
+| Layer identity | Every admitted immutable layer has type, ordinal or revision, Artifact occurrence, length, digest, and schema identity | | |
+| Catalog binding | Grant binds the catalog revision, admitted recording set, policy revision, actor, and expiry | | |
+| Blueprint | Producer or dataset-default Blueprint is selected and served through its governed occurrence | | |
 | Correlation | A durable attachment links business plan, execution, and recording ID | | |
 | Attachment ordering | Reservation exists before the correlated external actuation | | |
 | Live | One complete governed live message is consumed | | |
 | Finalization | Producer closes normally and segments reach the documented terminal state | | |
-| History | Sealed manifest is available through the governed route | | |
+| History | The selected release's sealed playback manifest is available through the governed route | | |
+| Projection | Bounded projection enforces selectors, rows, bytes, deadline, digest, and one-time redemption when used | | |
+| Capacity | Hub spool, MCP cache, projection scratch, and free-space floors satisfy the measured workload | | |
 | Storage isolation | Browser receives no PVC, object-store path, or storage credential | | |
 | Replay | Identical replay reuses the attachment without duplicate effect | | |
 
 Temporal proximity does not prove correlation. Attach a recording to the durable
 execution during the workflow. Keep recording evidence separate from actuation evidence
 when their lifecycles differ. `live`, finalized data, sealing, sealed manifest, and
-History availability are separate states and require separate proof.
+History availability are separate states and require separate proof. A producer key is
+metadata and must not be substituted for the durable dataset or recording UUID. Record
+the exact manifest schema selected by the release; do not assume compatibility across a
+declared hard cut.
 
 ## Restart, Upgrade, Rollback, And Reproduction
 

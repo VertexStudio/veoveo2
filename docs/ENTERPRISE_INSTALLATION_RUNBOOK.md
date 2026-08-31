@@ -361,6 +361,13 @@ request, exact human and machine capability catalogs, and representative denials
 Measure real response shapes and sizes. Model full responses deliberately when an API
 returns totals with truncated detail collections.
 
+For MCP Apps, verify the caller-visible `ui://` catalog, linked tools, sandbox and CSP,
+reactive-resource behavior, and any projected cross-server resource dependency. A
+partial service failure may degrade its own App catalog, but it must not hold the entire
+Console in a loading state. Test the dependency through the composed Gateway profile;
+the App's browser message cannot enlarge the server, URI prefix, operation, scope, or
+data labels declared by the installation.
+
 ### Business Workflow
 
 Run the accepted scenario from the public enterprise boundary. Confirm the initial
@@ -384,6 +391,14 @@ When recordings are part of the workflow, prove governed catalog discovery, exac
 selection, durable correlation to the business execution, Live consumption,
 finalization, sealing, and History separately. Temporal proximity is not correlation,
 and a Live recording is not evidence of a sealed History manifest.
+
+Record the selected release's durable dataset UUID, recording UUID, layer identities,
+catalog revision, grant class, Blueprint source, and playback-manifest schema. Verify
+that immutable RRD layers are published through the Artifact plane and that users see
+only governed playback, catalog, or bounded projection surfaces. Measure cache, spool,
+projection scratch, and free-space headroom before activation. When the release declares
+a hard-cut catalog migration, decide retention and export before activation; do not
+invent compatibility with rows, manifests, or staged bytes from an older contract.
 
 ### Evidence Record
 

@@ -61,6 +61,7 @@ async fn serve(args: Args) -> Result<()> {
     let _telemetry: TelemetryGuard =
         init_server_telemetry("veoveo-map-mcp", "info,veoveo_map_mcp=debug")?;
     let public_deployment = args.public_deployment()?;
+    let workspace_basemap = args.workspace_basemap()?;
     let public_endpoint = public_deployment.server(SERVER_SLUG)?;
     let verifier = GatewayInternalTokenVerifier::new(
         TokenIssuer::new(GATEWAY_INTERNAL_TOKEN_ISSUER)?,
@@ -149,7 +150,16 @@ async fn serve(args: Args) -> Result<()> {
         maximum_output_bytes: args.max_artifact_bytes,
         timeout: Duration::from_secs(args.raster_operation_timeout_seconds),
     })?;
+    let feature_packages = crate::feature_packages::FeaturePackageService::new(
+        crate::feature_packages::FeaturePackageServiceConfig {
+            python_executable: args.helper_python.clone(),
+            module: args.feature_package_helper_module.clone(),
+            maximum_output_bytes: args.max_artifact_bytes,
+            timeout: Duration::from_secs(args.feature_package_timeout_seconds),
+        },
+    )?;
     let state = Arc::new(MapApplication {
+        workspace_basemap,
         tasks,
         catalog: catalog.clone(),
         analytics: analytics.clone(),
@@ -157,6 +167,7 @@ async fn serve(args: Args) -> Result<()> {
         routes,
         geography: GeographyService::new(catalog.clone(), analytics.clone()),
         raster,
+        feature_packages,
         spatial: SpatialService::new(catalog.clone(), analytics.clone()),
         acquisitions,
         artifacts,

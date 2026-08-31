@@ -17,12 +17,15 @@ mod browser;
 mod restart;
 
 use browser::{
-    ConsoleAgentInstructionEvidence, ConsoleLiveCaptureEvidence, ConsoleLiveGridEvidence,
-    ConsoleRecordingArchiveCaptureEvidence, ConsoleRecordingCaptureEvidence,
+    ConsoleAgentInstructionEvidence, ConsoleAppExpectation, ConsoleAppSettledState,
+    ConsoleAppsCatalogEvidence, ConsoleLiveCaptureEvidence, ConsoleLiveGridEvidence,
+    ConsoleMapWorkspaceCaptureEvidence, ConsoleRecordingArchiveCaptureEvidence,
+    ConsoleRecordingCaptureEvidence, MapWorkspaceCaptureEvidence, capture_console_apps_catalog,
     capture_console_live_app, capture_console_live_app_five_user_grid,
-    capture_console_live_app_grid, capture_console_live_app_pair, capture_console_recording,
-    capture_console_recording_archive, preflight_console_live_app, preflight_standalone_live_app,
-    send_console_uav_agent_instruction,
+    capture_console_live_app_grid, capture_console_live_app_pair,
+    capture_console_map_workspace_app, capture_console_recording,
+    capture_console_recording_archive, capture_map_workspace_app, preflight_console_live_app,
+    preflight_standalone_live_app, send_console_uav_agent_instruction,
 };
 use restart::{RestartVerification, verify_live_view_restarts};
 
@@ -40,6 +43,120 @@ const QUALIFIED_CAMERA_IDS: [&str; 5] = [
 const FOCUSED_UAV_APP_HOST_PREFLIGHTS: [FocusedUavAppHostPreflight; 2] = [
     FocusedUavAppHostPreflight::Console,
     FocusedUavAppHostPreflight::Standalone,
+];
+const FIRST_PARTY_CONSOLE_APPS: [ConsoleAppExpectation; 16] = [
+    ConsoleAppExpectation {
+        server: "artifact",
+        resource_uri: "ui://artifact/library.html",
+        marker: "Library",
+        settled_state: ConsoleAppSettledState::Exact(&["ready"]),
+        required_selector: None,
+    },
+    ConsoleAppExpectation {
+        server: "recording",
+        resource_uri: "ui://recording/explorer.html",
+        marker: "Explorer",
+        settled_state: ConsoleAppSettledState::Exact(&["ready"]),
+        required_selector: None,
+    },
+    ConsoleAppExpectation {
+        server: "optimization",
+        resource_uri: "ui://optimization/routes.html",
+        marker: "Routes",
+        settled_state: ConsoleAppSettledState::Exact(&["ready"]),
+        required_selector: None,
+    },
+    ConsoleAppExpectation {
+        server: "optimization",
+        resource_uri: "ui://optimization/models.html",
+        marker: "Models",
+        settled_state: ConsoleAppSettledState::Exact(&["ready"]),
+        required_selector: None,
+    },
+    ConsoleAppExpectation {
+        server: "reason",
+        resource_uri: "ui://reason/analyses.html",
+        marker: "Analyses",
+        settled_state: ConsoleAppSettledState::Exact(&["ready"]),
+        required_selector: None,
+    },
+    ConsoleAppExpectation {
+        server: "media",
+        resource_uri: "ui://media/studio.html",
+        marker: "Studio",
+        settled_state: ConsoleAppSettledState::Exact(&["ready"]),
+        required_selector: None,
+    },
+    ConsoleAppExpectation {
+        server: "duckdb",
+        resource_uri: "ui://duckdb/workbench.html",
+        marker: "Workbench",
+        settled_state: ConsoleAppSettledState::Exact(&["ready"]),
+        required_selector: None,
+    },
+    ConsoleAppExpectation {
+        server: "datasheet",
+        resource_uri: "ui://datasheet/workbench.html",
+        marker: "Workbench",
+        settled_state: ConsoleAppSettledState::Exact(&["ready"]),
+        required_selector: None,
+    },
+    ConsoleAppExpectation {
+        server: "frames",
+        resource_uri: "ui://frames/workspace.html",
+        marker: "Workspace",
+        settled_state: ConsoleAppSettledState::Exact(&["ready"]),
+        required_selector: None,
+    },
+    ConsoleAppExpectation {
+        server: "time",
+        resource_uri: "ui://time/timeline.html",
+        marker: "Timeline",
+        settled_state: ConsoleAppSettledState::Exact(&["ready"]),
+        required_selector: None,
+    },
+    ConsoleAppExpectation {
+        server: "charts",
+        resource_uri: "ui://charts/composer.html",
+        marker: "Composer",
+        settled_state: ConsoleAppSettledState::Exact(&["rendered"]),
+        required_selector: Some("#canvas img"),
+    },
+    ConsoleAppExpectation {
+        server: "map",
+        resource_uri: "ui://map/workspace.html",
+        marker: "Workspace",
+        settled_state: ConsoleAppSettledState::MapViewport,
+        required_selector: Some(".maplibregl-canvas"),
+    },
+    ConsoleAppExpectation {
+        server: "stream",
+        resource_uri: "ui://stream/live.html",
+        marker: "Live Monitor",
+        settled_state: ConsoleAppSettledState::Exact(&["waiting", "running", "stopped"]),
+        required_selector: None,
+    },
+    ConsoleAppExpectation {
+        server: "timeseries",
+        resource_uri: "ui://timeseries/forecast.html",
+        marker: "Forecasts",
+        settled_state: ConsoleAppSettledState::Exact(&["Waiting for forecast data…"]),
+        required_selector: None,
+    },
+    ConsoleAppExpectation {
+        server: "uav-sim",
+        resource_uri: "ui://uav-sim/live.html",
+        marker: "Live Cameras",
+        settled_state: ConsoleAppSettledState::Exact(&["ready", "live"]),
+        required_selector: None,
+    },
+    ConsoleAppExpectation {
+        server: "view",
+        resource_uri: "ui://view/preview.html",
+        marker: "Preview",
+        settled_state: ConsoleAppSettledState::Prefix(&["ready —", "composition "]),
+        required_selector: Some("#gl"),
+    },
 ];
 const OPERATOR_PROFILE_SCOPES: &[&str] = &[
     "operator:use",
@@ -89,6 +206,32 @@ struct Args {
 // browser binary; the shared prefix is part of the CLI rather than Rust type noise.
 #[allow(clippy::enum_variant_names)]
 enum SmokeCommand {
+    /// Render the generated Map workspace App with a hardware GPU and bounded fixture bridge.
+    MapWorkspaceBrowserVerify {
+        #[arg(long, default_value = "http://127.0.0.1:9222")]
+        chrome_cdp_url: String,
+        #[arg(long, default_value = "servers/map-mcp/assets/workspace-app.html")]
+        app_html: PathBuf,
+        #[arg(long, default_value = "output/acceptance/map-workspace")]
+        evidence_root: PathBuf,
+        #[arg(long, default_value_t = 60)]
+        timeout_seconds: u64,
+    },
+    /// Interact with the deployed Map workspace through the authenticated public Console.
+    MapWorkspaceLiveBrowserVerify {
+        #[arg(long)]
+        public_base_url: String,
+        #[arg(long, default_value = "VeoVeo Map live acceptance")]
+        composition_title: String,
+        #[arg(long, default_value = "VeoVeo GeoPackage live acceptance")]
+        layer_title: String,
+        #[arg(long, default_value = "http://127.0.0.1:9222")]
+        chrome_cdp_url: String,
+        #[arg(long, default_value = "output/acceptance/map-workspace-live")]
+        evidence_root: PathBuf,
+        #[arg(long, default_value_t = 120)]
+        timeout_seconds: u64,
+    },
     /// Verify the Console and standalone UAV App hosts without opening live products.
     UavAppHostsBrowserVerify {
         #[arg(long)]
@@ -96,6 +239,17 @@ enum SmokeCommand {
         #[arg(long, default_value = "http://127.0.0.1:9222")]
         chrome_cdp_url: String,
         #[arg(long, default_value_t = 180)]
+        timeout_seconds: u64,
+    },
+    /// Verify the complete grouped first-party App catalog and render every expected App.
+    ConsoleAppsBrowserVerify {
+        #[arg(long)]
+        public_base_url: String,
+        #[arg(long, default_value = "http://127.0.0.1:9222")]
+        chrome_cdp_url: String,
+        #[arg(long, default_value = "output/acceptance/console-apps")]
+        evidence_root: PathBuf,
+        #[arg(long, default_value_t = 300)]
         timeout_seconds: u64,
     },
     /// Repeat headed Console acceptance without restarting or commanding the simulation.
@@ -254,6 +408,36 @@ struct AgentInstructionBrowserAcceptanceEvidence {
     instruction: ConsoleAgentInstructionEvidence,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MapWorkspaceBrowserAcceptanceEvidence {
+    schema: &'static str,
+    completed_at: chrono::DateTime<Utc>,
+    source_revision: String,
+    run_id: String,
+    workspace: MapWorkspaceCaptureEvidence,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MapWorkspaceLiveBrowserAcceptanceEvidence {
+    schema: &'static str,
+    completed_at: chrono::DateTime<Utc>,
+    source_revision: String,
+    run_id: String,
+    workspace: ConsoleMapWorkspaceCaptureEvidence,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConsoleAppsBrowserAcceptanceEvidence {
+    schema: &'static str,
+    completed_at: chrono::DateTime<Utc>,
+    source_revision: String,
+    run_id: String,
+    catalog: ConsoleAppsCatalogEvidence,
+}
+
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SourceTimelineSample {
@@ -331,6 +515,38 @@ impl OperatorClient<'_> {
 async fn main() -> Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     match Args::parse().command {
+        SmokeCommand::MapWorkspaceBrowserVerify {
+            chrome_cdp_url,
+            app_html,
+            evidence_root,
+            timeout_seconds,
+        } => {
+            verify_map_workspace(
+                &chrome_cdp_url,
+                &app_html,
+                &evidence_root,
+                Duration::from_secs(timeout_seconds),
+            )
+            .await
+        }
+        SmokeCommand::MapWorkspaceLiveBrowserVerify {
+            public_base_url,
+            composition_title,
+            layer_title,
+            chrome_cdp_url,
+            evidence_root,
+            timeout_seconds,
+        } => {
+            verify_live_map_workspace(
+                &public_base_url,
+                &composition_title,
+                &layer_title,
+                &chrome_cdp_url,
+                &evidence_root,
+                Duration::from_secs(timeout_seconds),
+            )
+            .await
+        }
         SmokeCommand::UavAppHostsBrowserVerify {
             public_base_url,
             chrome_cdp_url,
@@ -339,6 +555,20 @@ async fn main() -> Result<()> {
             verify_uav_app_hosts(
                 &public_base_url,
                 &chrome_cdp_url,
+                Duration::from_secs(timeout_seconds),
+            )
+            .await
+        }
+        SmokeCommand::ConsoleAppsBrowserVerify {
+            public_base_url,
+            chrome_cdp_url,
+            evidence_root,
+            timeout_seconds,
+        } => {
+            verify_console_apps(
+                &public_base_url,
+                &chrome_cdp_url,
+                &evidence_root,
                 Duration::from_secs(timeout_seconds),
             )
             .await
@@ -430,6 +660,143 @@ async fn main() -> Result<()> {
             .await
         }
     }
+}
+
+async fn verify_map_workspace(
+    chrome_cdp_url: &str,
+    app_html: &Path,
+    evidence_root: &Path,
+    timeout: Duration,
+) -> Result<()> {
+    let source_revision = git_revision()?;
+    let run_id = uuid::Uuid::now_v7().to_string();
+    let evidence_directory = evidence_root.join(&source_revision).join(&run_id);
+    fs::create_dir_all(&evidence_directory).with_context(|| {
+        format!(
+            "creating Map workspace browser evidence directory {}",
+            evidence_directory.display()
+        )
+    })?;
+    let workspace = capture_map_workspace_app(
+        chrome_cdp_url,
+        app_html,
+        &evidence_directory.join("map-workspace.png"),
+        timeout,
+    )
+    .await?;
+    let evidence = MapWorkspaceBrowserAcceptanceEvidence {
+        schema: "veoveo.io/map-workspace-browser-evidence/v2",
+        completed_at: Utc::now(),
+        source_revision,
+        run_id,
+        workspace,
+    };
+    let manifest = evidence_directory.join("evidence.json");
+    fs::write(&manifest, serde_json::to_vec_pretty(&evidence)?)
+        .with_context(|| format!("writing Map workspace evidence {}", manifest.display()))?;
+    println!(
+        "Map workspace rendered its persistent hardware WebGL2 map and completed bounded authored and source-release viewport queries. Evidence: {}",
+        manifest.display()
+    );
+    Ok(())
+}
+
+async fn verify_console_apps(
+    public_base_url: &str,
+    chrome_cdp_url: &str,
+    evidence_root: &Path,
+    timeout: Duration,
+) -> Result<()> {
+    let public_base_url = public_base_url.trim_end_matches('/');
+    ensure!(
+        url::Url::parse(public_base_url)?.scheme() == "https",
+        "Console Apps acceptance requires public HTTPS"
+    );
+    let source_revision = git_revision()?;
+    let run_id = uuid::Uuid::now_v7().to_string();
+    let evidence_directory = evidence_root.join(&source_revision).join(&run_id);
+    fs::create_dir_all(&evidence_directory).with_context(|| {
+        format!(
+            "creating Console Apps browser evidence directory {}",
+            evidence_directory.display()
+        )
+    })?;
+    let catalog = capture_console_apps_catalog(
+        chrome_cdp_url,
+        public_base_url,
+        &FIRST_PARTY_CONSOLE_APPS,
+        &evidence_directory,
+        timeout,
+    )
+    .await?;
+    let evidence = ConsoleAppsBrowserAcceptanceEvidence {
+        schema: "veoveo.io/console-apps-browser-acceptance/v1",
+        completed_at: Utc::now(),
+        source_revision,
+        run_id,
+        catalog,
+    };
+    let manifest = evidence_directory.join("evidence.json");
+    fs::write(&manifest, serde_json::to_vec_pretty(&evidence)?)
+        .with_context(|| format!("writing Console Apps evidence {}", manifest.display()))?;
+    println!(
+        "Console projected the complete grouped first-party App catalog and rendered all {} expected Apps through headed hardware graphics. Evidence: {}",
+        FIRST_PARTY_CONSOLE_APPS.len(),
+        manifest.display()
+    );
+    Ok(())
+}
+
+async fn verify_live_map_workspace(
+    public_base_url: &str,
+    composition_title: &str,
+    layer_title: &str,
+    chrome_cdp_url: &str,
+    evidence_root: &Path,
+    timeout: Duration,
+) -> Result<()> {
+    let public_base_url = public_base_url.trim_end_matches('/');
+    ensure!(
+        url::Url::parse(public_base_url)?.scheme() == "https",
+        "live Map workspace acceptance requires public HTTPS"
+    );
+    ensure!(
+        !composition_title.trim().is_empty() && !layer_title.trim().is_empty(),
+        "live Map workspace acceptance requires exact composition and layer titles"
+    );
+    let source_revision = git_revision()?;
+    let run_id = uuid::Uuid::now_v7().to_string();
+    let evidence_directory = evidence_root.join(&source_revision).join(&run_id);
+    fs::create_dir_all(&evidence_directory).with_context(|| {
+        format!(
+            "creating live Map workspace evidence directory {}",
+            evidence_directory.display()
+        )
+    })?;
+    let workspace = capture_console_map_workspace_app(
+        chrome_cdp_url,
+        public_base_url,
+        composition_title,
+        layer_title,
+        &evidence_directory,
+        timeout,
+    )
+    .await?;
+    let evidence = MapWorkspaceLiveBrowserAcceptanceEvidence {
+        schema: "veoveo.io/map-workspace-live-browser-evidence/v3",
+        completed_at: Utc::now(),
+        source_revision,
+        run_id,
+        workspace,
+    };
+    let manifest = evidence_directory.join("evidence.json");
+    fs::write(&manifest, serde_json::to_vec_pretty(&evidence)?)
+        .with_context(|| format!("writing live Map workspace evidence {}", manifest.display()))?;
+    println!(
+        "The public Console rendered and interacted with the persistent map, authored and source previews, every guided workflow, and governed-data inspector through hardware WebGL2. Evidence: {}",
+        manifest.display()
+    );
+    Ok(())
 }
 
 async fn verify_uav_agent_instruction(
@@ -538,7 +905,7 @@ async fn verify_recording_archive(
     )
     .await?;
     let evidence = RecordingArchiveBrowserAcceptanceEvidence {
-        schema: "veoveo.io/uav-recording-archive-browser-evidence/v1",
+        schema: "veoveo.io/uav-recording-archive-browser-evidence/v2",
         completed_at: Utc::now(),
         source_revision,
         run_id,
@@ -1222,6 +1589,21 @@ mod tests {
     #[test]
     fn focused_uav_acceptance_preflights_both_app_hosts() {
         assert_eq!(focused_uav_app_host_preflights(), ["console", "standalone"]);
+    }
+
+    #[test]
+    fn composed_console_acceptance_covers_the_complete_first_party_catalog() {
+        assert_eq!(FIRST_PARTY_CONSOLE_APPS.len(), 16);
+        assert!(
+            FIRST_PARTY_CONSOLE_APPS
+                .iter()
+                .any(|app| app.resource_uri == "ui://charts/composer.html")
+        );
+        assert!(
+            FIRST_PARTY_CONSOLE_APPS
+                .iter()
+                .any(|app| app.resource_uri == "ui://datasheet/workbench.html")
+        );
     }
 
     #[test]

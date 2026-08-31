@@ -22,6 +22,8 @@ mod oauth_client_credentials;
 mod oauth_grants;
 #[path = "gateway/recording_ingest.rs"]
 mod recording_ingest;
+#[path = "gateway/recording_layer_publication.rs"]
+mod recording_layer_publication;
 #[path = "gateway/recording_playback.rs"]
 mod recording_playback;
 #[path = "gateway/runtime.rs"]
@@ -214,9 +216,6 @@ enum Command {
         /// Public base URL for metadata and authorization challenges.
         #[arg(long)]
         public_base_url: String,
-        /// JSON control plane this replica must observe as active before serving traffic.
-        #[arg(long)]
-        control_plane: PathBuf,
         /// Private artifact service base URL used by the authorized download proxy.
         #[arg(
             long,
@@ -224,6 +223,9 @@ enum Command {
             default_value = "http://artifact-service:8790"
         )]
         artifact_service_url: String,
+        /// Seed control-plane file whose canonical revision must be active before serving.
+        #[arg(long)]
+        expected_control_plane: Option<PathBuf>,
         #[command(flatten)]
         store: SurrealStoreArgs,
         /// Base64-encoded PKCS#8 Ed25519 private key used only by the gateway
@@ -463,8 +465,8 @@ async fn main() -> anyhow::Result<()> {
         Command::Serve {
             port,
             public_base_url,
-            control_plane,
             artifact_service_url,
+            expected_control_plane,
             store,
             internal_signing_key_der_b64,
             internal_signing_key_id,
@@ -475,6 +477,13 @@ async fn main() -> anyhow::Result<()> {
             audit_event_retention_days,
         } => {
             let control_store = GatewayControlStore::connect(store.into_config()?).await?;
+            let expected_control_plane_sha256 = expected_control_plane
+                .as_ref()
+                .map(|path| {
+                    let catalog = GatewayCatalog::load_json(path)?;
+                    control_plane_sha256(catalog.control_plane())
+                })
+                .transpose()?;
             let retention = GatewayRetentionPolicy {
                 audit_event_days: audit_event_retention_days,
             };
@@ -486,9 +495,9 @@ async fn main() -> anyhow::Result<()> {
             server::serve(server::ServeConfig {
                 port,
                 public_base_url,
-                control_plane,
                 artifact_service_url,
                 control_store,
+                expected_control_plane_sha256,
                 internal_signing_key_der_b64: internal_signing_key_der_b64.0,
                 internal_signing_key_id,
                 refresh_delivery_cipher,
@@ -580,8 +589,6 @@ mod tests {
             "serve",
             "--public-base-url",
             "https://veoveo.example",
-            "--control-plane",
-            "configs/gateway.smoke.json",
             "--internal-signing-key-der-b64",
             "internal-signing-secret",
             "--refresh-delivery-key-b64",

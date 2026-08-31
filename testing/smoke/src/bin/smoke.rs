@@ -31,6 +31,7 @@ use serde_json::Value;
 use veoveo_extension_contract::SimulationOverlayKind;
 use veoveo_mcp_contract::{
     GatewayTaskStatusDocument, GatewayTaskStatusKind, RELATED_TASK_META_KEY,
+    parse_artifact_plane_uri,
 };
 
 #[allow(dead_code)]
@@ -103,7 +104,7 @@ enum Cmd {
         #[arg(long, default_value = "https://veoveo.bioma.ai")]
         public_base_url: String,
     },
-    /// Run every live SurrealDB integration target against an isolated 3.2.3 container.
+    /// Run every live SurrealDB integration target against an isolated 3.2.4 container.
     SurrealIntegration,
     /// Smoke-test gateway platform bootstrap and active revision validation.
     GatewayPlatformStore {

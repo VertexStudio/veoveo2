@@ -67,9 +67,9 @@ pub(crate) static SERVER_DOCS: LazyLock<ServerDocs> =
 /// server's manual and contract declaration.
 const WELL_KNOWN_SCOPES: &[&str] = &["map:dataset:read", "map:feature:read", "map:admin"];
 
-/// Tools the map administration app may invoke; each is linked to the app
-/// view in `list_tools` and scope-gated to `map:admin` in its handler.
-const ADMIN_TOOLS: &[&str] = &[
+/// Tools the Map workspace may invoke. Each remains scope-gated in its
+/// handler; the workspace access resource only controls presentation.
+const WORKSPACE_TOOLS: &[&str] = &[
     "register_source",
     "replace_source",
     "disable_source",
@@ -79,9 +79,6 @@ const ADMIN_TOOLS: &[&str] = &[
     "activate_release",
     "rollback_release",
     "quarantine_release",
-];
-
-const EDITOR_TOOLS: &[&str] = &[
     "archive_feature_layer",
     "archive_map_composition",
     "build_vector_tiles",
@@ -90,16 +87,18 @@ const EDITOR_TOOLS: &[&str] = &[
     "create_map_composition",
     "export_feature_layer",
     "import_feature_layer",
+    "inspect_geopackage",
     "publish_feature_layer",
     "query_features",
+    "query_source_features",
     "restore_feature",
     "update_feature_layer",
     "update_map_composition",
     "validate_feature_changes",
 ];
 
-/// Self-contained icon for the admin app (lucide `map-pinned` outline).
-const ADMIN_APP_ICON: &str = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9IiM0YTdkZDYiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIj48cGF0aCBkPSJNMTggOGMwIDMuNjEzLTMuODY5IDcuNDI5LTUuMzkzIDguNzk1YTEgMSAwIDAgMS0xLjIxNCAwQzkuODcgMTUuNDI5IDYgMTEuNjEzIDYgOGE2IDYgMCAwIDEgMTIgMCIvPjxjaXJjbGUgY3g9IjEyIiBjeT0iOCIgcj0iMiIvPjxwYXRoIGQ9Ik04LjcxNCAxNGgtMy43MWExIDEgMCAwIDAtLjk0OC42ODNsLTIuMDA0IDZBMSAxIDAgMCAwIDMgMjJoMThhMSAxIDAgMCAwIC45NDgtMS4zMTZsLTItNmExIDEgMCAwIDAtLjk0OS0uNjg0aC0zLjcxMiIvPjwvc3ZnPg==";
+/// Self-contained icon for the workspace (lucide `map-pinned` outline).
+const WORKSPACE_APP_ICON: &str = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9IiM0YTdkZDYiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIj48cGF0aCBkPSJNMTggOGMwIDMuNjEzLTMuODY5IDcuNDI5LTUuMzkzIDguNzk1YTEgMSAwIDAgMS0xLjIxNCAwQzkuODcgMTUuNDI5IDYgMTEuNjEzIDYgOGE2IDYgMCAwIDEgMTIgMCIvPjxjaXJjbGUgY3g9IjEyIiBjeT0iOCIgcj0iMiIvPjxwYXRoIGQ9Ik04LjcxNCAxNGgtMy43MWExIDEgMCAwIDAtLjk0OC42ODNsLTIuMDA0IDZBMSAxIDAgMCAwIDMgMjJoMThhMSAxIDAgMCAwIC45NDgtMS4zMTZsLTItNmExIDEgMCAwIDAtLjk0OS0uNjg0aC0zLjcxMiIvPjwvc3ZnPg==";
 
 #[derive(Clone)]
 pub struct MapMcp {
@@ -868,7 +867,7 @@ impl ServerHandler for MapMcp {
         info.capabilities = capabilities;
         info.server_info = rmcp::model::Implementation::new("map", env!("CARGO_PKG_VERSION"));
         info.instructions = Some(
-            "Earth geography, governed authored feature layers, and logistics planning for human, road, off-road, rail, maritime, and aviation mobility. Create and revise Work Context-owned GeoJSON/JSON-FG features with optimistic changesets, query their DuckDB Spatial projection through bounded CQL2 JSON, and publish immutable layer revisions. Use durable tasks to import an authorized GeoJSON artifact, export a publication as GeoJSON Sequence or GeoParquet 1.0, or build an MVT 2.1 bundle. Compose publication pins through map://composition resources or the ui://map/editor.html MCP App. Generic authored features never affect routing until a separate governed promotion validates them into a routing dataset release. Read versioned map:// resources, invoke route or route_matrix through the Task API with an explicit profile and departure time, and use build_travel_model to publish heterogeneous cuOpt-ready cost and transit-time matrices for Optimization MCP. Treat planning_advisory status as non-certified guidance. Source, acquisition, release, and mobility-profile administration runs through the map:admin-scoped tools and the ui://map/admin.html app view."
+            "Earth geography, governed authored feature layers, and logistics planning for human, road, off-road, rail, maritime, and aviation mobility. Create and revise Work Context-owned GeoJSON/JSON-FG features with optimistic changesets, query their DuckDB Spatial projection through bounded CQL2 JSON, and publish immutable layer revisions. Use durable tasks to inspect or import an authorized OGC GeoPackage 1.4 vector artifact, import GeoJSON, export a publication as GeoJSON Sequence, GeoParquet 1.0, or GeoPackage 1.4, or build an MVT 2.1 bundle. Compose and inspect immutable publication pins through map://composition resources or the permission-aware ui://map/workspace.html MCP App. Generic authored features never affect routing until a separate governed promotion validates them into a routing dataset release. Read versioned map:// resources, invoke route or route_matrix through the Task API with an explicit profile and departure time, and use build_travel_model to publish heterogeneous cuOpt-ready cost and transit-time matrices for Optimization MCP. Treat planning_advisory status as non-certified guidance. Source, acquisition, release, and mobility-profile administration uses the same workspace and remains gated by map:admin."
                 .to_owned(),
         );
         info
@@ -937,19 +936,10 @@ impl ServerHandler for MapMcp {
         tools = tools
             .into_iter()
             .map(|tool| {
-                if ADMIN_TOOLS.contains(&tool.name.as_ref()) {
+                if WORKSPACE_TOOLS.contains(&tool.name.as_ref()) {
                     veoveo_mcp_apps_extension::link_tool_to_app(
                         tool,
-                        uris::ADMIN_APP_URI,
-                        &[
-                            veoveo_mcp_apps_extension::UiVisibility::Model,
-                            veoveo_mcp_apps_extension::UiVisibility::App,
-                        ],
-                    )
-                } else if EDITOR_TOOLS.contains(&tool.name.as_ref()) {
-                    veoveo_mcp_apps_extension::link_tool_to_app(
-                        tool,
-                        uris::EDITOR_APP_URI,
+                        uris::WORKSPACE_APP_URI,
                         &[
                             veoveo_mcp_apps_extension::UiVisibility::Model,
                             veoveo_mcp_apps_extension::UiVisibility::App,
@@ -986,7 +976,10 @@ impl ServerHandler for MapMcp {
                 None,
             ));
         }
-        let resources = discoverable_resources(ResourceDiscoveryAccess::from_identity(&identity));
+        let resources = discoverable_resources(
+            ResourceDiscoveryAccess::from_identity(&identity),
+            &self.state.workspace_basemap,
+        );
         let page = mcp_page(resources, request.as_ref())?;
         Ok(ListResourcesResult {
             resources: page.items,
@@ -1041,24 +1034,34 @@ impl ServerHandler for MapMcp {
                 require_any_scope(&context, WELL_KNOWN_SCOPES)?;
                 return json_resource(uri, SERVER_DOCS.contract_declaration());
             }
-            // Administration resources carry the admin scope, not dataset read.
-            if uri == uris::ADMIN_APP_URI {
-                require_scope(&context, "map:admin")?;
+            if uri == uris::WORKSPACE_APP_URI {
+                require_any_scope(
+                    &context,
+                    &["map:admin", "map:dataset:read", "map:feature:read"],
+                )?;
                 return Ok(ReadResourceResult::new(vec![
                     veoveo_mcp_apps_extension::app_html_contents(
                         uri,
-                        include_str!("../assets/admin-app.html"),
+                        include_str!("../assets/workspace-app.html"),
                     ),
                 ]));
             }
-            if uri == uris::EDITOR_APP_URI {
-                require_scope(&context, "map:feature:read")?;
-                return Ok(ReadResourceResult::new(vec![
-                    veoveo_mcp_apps_extension::app_html_contents(
-                        uri,
-                        include_str!("../assets/editor-app.html"),
-                    ),
-                ]));
+            if uri == uris::WORKSPACE_URI {
+                let identity = require_any_scope(
+                    &context,
+                    &["map:admin", "map:dataset:read", "map:feature:read"],
+                )?;
+                return json_resource(
+                    uri,
+                    &crate::contract::MapWorkspaceAccess {
+                        administration: identity_has_scope(&identity, "map:admin"),
+                        dataset_read: identity_has_scope(&identity, "map:dataset:read"),
+                        feature_read: identity_has_scope(&identity, "map:feature:read"),
+                        feature_write: identity_has_scope(&identity, "map:feature:write"),
+                        feature_publish: identity_has_scope(&identity, "map:feature:publish"),
+                        basemap: self.state.workspace_basemap.clone(),
+                    },
+                );
             }
             if uri == uris::ACQUISITIONS_URI {
                 let identity = require_scope(&context, "map:admin")?;
@@ -1077,7 +1080,7 @@ impl ServerHandler for MapMcp {
                 return json_resource(uri, &jobs);
             }
             if uri == uris::ACTIVE_RELEASES_URI {
-                let identity = require_scope(&context, "map:admin")?;
+                let identity = require_any_scope(&context, &["map:admin", "map:dataset:read"])?;
                 let scope = self.state.scope(&identity).await.map_err(internal)?;
                 let pointers = self
                     .state
@@ -1105,6 +1108,7 @@ impl ServerHandler for MapMcp {
                 || uri == uris::LAYER_PRODUCTS_URI
                 || uri == uris::COMPOSITIONS_URI
                 || uri.starts_with("map://feature-layer/")
+                || uri.starts_with("map://feature-style/")
                 || uri.starts_with("map://composition/")
             {
                 let identity = require_scope(&context, "map:feature:read")?;
@@ -1229,6 +1233,20 @@ impl ServerHandler for MapMcp {
                             .state
                             .authoring
                             .style_revision(&identity, &scope, &layer_id, version)
+                            .await
+                            .map_err(internal)?
+                            .ok_or_else(|| not_found("feature style revision"))?,
+                    );
+                }
+                if let Some(style_revision) = uris::parse_feature_style_revision(uri) {
+                    let style_revision_id: crate::contract::StyleRevisionId =
+                        style_revision.parse().map_err(invalid_params)?;
+                    return json_resource(
+                        uri,
+                        &self
+                            .state
+                            .authoring
+                            .style_revision_by_id(&identity, &scope, &style_revision_id)
                             .await
                             .map_err(internal)?
                             .ok_or_else(|| not_found("feature style revision"))?,
@@ -1818,30 +1836,52 @@ impl ResourceDiscoveryAccess {
 /// Protocol discovery remains constant in tenant data size. Instance
 /// resources stay directly addressable through templates and bounded root
 /// indexes; listing the MCP surface never scans the Map catalog or DuckDB.
-fn discoverable_resources(access: ResourceDiscoveryAccess) -> Vec<Resource> {
+fn discoverable_resources(
+    access: ResourceDiscoveryAccess,
+    basemap: &crate::contract::MapWorkspaceBasemap,
+) -> Vec<Resource> {
     let mut resources = well_known_resources();
-    if access.admin {
+    if access.admin || access.dataset_read || access.feature_read {
+        let basemap_origin = basemap.origin().expect("validated workspace basemap");
         resources.push(
-            veoveo_mcp_apps_extension::app_resource(uris::ADMIN_APP_URI, "map-admin-app")
-                .with_title("Map data")
-                .with_description(
-                    "Interactive MCP App governing map sources, acquisitions, dataset releases, and mobility profiles.",
-                )
-                .with_icons(vec![rmcp::model::Icon::new(ADMIN_APP_ICON)]),
+            veoveo_mcp_apps_extension::app_resource_with_meta(
+                uris::WORKSPACE_APP_URI,
+                "map-workspace-app",
+                veoveo_mcp_apps_extension::ResourceUiMeta {
+                    csp: Some(veoveo_mcp_apps_extension::UiCsp {
+                        connect_domains: vec![basemap_origin.clone()],
+                        resource_domains: vec![basemap_origin],
+                        ..Default::default()
+                    }),
+                    prefers_border: None,
+                },
+            )
+            .with_title("Workspace")
+            .with_description(
+                "Permission-aware Map MCP workspace for map viewing, governed feature layers, compositions, sources, acquisitions, releases, and mobility profiles.",
+            )
+            .with_icons(vec![rmcp::model::Icon::new(WORKSPACE_APP_ICON)]),
         );
+        resources.push(json_resource_descriptor(
+            uris::WORKSPACE_URI.to_owned(),
+            "Map workspace access".to_owned(),
+            "Caller-specific Map workspace capabilities.",
+        ));
+    }
+    if access.admin {
         resources.push(json_resource_descriptor(
             uris::ACQUISITIONS_URI.to_owned(),
             "Map acquisitions".to_owned(),
             "Governed acquisition jobs (map:admin).",
         ));
-        resources.push(json_resource_descriptor(
-            uris::ACTIVE_RELEASES_URI.to_owned(),
-            "Active releases".to_owned(),
-            "Active dataset release pointers (map:admin).",
-        ));
     }
     if access.dataset_read {
         resources.extend(root_resources());
+        resources.push(json_resource_descriptor(
+            uris::ACTIVE_RELEASES_URI.to_owned(),
+            "Active releases".to_owned(),
+            "Active immutable dataset release pointers.",
+        ));
         resources.push(json_resource_descriptor(
             uris::RASTER_DERIVATIONS_URI.to_owned(),
             "Raster derivations".to_owned(),
@@ -1856,14 +1896,6 @@ fn discoverable_resources(access: ResourceDiscoveryAccess) -> Vec<Resource> {
         }
     }
     if access.feature_read {
-        resources.push(
-            veoveo_mcp_apps_extension::app_resource(uris::EDITOR_APP_URI, "map-editor-app")
-                .with_title("Map feature editor")
-                .with_description(
-                    "Interactive MCP App for governed feature layers, changesets, publications, and compositions.",
-                )
-                .with_icons(vec![rmcp::model::Icon::new(ADMIN_APP_ICON)]),
-        );
         resources.push(json_resource_descriptor(
             uris::FEATURE_LAYERS_URI.to_owned(),
             "Authored feature layers".to_owned(),
@@ -1988,6 +2020,11 @@ fn resource_templates() -> Vec<ResourceTemplate> {
             uris::FEATURE_STYLE_TEMPLATE,
             "Feature style revision",
             "Immutable safe map style revision.",
+        ),
+        template(
+            uris::FEATURE_STYLE_REVISION_TEMPLATE,
+            "Feature style revision by identity",
+            "Immutable safe map style revision referenced by a publication or composition.",
         ),
         template(
             uris::FEATURES_TEMPLATE,
@@ -2176,8 +2213,8 @@ fn stable_resource_uris() -> Vec<String> {
         .collect();
     resource_uris.extend(
         [
-            uris::ADMIN_APP_URI,
-            uris::EDITOR_APP_URI,
+            uris::WORKSPACE_APP_URI,
+            uris::WORKSPACE_URI,
             uris::ACQUISITIONS_URI,
             uris::ACTIVE_RELEASES_URI,
             uris::FEATURE_LAYERS_URI,
@@ -2392,6 +2429,13 @@ async fn completion_values(
             .into_iter()
             .filter_map(|value| value.style.map(|style| style.version.to_string()))
             .collect(),
+        (uris::FEATURE_STYLE_REVISION_TEMPLATE, "style_revision_id") => state
+            .authoring
+            .list_layers(identity, scope, true)
+            .await?
+            .into_iter()
+            .filter_map(|value| value.style.map(|style| style.style_revision_id.to_string()))
+            .collect(),
         (
             uris::PUBLICATION_TEMPLATE | uris::FEATURES_TEMPLATE | uris::LAYER_PRODUCT_TEMPLATE,
             "publication_id",
@@ -2436,7 +2480,8 @@ async fn completion_values(
 fn is_subscribable(uri: &str) -> bool {
     matches!(
         uri,
-        uris::DATASETS_URI
+        uris::ACTIVE_RELEASES_URI
+            | uris::DATASETS_URI
             | uris::MOBILITY_PROFILES_URI
             | uris::RESTRICTIONS_URI
             | uris::ROUTES_URI
@@ -2462,7 +2507,9 @@ fn is_feature_subscribable(uri: &str) -> bool {
 }
 
 fn is_feature_template(uri: &str) -> bool {
-    uri.starts_with("map://feature-layer/") || uri.starts_with("map://composition/")
+    uri.starts_with("map://feature-layer/")
+        || uri.starts_with("map://feature-style/")
+        || uri.starts_with("map://composition/")
 }
 
 #[cfg(test)]
@@ -2474,7 +2521,7 @@ mod well_known_tests {
     use super::{
         ResourceDiscoveryAccess, SERVER_DOCS, discoverable_resources, stable_resource_uris,
     };
-    use crate::uris;
+    use crate::{contract::MapWorkspaceBasemap, uris};
 
     #[test]
     fn embedded_documents_carry_the_crate_manual_and_design() {
@@ -2514,12 +2561,20 @@ mod well_known_tests {
 
     #[test]
     fn resource_discovery_is_bounded_by_the_protocol_surface() {
-        let resources = discoverable_resources(ResourceDiscoveryAccess {
-            admin: true,
-            dataset_read: true,
-            feature_read: true,
-            spatial_derive: true,
-        });
+        let basemap = MapWorkspaceBasemap::open_free_map(
+            "https://tiles.openfreemap.org/styles/positron",
+            "https://tiles.openfreemap.org/styles/dark",
+        )
+        .unwrap();
+        let resources = discoverable_resources(
+            ResourceDiscoveryAccess {
+                admin: true,
+                dataset_read: true,
+                feature_read: true,
+                spatial_derive: true,
+            },
+            &basemap,
+        );
         assert_eq!(resources.len(), stable_resource_uris().len());
         assert!(resources.len() < 32);
         assert!(resources.windows(2).all(|pair| pair[0].uri < pair[1].uri));
@@ -2537,75 +2592,183 @@ mod well_known_tests {
 }
 
 #[cfg(test)]
-mod admin_app_tests {
+mod workspace_app_tests {
     use super::{MapMcp, ResourceDiscoveryAccess, discoverable_resources};
-    use crate::uris;
+    use crate::{contract::MapWorkspaceBasemap, uris};
 
-    #[test]
-    fn tool_input_schemas_use_the_canonical_profile() {
-        assert!(!MapMcp::tool_router().list_all().is_empty());
+    fn basemap() -> MapWorkspaceBasemap {
+        MapWorkspaceBasemap::open_free_map(
+            "https://tiles.openfreemap.org/styles/positron",
+            "https://tiles.openfreemap.org/styles/dark",
+        )
+        .unwrap()
     }
 
-    const ADMIN_APP: &str = include_str!("../assets/admin-app.html");
-    const EDITOR_APP: &str = include_str!("../assets/editor-app.html");
+    #[test]
+    fn workspace_tools_exist_in_the_canonical_router() {
+        let tools = MapMcp::full_tool_router().list_all();
+        assert!(!tools.is_empty());
+        for expected in super::WORKSPACE_TOOLS {
+            assert!(
+                tools.iter().any(|tool| tool.name.as_ref() == *expected),
+                "workspace tool {expected} is absent from the canonical router"
+            );
+        }
+    }
+
+    const WORKSPACE_APP: &str = include_str!("../assets/workspace-app.html");
 
     #[test]
-    fn apps_apply_the_initial_host_theme() {
-        for app in [ADMIN_APP, EDITOR_APP] {
+    fn workspace_uses_sans_serif_typography() {
+        assert!(WORKSPACE_APP.contains("--sans:"));
+        for obsolete_family in [
+            "--serif",
+            "ui-serif",
+            "Iowan Old Style",
+            "Palatino",
+            "Georgia",
+        ] {
             assert!(
-                app.contains("hostContext(initialized&&initialized.hostContext)")
-                    || app.contains("applyHostContext(initialized && initialized.hostContext)"),
-                "App must apply the host context returned by ui/initialize"
+                !WORKSPACE_APP.contains(obsolete_family),
+                "workspace retains obsolete serif family {obsolete_family}"
             );
         }
     }
 
     #[test]
-    fn acquisition_idempotency_uses_the_browser_uuid_generator() {
-        assert!(ADMIN_APP.contains("return crypto.randomUUID();"));
-        assert!(!ADMIN_APP.contains("return idempotencyKey();"));
+    fn workspace_applies_host_context_and_uses_only_the_mcp_bridge() {
+        assert!(WORKSPACE_APP.contains("ui/initialize"));
+        assert!(WORKSPACE_APP.contains("ui/notifications/host-context-changed"));
+        assert!(WORKSPACE_APP.contains("resources/read"));
+        assert!(WORKSPACE_APP.contains("tools/call"));
+        assert!(!WORKSPACE_APP.contains("<script src="));
+        assert!(!WORKSPACE_APP.contains("<link href="));
+        for external_reference in [
+            "src=\"http://",
+            "src=\"https://",
+            "href=\"http://",
+            "href=\"https://",
+            "url(http://",
+            "url(https://",
+            "@import",
+        ] {
+            assert!(
+                !WORKSPACE_APP
+                    .to_ascii_lowercase()
+                    .contains(external_reference),
+                "workspace contains external fetch reference {external_reference}"
+            );
+        }
     }
 
     #[test]
-    fn acquisition_submit_owns_validation_progress_and_tool_errors() {
-        assert!(ADMIN_APP.contains(r#"id="acquire-form" novalidate"#));
-        assert!(ADMIN_APP.contains("Enter west, south, east, and north coverage bounds"));
-        assert!(ADMIN_APP.contains(r#"submit.textContent = "Starting…";"#));
-        assert!(ADMIN_APP.contains("result.isError || result.is_error"));
+    fn workspace_is_permission_aware() {
+        assert!(WORKSPACE_APP.contains("map://workspace"));
+        for capability in [
+            "administration",
+            "dataset_read",
+            "feature_read",
+            "feature_write",
+            "feature_publish",
+        ] {
+            assert!(WORKSPACE_APP.contains(capability));
+        }
     }
 
     #[test]
-    fn editor_uses_only_canonical_mcp_resources_and_tools() {
-        assert!(EDITOR_APP.contains("resources/read"));
-        assert!(EDITOR_APP.contains("tools/call"));
+    fn workspace_preserves_admin_and_authoring_operations() {
         for tool in [
+            "register_source",
+            "start_acquisition",
+            "activate_release",
+            "register_mobility_profile",
             "create_feature_layer",
             "validate_feature_changes",
             "commit_feature_changes",
             "query_features",
+            "query_source_features",
             "publish_feature_layer",
             "create_map_composition",
+            "inspect_geopackage",
+            "import_feature_layer",
         ] {
-            assert!(EDITOR_APP.contains(tool), "editor is missing {tool}");
+            assert!(WORKSPACE_APP.contains(tool), "workspace is missing {tool}");
         }
-        assert!(!EDITOR_APP.contains("fetch("));
-        assert!(!EDITOR_APP.contains("XMLHttpRequest"));
-        assert!(!EDITOR_APP.contains("innerHTML"));
     }
 
     #[test]
-    fn editor_uses_the_default_complete_console_content_workspace() {
-        let editor = discoverable_resources(ResourceDiscoveryAccess {
-            admin: false,
-            dataset_read: false,
-            feature_read: true,
-            spatial_derive: false,
-        })
+    fn workspace_is_a_persistent_hardware_map_with_bounded_synchronized_previews() {
+        for marker in [
+            "hardware-backed WebGL2",
+            "WEBGL_debug_renderer_info",
+            "swiftshader",
+            "publication_id",
+            "query_features",
+            "query_source_features",
+            "Persistent map",
+            "Data preview",
+            "preview cap reached",
+            "light_style_url",
+            "dark_style_url",
+            "subscriptions/listen",
+            "maplibre-gl@6.6.0",
+            "maplibre-worker.cjs",
+            "renderedFeatureCount",
+            "without painting any returned feature",
+        ] {
+            assert!(
+                WORKSPACE_APP.contains(marker),
+                "workspace is missing {marker}"
+            );
+        }
+    }
+
+    #[test]
+    fn one_workspace_is_discoverable_for_dataset_feature_or_admin_access() {
+        for access in [
+            ResourceDiscoveryAccess {
+                admin: true,
+                dataset_read: false,
+                feature_read: false,
+                spatial_derive: false,
+            },
+            ResourceDiscoveryAccess {
+                admin: false,
+                dataset_read: false,
+                feature_read: true,
+                spatial_derive: false,
+            },
+            ResourceDiscoveryAccess {
+                admin: false,
+                dataset_read: true,
+                feature_read: false,
+                spatial_derive: false,
+            },
+        ] {
+            let apps = discoverable_resources(access, &basemap())
+                .into_iter()
+                .filter(|resource| resource.uri.starts_with("ui://"))
+                .collect::<Vec<_>>();
+            assert_eq!(apps.len(), 1);
+            assert_eq!(apps[0].uri, uris::WORKSPACE_APP_URI);
+        }
+        let workspace = discoverable_resources(
+            ResourceDiscoveryAccess {
+                admin: false,
+                dataset_read: false,
+                feature_read: true,
+                spatial_derive: false,
+            },
+            &basemap(),
+        )
         .into_iter()
-        .find(|resource| resource.uri == uris::EDITOR_APP_URI)
-        .expect("feature editor is discoverable");
-        let metadata = veoveo_mcp_apps_extension::resource_ui_meta(&editor)
-            .expect("feature editor UI metadata is valid");
+        .find(|resource| resource.uri == uris::WORKSPACE_APP_URI)
+        .expect("map workspace is discoverable");
+        let metadata = veoveo_mcp_apps_extension::resource_ui_meta(&workspace)
+            .expect("map workspace UI metadata is valid");
         assert_eq!(metadata.prefers_border, None);
+        let csp = metadata.csp.unwrap();
+        assert_eq!(csp.connect_domains, ["https://tiles.openfreemap.org"]);
+        assert_eq!(csp.resource_domains, ["https://tiles.openfreemap.org"]);
     }
 }

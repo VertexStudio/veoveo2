@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 from math import sqrt
@@ -239,6 +238,8 @@ class RecordingConfig:
     telemetry_hz: int
     queue_capacity: int
     map_provider: RecordingMapProvider
+    maximum_segment_bytes: int
+    maximum_segment_seconds: int
 
     @classmethod
     def from_environment(cls) -> "RecordingConfig":
@@ -261,6 +262,18 @@ class RecordingConfig:
                 "UAV_SIM_RECORDING_QUEUE_CAPACITY", "256", 16, 65_536
             ),
             map_provider=map_provider,
+            maximum_segment_bytes=_int(
+                "UAV_SIM_RECORDING_MAXIMUM_SEGMENT_BYTES",
+                str(4 * 1024 * 1024 * 1024),
+                64 * 1024 * 1024,
+                4 * 1024 * 1024 * 1024,
+            ),
+            maximum_segment_seconds=_int(
+                "UAV_SIM_RECORDING_MAXIMUM_SEGMENT_SECONDS",
+                str(4 * 60 * 60),
+                60,
+                4 * 60 * 60,
+            ),
         )
 
 
@@ -340,7 +353,6 @@ class RuntimeConfig:
     px4_connect_timeout_seconds: float
     px4_directory: str
     recording_proxy: str
-    recording_key: uuid.UUID
     recording: RecordingConfig
     camera: CameraConfig
     operator_live_view: OperatorLiveViewRuntimeConfig
@@ -426,7 +438,6 @@ class RuntimeConfig:
                 "UAV_SIM_TILE_CACHE_POLICY must be ephemeral or persistent"
             ) from error
 
-        recording_key = uuid.UUID(_required("UAV_SIM_RECORDING_KEY"))
         cache_directory = Path(
             os.environ.get("XDG_CACHE_HOME", "/var/lib/veoveo/.cache")
         )
@@ -461,7 +472,6 @@ class RuntimeConfig:
             recording_proxy=os.environ.get(
                 "UAV_SIM_RECORDING_PROXY", "rerun+http://127.0.0.1:9876/proxy"
             ),
-            recording_key=recording_key,
             recording=RecordingConfig.from_environment(),
             camera=CameraConfig.from_environment(),
             operator_live_view=OperatorLiveViewRuntimeConfig.from_json(

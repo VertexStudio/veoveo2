@@ -66,6 +66,13 @@ hand:
   ends in `-mcp`, regardless of implementation language.
 - Against an installation, the server set is the gateway control-plane
   catalog.
+
+Hosted servers may consume another server's canonical resources when the active
+installation profile and policy expose them. This is the supported integration
+path for reusable domain capabilities such as Map data. An App that performs a
+cross-server read declares a typed App dependency; the gateway projects only
+the caller-authorized declaration. This grants no direct storage, private HTTP,
+renderer, or credential access, and it does not authorize mutations.
 - Transport-invariant checks additionally name the known MCP endpoints that
   live outside `servers/`: the gateway itself, the bridges, and showcase
   extensions such as `showcase/sumo/sumo-mcp`.
@@ -180,19 +187,28 @@ A catalog revision or transport-security change selects a new pool identity.
 
 Capability declarations name the exact signal a server can produce.
 `tools.listChanged`, `prompts.listChanged`, and `resources.listChanged` are
-independent claims. The gateway merges and forwards only the declared claims.
+independent claims. The gateway merges and forwards those upstream claims. An
+isolation-mode profile additionally declares gateway-owned resource and tool
+list changes because its authorized federated catalog grows as independent
+discoveries complete.
 
-Federated list discovery isolates an unavailable hosted server by default. The
-gateway returns authorized results from healthy servers and attaches a typed
+Federated resource discovery and isolation-mode tool discovery never wait for
+an uncached hosted server. The gateway returns the authorized per-server cache
+entries already available and attaches a typed
 `veoveo.io/gateway-discovery-degradation` result metadata document naming only
-the server, surface, and bounded failure code. A profile whose work requires a
-complete tool catalog sets `discovery_failure_mode` to `fail_closed`; its tool
-list fails until every exposed server is reachable, which prevents an autonomous
-client from retaining a silently incomplete toolset. Successful per-server
-results are cached for the exact catalog generation and invocation authority. A
-failed server is never cached. Its next explicit list request retries discovery,
-while the matching MCP `listChanged` notification invalidates successful cache
-state without polling. Direct resource reads and tool calls remain fail closed.
+the missing server, surface, and bounded failure code. Each missing server starts
+one background discovery for the exact catalog generation and invocation
+authority. Repeated list calls share that single in-flight operation. A healthy
+server commits and publishes its matching MCP `listChanged` notification as soon
+as it responds, regardless of any other server. A failed operation is not cached
+and becomes eligible on the next explicit list call.
+
+A profile whose work requires a complete tool catalog sets
+`discovery_failure_mode` to `fail_closed`; its tool list fails until every
+exposed server is reachable, which prevents an autonomous client from retaining
+a silently incomplete toolset. Upstream `listChanged` notifications invalidate
+successful per-server entries and wake callers without polling. Direct resource
+reads and tool calls remain fail closed.
 
 ## Schemas And Types
 

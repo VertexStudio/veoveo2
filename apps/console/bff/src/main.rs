@@ -99,6 +99,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/console/api/snapshot", get(api::snapshot))
         .route("/console/api/stream", get(api::stream))
         .route("/console/api/apps", get(apps::list_apps))
+        .route("/console/api/apps/events", get(apps::app_catalog_events))
         .route("/console/api/apps/frame", get(apps::app_frame))
         .route("/console/api/apps/call", post(apps::call_app_tool))
         .route("/console/api/apps/read", post(apps::read_app_resource))
@@ -189,6 +190,10 @@ async fn main() -> anyhow::Result<()> {
         .route(
             recording_playback::BLUEPRINT_PATH,
             get(recording_playback::blueprint),
+        )
+        .route(
+            recording_playback::PROJECTION_PATH,
+            get(recording_playback::projection),
         );
     let router = with_console_static_routes(router, config.asset_dir())?;
     let router = app_host::with_app_host_route(router, config.asset_dir())?
