@@ -1,272 +1,199 @@
-# Veoveo Explained
+# Veoveo, Explained
 
-Veoveo is a platform for connecting people, artificial intelligence, business data,
-and operational systems in one governed environment. It helps an organization use AI
-for real work without giving a model unrestricted access to every system.
+Veoveo helps an organization use its people, AI, data, and operational systems as one
+governed environment. It connects what already exists, controls who may do what, and
+keeps evidence of important results.
 
-This guide explains the product in business terms. It does not assume knowledge of
-software development, Kubernetes, or AI infrastructure.
+This guide explains the product without assuming knowledge of software development,
+Kubernetes, or AI infrastructure.
 
-## The Basic Idea
+<a href="images/harness-poster.png">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="images/harness-poster-dark.png">
+    <img src="images/harness-poster.png" alt="Veoveo connects live and recorded information to a world model, lets an authorized operator assign work to an AI agent, governs access to business capabilities, and preserves evidence of the result">
+  </picture>
+</a>
 
-Most organizations already have valuable systems: databases, document repositories,
-planning tools, simulators, cameras, maps, business applications, and specialized
-software. These systems often remain isolated. A person must move between them,
-interpret their information, and coordinate each action manually.
+*Veoveo turns information into governed action: observe, understand, decide, act, and
+retain evidence.*
 
-Veoveo provides a governed operating layer across those systems. It presents approved
-information and actions to people and AI agents through one controlled boundary. The
-organization decides what is connected, who may see it, which actions are permitted,
-and what evidence must be retained.
+## In One Minute
 
-Veoveo does not replace every existing application. It connects selected capabilities
-and makes them usable through consistent identity, authorization, audit, and operational
-workflows.
+Veoveo provides four things around an organization's existing systems:
 
-## A Simple Example
+- **A common view.** Approved information can be brought together instead of remaining
+  scattered across separate applications.
+- **Controlled action.** People and AI can use only the information and operations
+  allowed for their identity and role.
+- **Coordinated work.** Requests, approvals, long-running operations, and results remain
+  visible through a shared operating environment.
+- **Durable evidence.** Decisions, outputs, recordings, and audit events can be retained
+  with the business activity that produced them.
 
-Consider a transport company managing a city fleet.
+> Veoveo does not replace the company's identity provider, source systems, or operating
+> teams. It gives them a governed way to work together.
 
-1. An operator asks for the current traffic situation.
-2. Veoveo identifies the operator and determines which business environment they may
-   access.
-3. Approved services provide fleet, traffic, map, and incident information.
-4. An AI agent or application proposes a traffic adjustment.
-5. Veoveo checks whether the operator may approve or execute that action.
-6. The operational system performs the approved change.
-7. Veoveo records what was requested, who authorized it, what happened, and which
-   evidence belongs to the result.
+## A Day With Veoveo
 
-The same structure can support logistics, industrial operations, media analysis,
-planning, field services, simulation, or other domains. The connected systems and
-business rules change, but the governed workflow remains recognizable.
+Consider a transport company responding to congestion:
 
-## The Main Concepts
+1. An operator asks what is happening in a particular area.
+2. Veoveo confirms the operator's identity and business role.
+3. Approved services bring together fleet, map, traffic, and incident information.
+4. An application or AI agent proposes an adjustment.
+5. Veoveo checks whether that person may approve or execute it.
+6. The transport system performs the authorized action.
+7. Veoveo retains the request, decision, result, and supporting evidence.
 
-### Installation
+The same pattern applies to logistics, industrial operations, media analysis, planning,
+field services, and simulation. The systems and rules change. The controlled path from
+information to action remains the same.
 
-An installation is the Veoveo environment operated for one organization. It contains
-the services, integrations, identity configuration, storage, policies, and applications
-selected for that organization.
+## What People See
 
-An installation is not a shared public account controlled by Veoveo. The enterprise
-decides where it runs and retains ownership of its infrastructure, credentials, data,
-and operational policies.
+The Operations Console gives each signed-in user a view shaped by their authority. It
+brings together active work, services, artifacts, agents, recordings, access decisions,
+and platform health without exposing infrastructure credentials.
 
-### Identity And Access
+[![Veoveo Operations Console showing active work, services, artifacts, agents, recent decisions, and platform health](screenshots/gallery/console-overview.png)](screenshots/gallery/console-overview.png)
 
-Every person or technical service acts through an identity. Veoveo uses the
-organization's approved identity system to determine who the actor is and what roles,
-business environment, and permissions apply.
+The Console is not the whole product. It is the visible workspace over a set of governed
+services. Specialized applications can add maps, charts, recordings, video, or other
+domain views while keeping the same identity and policy boundary.
 
-Access is not all-or-nothing. One person may read operational state, another may
-approve a plan, and a dedicated service may execute one narrowly defined machine
-operation. These permissions can be kept separate.
+## Five Ideas To Remember
 
-### Work Context
+| Idea | In everyday language |
+|---|---|
+| One enterprise installation | The organization has its own configured Veoveo environment and retains ownership of its infrastructure, credentials, data, and policies. |
+| Every actor has an identity | A person, application, or technical service acts with known authority rather than broad anonymous access. |
+| Work happens in context | People see the teams, information, services, and actions relevant to a defined business purpose. |
+| Capabilities are explicit | Connected services declare what can be read or done. Access may be read-only, approval-based, or limited to one narrow operation. |
+| Results keep their evidence | Work, audit events, files, and recordings preserve what happened and how the result was produced. |
 
-A Work Context is the governed business environment in which work occurs. It brings
-together the relevant people, agents, services, data, and policies for a defined
-purpose.
+AI agents fit inside this model. An agent can interpret a request, gather permitted
+information, use approved capabilities, and produce a result. It does not receive
+unrestricted access merely because it uses AI. A person can remain responsible for
+approval whenever the business process requires it.
 
-For example, a company might separate traffic operations, warehouse planning, and
-executive reporting. A person's access in one context does not automatically grant
-access in another.
+## Reactive And Proactive Work
 
-### Agents
+Veoveo can support immediate response and forward planning at the same time.
 
-An agent is an AI-enabled worker operating within declared authority. It can interpret
-requests, gather permitted information, use approved capabilities, and produce results.
+<a href="images/operations-loop.png">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="images/operations-loop-dark.png">
+    <img src="images/operations-loop.png" alt="Two continuing operating loops: reactive work detects, decides, and intervenes; proactive work analyzes, plans, and dispatches">
+  </picture>
+</a>
 
-An agent does not receive unrestricted system access. Its actions pass through the
-same identity, policy, and audit boundaries as other actors. Some actions can require a
-human decision before execution.
+**Reactive work** starts with an event that needs attention: detect a problem, make a
+decision, and intervene. **Proactive work** looks ahead: analyze conditions, prepare a
+plan, and dispatch approved work. Both can use the same governed information and leave
+evidence in the same operating environment.
 
-### MCP Services
+## Trust Is Part Of The Path
 
-MCP services are the governed capability providers connected to Veoveo. A service may
-expose information to read, actions to perform, documentation, or a specialized user
-interface.
+For an important request, Veoveo separates four questions:
 
-Examples include maps, recordings, time-series analysis, optimization, simulations,
-documents, and a company's private operational service. Veoveo can combine first-party
-services with extensions owned by the enterprise or another supplier.
-
-### Apps
-
-Some MCP services also provide an interactive App. An App is a specialized view for a
-domain such as maps, recordings, or analysis, but it remains inside the same governed
-boundary as the service's information and actions. The Console discovers Apps from the
-capabilities visible to the signed-in user; an unavailable service does not need to
-block the rest of the workspace.
-
-An App receives only its declared resources and linked tools. When it needs information
-owned by another service, the installation must approve that dependency explicitly.
-The App does not gain broad cross-system access, browser credentials, or direct storage
-authority merely because the two services appear in one workspace.
-
-### Work
-
-Work represents a request or operation handled by the platform. It has a lifecycle,
-an owner, authorization decisions, results, and operational evidence. Long-running
-work remains observable instead of disappearing into an untracked background process.
-
-### Artifacts
-
-Artifacts are durable outputs such as reports, datasets, annotations, media, models, or
-other files produced or registered through governed work. Access rules remain attached
-to the artifact rather than depending on an unprotected storage link.
-
-### Recordings
-
-Recordings preserve the evolving state of a supported system or simulation. A governed
-dataset can contain several distinct recordings, and each recording can contain
-immutable capture, properties, or derived-data layers. This separation lets the
-platform identify exactly which data, visualization Blueprint, catalog revision, and
-access grant belong to a viewer.
-
-Recordings can support live observation and, when the recording lifecycle is complete,
-historical review. A recording is governed data: users receive an authorized view or a
-bounded projection rather than direct access to internal storage. Live availability,
-finalization, publication, and historical playback remain different states.
-
-### Audit And Decisions
-
-Veoveo records important authorization and operational decisions. The audit trail
-answers questions such as:
-
-- Who requested the action?
-- Which policy allowed or denied it?
-- Which service performed it?
-- What result and evidence were produced?
-- Which installation revision was active?
-
-Audit evidence supports investigation and accountability. It does not replace the
-organization's legal, compliance, or records-management program.
-
-## How A Request Moves Through Veoveo
-
-A typical request follows this path:
-
-1. Sign in. The person authenticates through the organization's identity provider.
-2. Select governed context. Veoveo establishes the tenant, Work Context, roles, and
-   allowed applications.
-3. Discover capabilities. The user or agent sees only the services and operations
-   permitted for that identity.
-4. Read or propose. The actor reads approved information or proposes an action.
-5. Authorize. Veoveo evaluates policy before the request reaches the operational
+1. **Who is asking?** The enterprise identity provider authenticates the person or
    service.
-6. Execute. The selected service performs the operation within its own contract.
-7. Preserve the result. Work state, audit events, artifacts, or recordings retain
+2. **What may they do?** Policy considers role, business context, requested capability,
+   and other approved conditions.
+3. **Which system performs the work?** The connected domain service remains responsible
+   for executing its business operation correctly.
+4. **What proves the outcome?** Work state, audit events, artifacts, or recordings retain
    the evidence required by the workflow.
 
-This separation matters. Authentication proves identity, authorization decides what
-that identity may do, and the domain service remains responsible for performing the
-business operation correctly.
+A denied request is also meaningful evidence. It shows that the boundary enforced the
+organization's rules instead of silently passing the request through.
 
-## What The Enterprise Chooses
+## What The Enterprise Decides
 
-Every installation is shaped by the enterprise. Decisions normally include:
+Each installation reflects decisions made with the organization:
 
-- business outcomes and initial use cases;
-- users, teams, roles, and approval boundaries;
-- systems and data that may be connected;
-- actions that remain read-only or require human approval;
-- hosting location, networking, domain names, and certificates;
-- identity provider and account lifecycle;
-- storage, retention, backup, and recovery objectives;
-- security, privacy, audit, and regulatory obligations;
-- operational ownership, support, and incident response;
-- acceptance criteria for each business workflow.
+- the first business outcomes and workflows to support;
+- the people, roles, teams, and approval boundaries involved;
+- the systems and information that may be connected;
+- the actions that remain read-only or require human approval;
+- the hosting, networking, domain, identity, storage, and recovery model;
+- the security, privacy, retention, audit, and regulatory obligations;
+- the owners for operation, support, incidents, and future upgrades;
+- the evidence that will count as acceptance for each workflow.
 
 Veoveo supplies product contracts and deployment artifacts. It does not silently make
 these enterprise decisions.
 
 ## Shared Responsibility
 
-A Veoveo installation joins product capabilities with systems owned by the enterprise.
-Responsibility therefore remains distributed.
-
-| Veoveo product responsibility | Enterprise installation responsibility | Connected-system responsibility |
+| Veoveo provides | The enterprise owns | Connected systems own |
 |---|---|---|
-| Supported platform contracts and release artifacts | Infrastructure, identity, networking, Secrets, configuration, and operation | Correct domain behavior, availability, credentials, and business data |
-| Gateway, policy, work, artifact, and recording capabilities selected by the release | Role design, approved policies, retention, monitoring, backup, and support | Stable interfaces, rate limits, recovery behavior, and effect evidence |
-| Product defect ownership and supported upgrade boundaries | Acceptance of the complete customer composition and residual risk | Ownership of external mutations and ambiguous outcomes |
+| The supported platform, governed service boundary, and release artifacts | Infrastructure, identity, networking, configuration, policies, data, and operation | Correct business behavior, availability, credentials, and effect evidence |
+| Work, artifact, recording, policy, and audit capabilities selected for the installation | Acceptance, monitoring, backup, recovery, support, and residual risk | Stable interfaces, limits, and recovery behavior |
 
-This division prevents a healthy platform from being mistaken for proof that every
-external system is configured correctly. It also prevents an installation-specific
-integration problem from being treated automatically as a product defect.
+A healthy platform does not automatically prove that every external system or business
+workflow is correct. Each layer is accepted on its own evidence.
 
-## What A Successful Installation Proves
+## What Success Looks Like
 
-Success is layered. Each layer answers a different question:
+A successful installation can answer these questions with evidence:
 
-1. Infrastructure: can the cluster schedule workloads, pull images, attach storage,
-   reach dependencies, and provide required GPU hardware?
-2. Platform: are the selected Veoveo services and Gateway upstreams healthy?
-3. Identity and policy: do people and services see exactly the capabilities intended
-   for their roles, including explicit denials?
-4. Business workflow: does one approved real-world scenario produce an exact,
-   observable result and durable evidence?
-5. Persistence and recovery: do accepted state, audit, artifacts, and recordings
-   survive the agreed restart and restore procedures?
-6. Reproduction and operation: can the enterprise recreate, monitor, maintain,
-   upgrade, and support the installation from documented inputs?
+1. **Can it run?** The infrastructure can schedule workloads, reach dependencies, attach
+   storage, and provide the required hardware.
+2. **Can the right people use it?** Identity and policy expose exactly the intended
+   information and actions, including expected denials.
+3. **Does the business workflow work?** One approved real scenario produces an exact,
+   observable result.
+4. **Can the result be trusted later?** Accepted state, audit, artifacts, and recordings
+   survive the agreed recovery procedures.
+5. **Can the organization operate it?** Owners can monitor, support, upgrade, and recover
+   the installation from documented inputs.
 
-A green health indicator answers only part of the first two questions. It does not prove
-business correctness, authorization, recovery, or production readiness.
+A green health indicator answers only part of the first question. Production readiness
+requires the rest.
 
-## Known Limits And Product Defects
+## A Practical Starting Point
 
-Large platforms can have defects or capabilities that are not yet suitable for a
-particular workflow. A customer installation does not need to repair every product issue
-it encounters. The delivery team records the limitation, identifies the affected
-capability, tests whether the agreed workflow remains valid, and routes the product
-finding to its owner.
+An enterprise engagement normally moves through five stages:
 
-The enterprise may accept a bounded limitation when the unavailable behavior is clear
-and the remaining workflow has adequate evidence. It must not receive a claim that a
-failed or untested capability passed. Product fixes proceed independently and trigger
-the affected acceptance again when adopted.
+**Discover → Define → Install → Prove → Operate**
 
-## What Veoveo Does Not Mean
+Discovery identifies the desired outcome, decision owners, systems, constraints, and
+risks. The team then defines one bounded workflow, installs only what it needs, proves
+the result and authority boundaries, and transfers the accepted service into operation.
 
-Veoveo is not unrestricted AI access to company systems. It is not a replacement for
-the enterprise identity provider, network, backup program, or security organization.
-Installing the platform also does not prove that every business integration is ready.
+The first goal is not to connect everything. It is to establish one valuable workflow
+that the organization can understand, verify, and operate.
 
-Technical readiness and business acceptance are separate. A healthy service may still
-need domain validation, user review, recovery testing, and operating procedures before
-the organization relies on it.
+## Terms You May Encounter
 
-## From First Conversation To Operation
+| Term | Plain-language meaning |
+|---|---|
+| Work Context | A governed business environment that groups the relevant people, services, information, and rules. |
+| Agent | An AI-enabled worker operating within declared authority. |
+| MCP service | A connected capability provider that offers approved information, actions, documentation, or an application. |
+| App | A specialized interactive view, such as a map or recording viewer, governed by the same access boundary. |
+| Artifact | A durable output such as a report, dataset, annotation, media file, or model. |
+| Recording | Governed live or historical operational data that can preserve how a supported system changed over time. |
 
-A normal engagement progresses through several stages:
+## Product Limits
 
-1. Discovery: understand the organization, desired outcomes, systems, constraints,
-   and decision owners.
-2. Solution definition: choose the first workflows, services, integrations, and
-   authority boundaries.
-3. Installation design: define infrastructure, identity, networking, storage,
-   secrets, release ownership, and recovery.
-4. Implementation: publish selected artifacts, configure the installation, and
-   integrate enterprise-owned services.
-5. Acceptance: prove identity, policy, service health, business outcomes, evidence,
-   and recovery separately.
-6. Handoff and operation: establish ownership, monitoring, support, upgrades,
-   rollback, and periodic access review.
+Veoveo is not unrestricted AI access to company systems. It does not replace the
+enterprise identity provider, network, backup program, security organization, or owners
+of connected business systems.
 
-The first goal is not to connect everything. It is to establish one valuable,
-well-bounded workflow that the organization can understand, verify, and operate.
+Like any large platform, it can also have defects or capabilities that are unsuitable
+for a particular workflow. An installation records the limitation, tests whether the
+agreed outcome remains valid, and routes product defects to their owner. It does not
+claim that an unavailable or untested capability passed.
 
-## Further Reading
+## Continue From Here
 
 - [Enterprise discovery template](ENTERPRISE_DISCOVERY_TEMPLATE.md) guides the first
   conversations with a new organization.
 - [Enterprise installation runbook](ENTERPRISE_INSTALLATION_RUNBOOK.md) organizes the
-  technical delivery from approved scope through operational handoff.
+  delivery from approved scope through operational handoff.
 - [Enterprise installation readiness](ENTERPRISE_INSTALLATION_READINESS.md) records
-  every decision, prerequisite, acceptance result, known limitation, and final approval.
-- [Enterprise deployment](ENTERPRISE_DEPLOYMENT.md) defines the technical installation
-  procedure and ownership of artifacts, configuration, infrastructure, Secrets,
-  reconciliation, acceptance, and recovery.
+  decisions, prerequisites, acceptance evidence, limitations, and approval.
+- [Enterprise deployment](ENTERPRISE_DEPLOYMENT.md) defines the normative technical
+  installation contract and procedure.
