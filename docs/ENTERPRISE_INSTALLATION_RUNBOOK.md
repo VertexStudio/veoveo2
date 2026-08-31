@@ -1,0 +1,404 @@
+# Enterprise Installation Runbook
+
+This runbook organizes a Veoveo enterprise delivery from approved discovery through
+operational handoff. It defines stages, ownership, evidence, and stop conditions. The
+detailed product commands and deployment contracts remain in the linked owning
+documents.
+
+Use this runbook for a fielded installation. Do not copy local k3d credentials,
+loopback origins, fixture identities, showcase policies, or destructive local recovery
+commands into a customer environment.
+
+## Standards And Protocols
+
+The installation boundary may include OCI images and charts, Helm, Kubernetes, a GitOps
+controller, OpenID Connect, OAuth 2.0, private DNS, TLS, an enterprise Secret projection
+mechanism, and Veoveo's versioned deployment, extension, compatibility, gateway, and
+evidence contracts. The selected versions and supported profiles must be recorded in
+the installation configuration and release evidence.
+
+This runbook does not imply that every enterprise must use Flux, public networking, a
+specific cloud, or a repository-development deployment profile. Helm is the package
+contract. The enterprise owns its controller and infrastructure choices.
+
+## Source Documents
+
+Read these documents before changing an installation:
+
+- [Veoveo explained](VEOVEO_OVERVIEW.md) for the non-technical product model;
+- [Enterprise discovery template](ENTERPRISE_DISCOVERY_TEMPLATE.md) for engagement
+  inputs and decision ownership;
+- [Deployment guide](DEPLOYMENT_GUIDE.md) for connected, direct Helm, offline,
+  acceptance, upgrade, rollback, and diagnosis procedures;
+- [Enterprise deployment](ENTERPRISE_DEPLOYMENT.md) for artifact, configuration,
+  Secret, controller, and extension ownership;
+- [External repository integration](EXTERNAL_REPOSITORY_INTEGRATION.md) for private
+  extension publication and composition;
+- [Autonomy harness](AUTONOMY_HARNESS.md) when agents will operate continuously;
+- the selected Helm chart and component design documents.
+
+An installation-specific repository becomes the durable source for customer decisions.
+This product repository remains the source for Veoveo contracts and release artifacts.
+
+## Operating Principles
+
+1. One owner reconciles each resource. Do not alternate Helm, kubectl, scripts, and
+   GitOps against the same object without an explicit recovery procedure.
+2. One canonical origin drives public URLs, OAuth resources, redirect URIs, and issuer
+   metadata.
+3. One approved Secret authority supplies each credential. Examples and generic local
+   fixtures never overwrite fielded material.
+4. Images and charts are selected by immutable identity.
+5. Configuration is public desired state; Secret values remain in the enterprise
+   Secret system.
+6. Platform readiness, identity acceptance, authorization, domain behavior, and
+   recovery are separate gates.
+7. Capture evidence before repair. A failed local or customer composition does not
+   automatically authorize a core product change.
+8. Stop before destructive recovery, data migration, authority expansion, or an
+   ownership change unless the responsible enterprise owner approves it.
+
+## Delivery Record
+
+Create an installation delivery record before implementation.
+
+| Field | Value |
+|---|---|
+| Organization and installation | |
+| Environment | |
+| Business owner | |
+| Installation owner | |
+| Security approver | |
+| Operations owner | |
+| Configuration repository | |
+| Approved source revision | |
+| Compatibility release | |
+| Change or release identifier | |
+| Canonical origin | |
+| Maintenance window | |
+| Rollback decision owner | |
+| Evidence location | |
+
+## Stage 0: Discovery Approval
+
+### Inputs
+
+- approved discovery record;
+- bounded first business workflow;
+- identified systems and data owners;
+- named identity, security, infrastructure, and operations owners;
+- preliminary technical and business acceptance scenarios.
+
+### Actions
+
+1. Confirm what Veoveo will provide and what the enterprise will provide.
+2. Separate the first release from later integrations.
+3. Identify prohibited data, actions, destinations, and operating modes.
+4. Record unresolved assumptions with owners and due dates.
+5. Choose the solution-design approvers.
+
+### Gate
+
+Do not begin installation design when the business outcome, authority boundary, or
+installation owner is unknown.
+
+## Stage 1: Solution And Ownership Design
+
+### Define The Composition
+
+Record the selected:
+
+- platform components;
+- first-party MCP services;
+- enterprise-owned or supplier-owned extensions;
+- user-facing applications;
+- Work Contexts and tenants;
+- human roles and machine identities;
+- read, propose, approve, execute, administer, and audit boundaries;
+- data flows, artifacts, recordings, and retention behavior.
+
+### Assign Owners
+
+| Concern | Owner | Durable source | Reconciliation mechanism |
+|---|---|---|---|
+| Cluster prerequisites | | | |
+| OCI registry and artifact policy | | | |
+| Installation Git repository | | | |
+| GitOps controller or release process | | | |
+| Identity provider configuration | | | |
+| Secret generation and projection | | | |
+| Gateway base and bindings | | | |
+| Platform release | | | |
+| Each extension release | | | |
+| Persistent storage and object storage | | | |
+| Backup and recovery | | | |
+| Monitoring and incident response | | | |
+| Acceptance evidence | | | |
+
+### Gate
+
+Each resource must have one reconciliation owner. Resolve overlaps before manifests or
+scripts are written.
+
+## Stage 2: Installation Architecture
+
+### Environment Decisions
+
+Document:
+
+- Kubernetes distribution, version, architecture, and support owner;
+- connected, restricted-egress, or offline operating mode;
+- node pools, NVIDIA GPU inventory, drivers, runtime, and allocation mechanism;
+- private registry, authentication, mirrors, retention, and scanning;
+- Git service and reconciliation controller;
+- private DNS, canonical origin, ingress, certificates, and trust roots;
+- identity provider, issuer, clients, claims, groups, and service identities;
+- network segmentation, allowed ingress, egress, proxies, and private endpoints;
+- storage classes, object storage, encryption, capacity, backup, and restore;
+- monitoring, logging, audit export, alerting, and support routing.
+
+### Capacity
+
+Estimate workload replicas, CPU, memory, GPU, storage, object growth, recording rate,
+network traffic, image footprint, and retention. State expected growth and the point at
+which capacity must be reviewed.
+
+### Gate
+
+The platform team must prove prerequisites independently of Veoveo workloads. A Helm
+render cannot prove DNS, identity, storage performance, GPU execution, or backup
+capability.
+
+## Stage 3: Artifact Selection And Publication
+
+### Select Releases
+
+1. Select a supported Veoveo compatibility release.
+2. Select each independently published extension release.
+3. Verify source revision, chart version, image digest, schema, SBOM, provenance, and
+   conformance evidence as required by enterprise policy.
+4. Verify extension compatibility with the selected platform release.
+5. Mirror or transfer artifacts when the destination cannot use the publisher's
+   registry directly.
+
+### Record Immutable Inputs
+
+| Artifact | Source revision | OCI reference | Digest or version | Verification |
+|---|---|---|---|---|
+| Platform chart | | | | |
+| Platform images | | | | |
+| Extension chart | | | | |
+| Extension images | | | | |
+| Compatibility manifest | | | | |
+| Gateway fragments | | | | |
+| Offline bundle, if used | | | | |
+
+### Gate
+
+Do not promote mutable tags as production identity. Do not build customer extensions
+inside the customer cluster unless that process is an explicitly designed and approved
+enterprise build service.
+
+## Stage 4: Installation Repository
+
+Create or update the enterprise-owned desired-state repository. Follow the structure
+in [Enterprise deployment](ENTERPRISE_DEPLOYMENT.md).
+
+The reviewed change should contain:
+
+- namespaces and non-secret prerequisites owned by the installation;
+- chart sources and immutable release selections;
+- environment-specific Helm values;
+- image repositories and digests;
+- gateway base, extension fragments, and installation-owned bindings;
+- ingress, DNS integration, certificates references, and trust ConfigMaps;
+- Secret references, never Secret values;
+- storage and backup selections;
+- monitoring and policy resources;
+- acceptance configuration and release metadata.
+
+Render and validate the complete composition before reconciliation. Check that every
+referenced Secret, ConfigMap, service, route, health endpoint, storage claim, and image
+exists in the intended ownership boundary.
+
+### Gate
+
+The installation repository must contain one coherent desired state. Do not rely on an
+operator remembering an unrecorded kubectl patch after reconciliation.
+
+## Stage 5: Secret And Identity Readiness
+
+### Secret Inventory
+
+| Secret contract | Keys or fields | Generator | Store | Projection owner | Rotation owner |
+|---|---|---|---|---|---|
+| | | | | | |
+
+For every credential:
+
+- identify the authoritative generator;
+- identify the public material or remote registration it must match;
+- confirm its destination and minimum permissions;
+- define rotation, overlap, restart, and rollback behavior;
+- prove that logs, rendered manifests, evidence, and Git do not contain its value.
+
+### Identity Readiness
+
+Verify the canonical issuer, discovery, clients, audiences, redirect URIs, claims,
+groups, roles, service identities, logout, session, and administrative ownership.
+
+Use separate human and machine acceptance. A working administrator login does not
+prove an operator's policy or a service client's assertion.
+
+### Ordering Rule
+
+Provision the approved Secret contracts and identity registrations before workloads
+that consume them. If a Secret changes after a pod starts, follow the documented
+component rollout procedure. Do not alternate generic fixture credentials and
+installation credentials as a repair technique.
+
+### Gate
+
+Run a non-secret closure check. Every selected release must resolve its Secret and
+ConfigMap references, and matching public/private identity pairs must be validated
+without printing private material.
+
+## Stage 6: Reconciliation
+
+### Recommended GitOps Path
+
+1. Confirm the controller and repository credentials are healthy.
+2. Commit the reviewed desired-state revision.
+3. Reconcile cluster prerequisites in their owned order.
+4. Reconcile identity and Secret projections.
+5. Reconcile the platform release.
+6. Reconcile independently deployed extensions.
+7. Activate the complete composed gateway control plane.
+8. Wait for declared health and readiness gates.
+
+### Direct Helm Path
+
+Use the ordered Direct Helm procedure in [Deployment guide](DEPLOYMENT_GUIDE.md) when
+the enterprise selected that release model. Preserve rendered inputs and Helm results.
+Do not leave a GitOps controller and an operator concurrently managing the same
+release.
+
+### Stop Conditions
+
+Stop and capture evidence when:
+
+- an image or chart identity differs from the approved release;
+- a Secret or public-key association fails;
+- an immutable resource change has data-retention consequences;
+- a migration reports an error or unknown state;
+- a stateful workload cannot attach its expected storage;
+- identity, gateway, or extension health fails;
+- a required GPU workload lacks hardware-backed execution;
+- the proposed repair changes infrastructure or authority ownership.
+
+## Stage 7: Layered Acceptance
+
+Run each layer separately and record failures as failures. Do not let one green layer
+stand in for another.
+
+### Release And Infrastructure
+
+- exact desired-state revision and artifact identities;
+- controller and release health;
+- pods, containers, jobs, services, and endpoints;
+- PVC attachment, object storage, and database readiness;
+- ingress, DNS, TLS, and enterprise trust;
+- required NVIDIA GPU allocation and hardware execution.
+
+### Identity And Policy
+
+- OIDC discovery and human login;
+- service-identity authentication;
+- expected tenant, Work Context, role, and scope claims;
+- positive capability catalog for each role;
+- negative catalog and action checks;
+- privileged administration separated from ordinary work.
+
+### Service Contracts
+
+- gateway health for every selected upstream;
+- MCP capability and documentation discovery;
+- representative read-only request;
+- bounded mutation when the business workflow requires it;
+- idempotency and ambiguous-failure behavior;
+- audit and durable task or work state.
+
+### Business Workflow
+
+Run the accepted scenario from the public enterprise boundary. Confirm the initial
+state, authorization decision, external effect, resulting state, evidence correlation,
+and user-visible result. Use real domain evidence rather than inference from pod health.
+
+### Data And Recovery
+
+- artifact or recording access through governed routes;
+- backup creation and independent restore validation;
+- restart persistence without deleting storage;
+- upgrade and rollback within the approved compatibility boundary;
+- monitoring and alert delivery to the enterprise owner.
+
+### Evidence Record
+
+For every check, retain:
+
+- date, environment, actor, and command or procedure;
+- selected source, image, chart, and configuration identities;
+- sanitized result and evidence location;
+- explicit status: passed, failed, blocked, or not executed;
+- defect or decision owner;
+- any limitation that prevents production reliance.
+
+## Stage 8: Handoff
+
+Before production use, hand over:
+
+- architecture and ownership record;
+- installation repository and release evidence;
+- non-secret configuration and Secret inventory;
+- identity and authorization model;
+- monitoring dashboards and alert routes;
+- backup and restore procedures with recent evidence;
+- upgrade, rollback, maintenance, and certificate procedures;
+- incident response and escalation contacts;
+- known defects, limitations, and deferred scope;
+- administrator and operator training;
+- acceptance sign-off and residual-risk acceptance.
+
+Confirm that the enterprise can operate the installation without relying on an
+undocumented action performed by the delivery team.
+
+## Stage 9: Ongoing Operation
+
+Operate changes through the installation's normal review and reconciliation process.
+Track artifact currency, compatibility, vulnerabilities, capacity, certificates,
+credentials, backups, restore tests, access reviews, and domain acceptance.
+
+An upgrade is a new reviewed release. Repeat affected technical and business acceptance
+and preserve the previous known-good identities until rollback constraints are
+resolved.
+
+## Final Installation Gate
+
+An installation is ready for the agreed use case when:
+
+- ownership is explicit and the desired state has one reconciler;
+- artifact and configuration identities are immutable and recorded;
+- Secrets and identity are enterprise-owned and validated without disclosure;
+- infrastructure, storage, networking, trust, and GPU prerequisites pass;
+- selected services and gateway upstreams are healthy;
+- human and machine authorization pass positive and negative checks;
+- the bounded business workflow produces its expected observable result;
+- audit and business evidence remain readable after ordinary restarts;
+- backup, restore, upgrade, rollback, monitoring, and support responsibilities are
+  accepted;
+- every failed, blocked, skipped, or limited check is recorded and accepted by its
+  owner.
+
+Readiness applies to the agreed scope, environment, and release. It is not a permanent
+claim that every Veoveo capability or future customer workflow is certified.
+

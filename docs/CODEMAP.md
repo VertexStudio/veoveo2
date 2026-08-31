@@ -16,7 +16,10 @@ component:
 | [`TECH_DESIGN.md`](TECH_DESIGN.md) | current implementation of those architecture decisions |
 | [`AUTONOMY_HARNESS.md`](AUTONOMY_HARNESS.md) | shared responsibility, continuous containment boundary, and operating proof for always-autonomous agents |
 | [`WORK_CONTEXT_GOVERNANCE.md`](WORK_CONTEXT_GOVERNANCE.md) | invocation authority, output ownership, effective access, and rollout |
+| [`VEOVEO_OVERVIEW.md`](VEOVEO_OVERVIEW.md) | non-technical explanation of Veoveo, its governed operating model, principal concepts, enterprise responsibilities, and engagement lifecycle |
+| [`ENTERPRISE_DISCOVERY_TEMPLATE.md`](ENTERPRISE_DISCOVERY_TEMPLATE.md) | adaptable discovery structure for business outcomes, workflows, authority, integrations, infrastructure, risk, acceptance, and decision ownership |
 | [`DEPLOYMENT_GUIDE.md`](DEPLOYMENT_GUIDE.md) | canonical operational guide for connected GitOps, direct Helm, offline installation, acceptance, upgrade, rollback, and agent boundaries |
+| [`ENTERPRISE_INSTALLATION_RUNBOOK.md`](ENTERPRISE_INSTALLATION_RUNBOOK.md) | staged enterprise delivery runbook connecting approved discovery, ownership, artifacts, configuration, secrets, reconciliation, acceptance, handoff, and operation |
 | [`ENTERPRISE_DEPLOYMENT.md`](ENTERPRISE_DEPLOYMENT.md) | OCI release, enterprise configuration, secrets, GitOps, extensions, and acceptance |
 | [`EXTERNAL_EXTENSIONS.md`](EXTERNAL_EXTENSIONS.md) | supported private external-repository contract, artifact ownership, compatibility manifests, and installation composition |
 | [`EXTERNAL_REPOSITORY_INTEGRATION.md`](EXTERNAL_REPOSITORY_INTEGRATION.md) | coding-agent runbook for native external build, conformance, private publication, gateway composition, and digest-pinned GitOps integration |
