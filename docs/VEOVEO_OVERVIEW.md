@@ -7,10 +7,10 @@ keeps evidence of important results.
 This guide explains the product without assuming knowledge of software development,
 Kubernetes, or AI infrastructure.
 
-<a href="images/harness-poster.png">
+<a href="images/overview-trusted-action.png">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="images/harness-poster-dark.png">
-    <img src="images/harness-poster.png" alt="Veoveo connects live and recorded information to a world model, lets an authorized operator assign work to an AI agent, governs access to business capabilities, and preserves evidence of the result">
+    <source media="(prefers-color-scheme: dark)" srcset="images/overview-trusted-action-dark.png">
+    <img src="images/overview-trusted-action.png" alt="A business question moves through five stages: ask, understand approved information, approve who may act, perform the action, and prove the result with evidence">
   </picture>
 </a>
 
@@ -125,6 +125,13 @@ Veoveo supplies product contracts and deployment artifacts. It does not silently
 these enterprise decisions.
 
 ## Shared Responsibility
+
+<a href="images/overview-responsibility.png">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="images/overview-responsibility-dark.png">
+    <img src="images/overview-responsibility.png" alt="The company defines its people, rules, and priorities; Veoveo connects, governs, coordinates, and records; business systems retain their data, applications, and operations">
+  </picture>
+</a>
 
 | Veoveo provides | The enterprise owns | Connected systems own |
 |---|---|---|

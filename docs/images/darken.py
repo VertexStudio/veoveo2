@@ -23,6 +23,8 @@ from PIL import Image
 OUT = os.path.dirname(os.path.abspath(__file__))
 
 FIGURES = [
+    "overview-trusted-action",
+    "overview-responsibility",
     "harness-poster",
     "system-map",
     "operations-loop",

@@ -39,6 +39,33 @@ STYLE = (
 )
 
 IMAGES = {
+    "overview-trusted-action": (
+        "1536*1024",
+        "Non-technical business journey shown as one calm horizontal flow with exactly five large"
+        " outlined stations, evenly spaced and connected by four right-pointing arrows. From left to"
+        " right the stations are labeled ASK, UNDERSTAND, APPROVE, ACT, PROVE. ASK contains one simple"
+        " speech-bubble glyph. UNDERSTAND contains three small converging information cards. APPROVE"
+        " contains one checkpoint with a check mark. ACT contains one simple control-switch glyph."
+        " PROVE contains one small evidence ledger with a check mark. Above the flow, centered, the"
+        " single heading FROM A BUSINESS QUESTION TO A TRUSTED RESULT. Beneath UNDERSTAND place the"
+        " small label APPROVED INFORMATION. Beneath APPROVE place WHO MAY DO WHAT. Beneath PROVE place"
+        " RESULT + EVIDENCE. Every specified label appears exactly once. The amber accent appears only"
+        " on the four journey arrows and the outline of the PROVE station; everything else is dark"
+        " slate. No technical infrastructure, code, protocol names, server racks, or cloud icons."
+    ),
+    "overview-responsibility": (
+        "1536*1024",
+        "Non-technical responsibility schematic with exactly three large vertical regions arranged"
+        " left to right and joined by two double-headed horizontal arrows. Left region labeled YOUR"
+        " COMPANY contains exactly three simple outlined tiles labeled PEOPLE, RULES, PRIORITIES."
+        " Center region labeled VEOVEO contains exactly four stacked stages labeled CONNECT, GOVERN,"
+        " COORDINATE, RECORD; draw the four stage outlines in amber. Right region labeled BUSINESS"
+        " SYSTEMS contains exactly three simple outlined tiles labeled DATA, APPLICATIONS, OPERATIONS."
+        " Along the bottom, one continuous dark baseline spans all three regions and is labeled OWNED"
+        " AND OPERATED FOR THE ENTERPRISE. Every specified label appears exactly once. The amber accent"
+        " appears only on the four VEOVEO stage outlines; every other line is dark slate. No code,"
+        " protocol names, infrastructure diagrams, server racks, cloud icons, logos, or extra text."
+    ),
     "cover": (
         "1024*1536",
         "Vertical layered architecture schematic on a deep slate blue-black background, hex 0e141b,"
