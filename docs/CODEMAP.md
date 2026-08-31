@@ -19,9 +19,8 @@ component:
 | [`VEOVEO_OVERVIEW.md`](VEOVEO_OVERVIEW.md) | non-technical explanation of Veoveo, its governed operating model, principal concepts, enterprise responsibilities, and engagement lifecycle |
 | [`ENTERPRISE_DISCOVERY_TEMPLATE.md`](ENTERPRISE_DISCOVERY_TEMPLATE.md) | adaptable discovery structure for business outcomes, workflows, authority, integrations, infrastructure, risk, acceptance, and decision ownership |
 | [`ENTERPRISE_INSTALLATION_READINESS.md`](ENTERPRISE_INSTALLATION_READINESS.md) | fielded-installation control record for decisions, prerequisites, immutable inputs, identity, policy, workflows, persistence, recovery, evidence, defects, and residual risk |
-| [`DEPLOYMENT_GUIDE.md`](DEPLOYMENT_GUIDE.md) | operational guide for connected GitOps, direct Helm, offline installation, acceptance, upgrade, rollback, and ownership boundaries |
 | [`ENTERPRISE_INSTALLATION_RUNBOOK.md`](ENTERPRISE_INSTALLATION_RUNBOOK.md) | staged enterprise delivery runbook connecting approved discovery, ownership, artifacts, configuration, secrets, reconciliation, acceptance, handoff, and operation |
-| [`ENTERPRISE_DEPLOYMENT.md`](ENTERPRISE_DEPLOYMENT.md) | OCI release, enterprise configuration, secrets, GitOps, extensions, and acceptance |
+| [`ENTERPRISE_DEPLOYMENT.md`](ENTERPRISE_DEPLOYMENT.md) | canonical technical contract and procedure for ownership, OCI release, configuration, secrets, GitOps, Helm, offline installation, Gateway activation, acceptance, upgrade, and recovery |
 | [`EXTERNAL_EXTENSIONS.md`](EXTERNAL_EXTENSIONS.md) | supported private external-repository contract, artifact ownership, compatibility manifests, and installation composition |
 | [`EXTERNAL_REPOSITORY_INTEGRATION.md`](EXTERNAL_REPOSITORY_INTEGRATION.md) | coding-agent runbook for native external build, conformance, private publication, gateway composition, and digest-pinned GitOps integration |
 | [`LOCAL_DEPLOYMENT_PROFILES.md`](LOCAL_DEPLOYMENT_PROFILES.md) | disposable k3d showcase profile contract |

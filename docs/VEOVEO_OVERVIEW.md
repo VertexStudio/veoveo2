@@ -267,6 +267,6 @@ well-bounded workflow that the organization can understand, verify, and operate.
   technical delivery from approved scope through operational handoff.
 - [Enterprise installation readiness](ENTERPRISE_INSTALLATION_READINESS.md) records
   every decision, prerequisite, acceptance result, known limitation, and final approval.
-- [Deployment guide](DEPLOYMENT_GUIDE.md) defines the detailed installation procedure.
-- [Enterprise deployment](ENTERPRISE_DEPLOYMENT.md) defines ownership of artifacts,
-  configuration, infrastructure, secrets, and reconciliation.
+- [Enterprise deployment](ENTERPRISE_DEPLOYMENT.md) defines the technical installation
+  procedure and ownership of artifacts, configuration, infrastructure, Secrets,
+  reconciliation, acceptance, and recovery.

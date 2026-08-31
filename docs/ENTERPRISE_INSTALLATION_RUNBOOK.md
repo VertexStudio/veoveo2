@@ -29,10 +29,9 @@ Read these documents before changing an installation:
   inputs and decision ownership;
 - [Enterprise installation readiness](ENTERPRISE_INSTALLATION_READINESS.md) for the
   installation's decision, prerequisite, acceptance, defect, and residual-risk record;
-- [Deployment guide](DEPLOYMENT_GUIDE.md) for connected, direct Helm, offline,
-  acceptance, upgrade, rollback, and diagnosis procedures;
-- [Enterprise deployment](ENTERPRISE_DEPLOYMENT.md) for artifact, configuration,
-  Secret, controller, and extension ownership;
+- [Enterprise deployment](ENTERPRISE_DEPLOYMENT.md) for the complete technical contract
+  and procedure, including artifacts, configuration, Secrets, GitOps, Direct Helm,
+  offline installation, Gateway activation, acceptance, upgrade, and recovery;
 - [External repository integration](EXTERNAL_REPOSITORY_INTEGRATION.md) for private
   extension publication and composition;
 - [Autonomy harness](AUTONOMY_HARNESS.md) when agents will operate continuously;
@@ -301,7 +300,7 @@ without printing private material.
 
 ### Direct Helm Path
 
-Use the ordered Direct Helm procedure in [Deployment guide](DEPLOYMENT_GUIDE.md) when
+Use the ordered Direct Helm procedure in [Enterprise deployment](ENTERPRISE_DEPLOYMENT.md#direct-helm) when
 the enterprise selected that release model. Preserve rendered inputs and Helm results.
 Do not leave a GitOps controller and an operator concurrently managing the same
 release.

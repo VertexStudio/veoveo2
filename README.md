@@ -471,11 +471,12 @@ repository.
 | Offline | A verified bundle containing runtime images, charts, schemas, checksums, image identities, and SPDX SBOMs. | [`deploy/offline`](deploy/offline/README.md) |
 
 Installation teams preparing a fielded environment should start with the
-[`deployment guide`](docs/DEPLOYMENT_GUIDE.md). Begin the engagement with the
-[`enterprise discovery template`](docs/ENTERPRISE_DISCOVERY_TEMPLATE.md), coordinate
-delivery through the
-[`enterprise installation runbook`](docs/ENTERPRISE_INSTALLATION_RUNBOOK.md), and
-record decisions and evidence in the
+[`enterprise installation runbook`](docs/ENTERPRISE_INSTALLATION_RUNBOOK.md). It routes
+discovery through the
+[`enterprise discovery template`](docs/ENTERPRISE_DISCOVERY_TEMPLATE.md), the technical
+installation through
+[`enterprise deployment`](docs/ENTERPRISE_DEPLOYMENT.md), and decisions and evidence
+through the
 [`enterprise installation readiness record`](docs/ENTERPRISE_INSTALLATION_READINESS.md).
 
 The [Autonomy Harness shared-responsibility contract](docs/AUTONOMY_HARNESS.md)

@@ -10,15 +10,11 @@ Helm is the package contract. GitOps is the recommended reconciliation model, wi
 Flux as the maintained reference. An operator may use another controller or direct Helm without
 changing the chart, image, configuration, or Secret contracts.
 
-The ordered installation procedure for operators and agents is documented in the
-[deployment guide](DEPLOYMENT_GUIDE.md). This document remains the normative ownership
-and artifact contract.
-
 The [enterprise discovery template](ENTERPRISE_DISCOVERY_TEMPLATE.md) records the
 business and operating inputs that precede this contract. The
-[enterprise installation runbook](ENTERPRISE_INSTALLATION_RUNBOOK.md) connects those
-approved inputs to solution design, artifact selection, reconciliation, acceptance,
-and handoff. The
+[enterprise installation runbook](ENTERPRISE_INSTALLATION_RUNBOOK.md) is the starting
+point for delivery. It connects approved inputs to solution design, this technical
+installation procedure, acceptance, and handoff. The
 [enterprise installation readiness record](ENTERPRISE_INSTALLATION_READINESS.md)
 captures the installation's decisions, evidence, defects, limitations, and approvals.
 
@@ -37,6 +33,47 @@ captures the installation's decisions, evidence, defects, limitations, and appro
 | `veoveo.io/compatibility-manifest/v1` | supported SDK, chart library, standalone tools, schemas, and optional simulation tuple |
 | SHA-256 | production image, chart, schema, source-input, and evidence identity |
 | OpenID Connect and OAuth 2.0 | installation-owned identity and protected-resource boundary |
+
+## Installation Paths
+
+Select one owner for application reconciliation. Do not operate the same resources
+concurrently through more than one path.
+
+| Path | Use when | Operational owner |
+|---|---|---|
+| GitOps | The organization reconciles Kubernetes desired state from Git | Flux or the organization's equivalent controller |
+| Direct Helm | The organization has another controlled release process | The installation release process invoking Helm |
+| Offline | The target cannot reach connected registries or package services | Connected bundle builder and offline installation operator |
+
+Flux 2.9.4 is the maintained GitOps reference. Flux is not a Veoveo runtime dependency,
+and Veoveo does not install or manage the organization's controller. Another controller
+must preserve the same Helm, immutable source, ordering, readiness, and ownership
+boundaries.
+
+## Installation Inputs
+
+Prepare these inputs before the first rollout:
+
+1. A Kubernetes cluster with the storage, ingress, DNS, network egress, and GPU capacity
+   required by the selected components.
+2. A TLS-protected OCI registry reachable by publishers, controllers, and cluster nodes
+   with their appropriate credentials.
+3. Immutable Veoveo image identities and versioned Helm chart artifacts.
+4. A private installation configuration repository or equivalently reviewed Direct Helm
+   release input.
+5. One canonical HTTPS installation origin.
+6. OIDC/OAuth clients registered for that origin and the installation's selected scopes,
+   roles, claims, and redirect URIs.
+7. Every Kubernetes Secret referenced by the selected platform and extension charts.
+8. The installation-owned gateway control plane, public trust files, bindings, and
+   confidential Secret reference.
+9. Storage classes, capacity, backup objectives, and restore procedures for SurrealDB,
+   object storage, recordings, and selected persistent extensions.
+10. An acceptance procedure for the installed platform and its selected business
+    workflows.
+
+The selected component graph determines the exact image, GPU, storage, Secret, and MCP
+closure. Include only the components and dependencies approved for the installation.
 
 ## Ownership
 
@@ -75,12 +112,18 @@ gateway issuer metadata derive from that one installation-owned origin. No Veove
 artifact embeds a universal service hostname, and private deployment does not require a
 public Veoveo control plane.
 
+Register the exact callback required by the gateway control plane with the selected
+identity provider. Keep client credentials in the installation Secret system. Configure
+NetworkPolicy and egress for issuer discovery, authorization, token, and JWKS endpoints.
+Register only enterprise-approved identities, origins, certificates, users, and service
+clients. Repository examples are not production dependencies.
+
 Artifact downloads, Console downloads, and public-share bearers also remain on that
 origin. RustFS or an external S3-compatible service is private installation
 infrastructure. It has no client-facing ingress, DNS requirement, or presigned delivery
 contract.
 
-## Release artifacts
+## Release Artifacts
 
 One installation release may combine several independently published sources.
 Production Helm values address images by digest; a mutable tag is not a production
@@ -132,7 +175,7 @@ external simulator overlays consume it as a named build context. The deployment
 profile derives the exact required platform targets and records their combined
 immutable closure.
 
-## Configuration repository
+## Configuration Repository
 
 An enterprise configuration repository should contain only installation-owned desired
 state:
@@ -203,12 +246,28 @@ the enterprise Git and OCI repositories; they are not application credentials.
 32 random bytes. It signs only recording-scoped Redap read tokens and must not reuse a
 gateway, refresh-delivery, Console session, object-store, or provider key.
 
-## Controller boundary
+For every credential, record its generator, public association, destination, minimum
+permissions, rotation owner, overlap period, restart behavior, and rollback procedure.
+Provision all referenced Secrets before starting dependent workloads. Never alternate
+temporary and installation credentials as an in-place repair.
+
+## Storage And Recovery
+
+The platform chart runs one SurrealDB process backed by a RocksDB PVC. Database HA is
+outside the current chart contract. Object storage and the Recording data plane also
+hold durable installation state. Selected extensions may add independent single-writer
+or persistent volumes.
+
+Before rollout, choose storage classes and capacity and establish backup and restore
+procedures that meet the approved recovery objectives. Exercise restore through the
+organization's infrastructure procedure and verify application-level readability. A
+successful Helm install or pod restart is not backup evidence.
+
+## GitOps And Controller Boundary
 
 The enterprise owns the GitOps controller. Veoveo applications must not install,
-upgrade, configure, or delete that controller. A local reference environment may
-bootstrap a pinned Flux version as a platform fixture, but the root Veoveo
-Kustomization begins only after the controller and its repository credentials exist.
+upgrade, configure, or delete that controller. The root Veoveo Kustomization begins only
+after the controller and its repository credentials exist.
 
 A root Kustomization may create the installation namespace, non-secret ConfigMaps,
 ingress connectors, OCI sources, and HelmReleases. The platform chart is one release.
@@ -218,6 +277,37 @@ values, health, rollback, and lifecycle.
 The controller reconciles drift continuously. Routine releases change Git and let the
 controller converge. kubectl apply and helm upgrade are bootstrap and recovery tools,
 not concurrent owners of the same application resources.
+
+The maintained Flux reference reconciles desired state in this order:
+
+1. Namespace and installation-owned non-secret resources.
+2. Secret projections and their readiness.
+3. Git source and root Kustomization.
+4. Immutable OCI chart sources.
+5. Veoveo platform HelmRelease.
+6. Independently deployed extension HelmReleases.
+7. Installation-owned gateway activation and bindings.
+
+The exact dependency expression belongs to the selected controller. The
+[Bioma enterprise GitOps reference](../examples/bioma/README.md) demonstrates this
+composition for one installation; its origins, identity, capacity, extensions, and
+acceptance are not defaults. Its typed convergence command observes the Git artifact,
+root Kustomization, release inventories, changed Deployments, and readiness:
+
+~~~bash
+cargo xtask smoke gitops-converge \
+  --context <kubernetes-context> \
+  --source <namespace/git-repository> \
+  --root <namespace/root-kustomization> \
+  --release <namespace/platform-helm-release> \
+  --release <namespace/extension-helm-release> \
+  --revision <full-git-revision> \
+  --deployment <namespace/changed-deployment> \
+  --evidence-output <new-evidence-path>
+~~~
+
+Pass every selected release and every Deployment changed by the rollout. The evidence
+path is create-only.
 
 ## Independently deployed MCP extensions
 
@@ -234,10 +324,8 @@ An extension release normally selects two artifacts:
 - the installation Git repository containing values, bindings, and digest pins.
 
 Every fragment's upstream declares two typed URLs: the MCP endpoint and a required
-`health_url`. The gateway probes the health endpoint with an unauthenticated GET and
-treats only a success status as healthy; it never reads an MCP request, an
-authentication failure, or a method rejection as a health signal. A fragment without
-`health_url` fails control-plane validation before it can deploy.
+`health_url`. The Gateway Activation section governs their validation and health
+semantics.
 
 Private MCP servers follow the same pattern. They use their repository's native build
 system and do not join the Veoveo workspace. Their chart consumes the versioned
@@ -248,6 +336,54 @@ normative server requirements, including the well-known docs and contract resour
 are in
 [`mcp/contract/DESIGN.md`](../mcp/contract/DESIGN.md).
 
+## Gateway Activation
+
+Compose and validate the complete gateway control plane before rollout. Installation
+bindings own exposure, tenants, producers, profiles, scopes, and authorization policy;
+extension fragments own their server contribution.
+
+The installation must provide:
+
+- the composed, validated control-plane document;
+- public JWKS and required public CA material;
+- the existing confidential Secret and its required keys;
+- a content-addressed ConfigMap or equivalent immutable activation input consumed by
+  the chart bootstrap path;
+- one unauthenticated `health_url` for every hosted-server and Recording upstream.
+
+The Gateway probes each declared health endpoint with `GET` and accepts only a success
+status. An MCP response, authentication failure, or method rejection is not a health
+signal. A fragment without `health_url` fails control-plane validation before rollout.
+
+The Gateway may run multiple replicas because durable authority lives in the platform
+store. Its Kubernetes Service uses client-IP affinity to keep each active MCP transport,
+subscription, and notification stream attached to one Gateway process. Hosted MCP
+server workloads retain their single-active-process lifecycle where required by their
+runtime and storage contracts.
+
+A GitOps controller may generate the ConfigMap from committed non-secret content while
+preserving the chart contract. Never place confidential key bytes in that ConfigMap.
+
+## Preflight
+
+Before the first mutation in an environment, verify:
+
+- every selected image and chart exists at its pinned immutable identity;
+- cluster nodes can authenticate to and pull from the selected registry;
+- all chart values render against the selected chart versions;
+- every referenced Secret and required key is present;
+- the gateway control plane validates and every upstream declares `health_url`;
+- ingress, DNS, certificates, OIDC callbacks, and protected-resource origins agree;
+- required storage classes and capacity exist;
+- required NVIDIA GPU resources and runtime classes are allocatable;
+- the controller can read the configuration and OCI repositories;
+- the previous known-good release inputs and rollback procedure are available.
+
+Use the chart's render and lint tools inside the installation release process. When a
+repository deployment profile owns source-publication acceptance, its typed validation
+and locked render provide corresponding evidence. Do not introduce a deployment profile
+solely to replace an existing enterprise controller.
+
 ## Direct Helm
 
 Flux is not a runtime dependency of Veoveo. An enterprise with another release
@@ -255,7 +391,7 @@ controller can render or install the same packages directly:
 
 ~~~bash
 helm upgrade --install veoveo \
-  oci://registry.example.com/veoveo/charts/veoveo \
+  oci://registry.example.internal/veoveo/charts/veoveo \
   --version "$CHART_VERSION" \
   --namespace veoveo \
   --create-namespace \
@@ -267,9 +403,53 @@ helm upgrade --install veoveo \
 The operator must apply the gateway ConfigMap and provision every referenced Secret
 before Helm starts workloads. Another GitOps system should express those same ordering
 and ownership boundaries rather than translating them into a Veoveo-specific
-orchestrator.
+orchestrator. Preserve the rendered release inputs and Helm result as release evidence.
 
-## Upgrade and rollback
+## Offline Installation
+
+Build the canonical bundle on a connected host, verify it at transfer boundaries, and
+load it inside the offline environment. Follow the
+[offline installation bundle](../deploy/offline/README.md) for the exact builder and
+loader commands.
+
+The bundle carries runtime images, chart material, schemas, checksums, image identities,
+SBOMs, and public configuration. It excludes installation Secrets, TLS private keys,
+internal OIDC configuration, site-specific trust, and site-approved model or TensorRT
+engine files. Supply those inside the offline boundary before starting workloads.
+
+The offline cluster still requires compatible NVIDIA drivers and the selected GPU
+allocator and runtime. Loading images does not establish GPU readiness.
+
+## Installation Acceptance
+
+Helm or controller readiness is necessary but not sufficient. The installation gate
+checks:
+
+- controller health and exact desired-state revision;
+- Git source and root Kustomization readiness at the same revision when GitOps is used;
+- every selected release Ready with a non-empty inventory;
+- pod and container readiness;
+- persistent storage attachment;
+- ingress and TLS at the canonical origin;
+- OIDC discovery and authenticated human and machine flows;
+- exact positive and negative Gateway capability catalogs;
+- successful health probes for every hosted-server and Recording upstream;
+- required GPU allocation and hardware execution;
+- one approved business workflow for every installed workload;
+- persistence, restart, backup, and restore behavior required by the accepted scope.
+
+Use the acceptance harness owned by the selected installation. Evidence from another
+installation or reference composition does not prove the selected services, identity,
+network, data, or recovery objectives.
+
+Record exact artifact identities, configuration revision, commands, results, and
+environment in the installation release evidence. State explicitly when an acceptance
+was not executed. The
+[enterprise installation readiness record](ENTERPRISE_INSTALLATION_READINESS.md) keeps
+static validation, runtime health, identity, policy, business effects, persistence,
+restore, and clean reproduction as separate results.
+
+## Upgrade And Rollback
 
 A release change updates selected release manifests, chart versions, and image digests
 in one reviewed commit.
@@ -278,7 +458,37 @@ environments remains an explicit Git change. Rollback restores the previous know
 manifests and digests. Database migration compatibility belongs to release notes and
 must be evaluated before promotion.
 
-A production gate checks controller health, application sync, pod readiness, persistent
-storage, ingress, OAuth discovery, MCP capability discovery, hosted-server health
-endpoints, and required GPU capacity.
-Domain acceptance then exercises the installed workload through its public contract.
+Repeat the affected technical and business acceptance after promotion. Do not declare
+success solely because new pods became Ready. Data migrations and storage restoration
+may constrain rollback; resolve those constraints before promotion.
+
+## Recovery And Diagnosis
+
+Capture controller, release, Kubernetes, ingress, identity, storage, and workload state
+before attempting repair. Determine which owner controls the failed boundary. Use only
+the recovery procedures approved for the installation. Do not recreate a customer
+cluster, replace identity infrastructure, or delete persistent resources as an ad hoc
+repair.
+
+When Kubernetes rejects immutable selector or StatefulSet changes, stop the rollout and
+review the chart transition and data-retention consequences. Do not delete stateful
+resources merely to make an upgrade pass. Record accepted product limitations without
+changing core as part of an installation repair.
+
+## Agent Workflow
+
+Agents operating on an enterprise installation must:
+
+1. Read this document, the Helm chart contract, the installation runbook, and the
+   selected installation repository before acting.
+2. Identify the reconciliation owner and never introduce a second concurrent owner.
+3. Distinguish repository defaults, executable references, and installation-owned
+   decisions. Reference values do not become general requirements.
+4. Inspect rendered inputs and runtime evidence before proposing code or contract
+   changes.
+5. Treat missing installation configuration as an owner input, not an invitation to add
+   a repository-wide validation rule.
+6. Never create, reveal, copy, or commit customer Secret values.
+7. Stop at a failed rollout step unless the installation owner authorizes the diagnosed
+   recovery.
+8. Report which technical and business acceptance paths ran and which remain unverified.

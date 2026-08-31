@@ -8,7 +8,7 @@ ownership, and shortest implementation paths. Update the map in the same change 
 document moves, a component is added, or an ownership boundary changes.
 
 Before operating, diagnosing, or changing a fielded installation, read
-[`docs/DEPLOYMENT_GUIDE.md`](docs/DEPLOYMENT_GUIDE.md) and
+[`docs/ENTERPRISE_INSTALLATION_RUNBOOK.md`](docs/ENTERPRISE_INSTALLATION_RUNBOOK.md) and
 [`docs/ENTERPRISE_DEPLOYMENT.md`](docs/ENTERPRISE_DEPLOYMENT.md). The installation owner
 controls identity, Secrets, infrastructure, desired state, and recovery. Do not infer
 enterprise requirements from one reference installation.
