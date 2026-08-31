@@ -7,6 +7,12 @@ placing a new module. It indexes the normative documents, component designs, cod
 ownership, and shortest implementation paths. Update the map in the same change when a
 document moves, a component is added, or an ownership boundary changes.
 
+Before operating, diagnosing, or changing a fielded installation, read
+[`docs/DEPLOYMENT_GUIDE.md`](docs/DEPLOYMENT_GUIDE.md) and
+[`docs/ENTERPRISE_DEPLOYMENT.md`](docs/ENTERPRISE_DEPLOYMENT.md). The installation owner
+controls identity, Secrets, infrastructure, desired state, and recovery. Do not infer
+enterprise requirements from one reference installation.
+
 A design document belongs beside the code it governs: an MCP server's at
 `servers/{server}-mcp/DESIGN.md`, and other contract-bearing components (the
 gateway composer, conformance, extensions, deploy contract, simulation runtime,
