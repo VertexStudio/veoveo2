@@ -14,6 +14,12 @@ The ordered installation procedure for operators and agents is documented in the
 [deployment guide](DEPLOYMENT_GUIDE.md). This document remains the normative ownership
 and artifact contract.
 
+The [enterprise discovery template](ENTERPRISE_DISCOVERY_TEMPLATE.md) records the
+business and operating inputs that precede this contract. The
+[enterprise installation runbook](ENTERPRISE_INSTALLATION_RUNBOOK.md) connects those
+approved inputs to solution design, artifact selection, reconciliation, acceptance,
+and handoff without changing the ownership rules below.
+
 ## Standards And Protocols
 
 | Standard or protocol | Supported profile |

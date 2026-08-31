@@ -14,6 +14,10 @@ enterprise or production installation is ready. Production ownership, identity,
 secrets, release, upgrade, and rollback are documented in
 [Enterprise deployment](ENTERPRISE_DEPLOYMENT.md).
 
+Use the [enterprise installation runbook](ENTERPRISE_INSTALLATION_RUNBOOK.md) for a
+fielded delivery. Local credentials, loopback origins, registry settings, acceptance
+harness identities, and destructive cleanup commands are not enterprise defaults.
+
 ## Source Of Truth
 
 This guide owns the ordered developer workflow. The linked documents remain

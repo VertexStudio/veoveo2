@@ -11,6 +11,12 @@ The normative ownership and artifact contract remains
 installation team applies those contracts without inheriting assumptions from the
 disposable local environment or the Bioma reference.
 
+An enterprise engagement starts with the
+[discovery template](ENTERPRISE_DISCOVERY_TEMPLATE.md). After the organization approves
+the initial workflow, owners, constraints, and acceptance outcomes, use the
+[enterprise installation runbook](ENTERPRISE_INSTALLATION_RUNBOOK.md) to coordinate the
+delivery stages around this detailed deployment procedure.
+
 For a workstation-only SUMO deployment, use the
 [local development deployment guide](LOCAL_DEVELOPMENT_DEPLOYMENT.md) instead.
 

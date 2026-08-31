@@ -27,6 +27,8 @@ What an engagement leaves behind is not a subscription. It is the factory.
 [Compared to Palantir](#compared-to-palantir) ·
 [Executable showcases](#executable-showcases) ·
 [Connectors](#enterprise-connectors) ·
+[Veoveo explained](docs/VEOVEO_OVERVIEW.md) ·
+[Enterprise discovery](docs/ENTERPRISE_DISCOVERY_TEMPLATE.md) ·
 [Deployment](#deploy-your-installation) ·
 [Software factory](#a-software-factory) ·
 [Technical design](docs/TECH_DESIGN.md) ·
