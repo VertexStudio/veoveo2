@@ -18,6 +18,7 @@ component:
 | [`WORK_CONTEXT_GOVERNANCE.md`](WORK_CONTEXT_GOVERNANCE.md) | invocation authority, output ownership, effective access, and rollout |
 | [`VEOVEO_OVERVIEW.md`](VEOVEO_OVERVIEW.md) | non-technical explanation of Veoveo, its governed operating model, principal concepts, enterprise responsibilities, and engagement lifecycle |
 | [`ENTERPRISE_DISCOVERY_TEMPLATE.md`](ENTERPRISE_DISCOVERY_TEMPLATE.md) | adaptable discovery structure for business outcomes, workflows, authority, integrations, infrastructure, risk, acceptance, and decision ownership |
+| [`ENTERPRISE_INSTALLATION_READINESS.md`](ENTERPRISE_INSTALLATION_READINESS.md) | fielded-installation control record for decisions, prerequisites, immutable inputs, identity, policy, workflows, persistence, recovery, evidence, defects, and residual risk |
 | [`DEPLOYMENT_GUIDE.md`](DEPLOYMENT_GUIDE.md) | canonical operational guide for connected GitOps, direct Helm, offline installation, acceptance, upgrade, rollback, and agent boundaries |
 | [`ENTERPRISE_INSTALLATION_RUNBOOK.md`](ENTERPRISE_INSTALLATION_RUNBOOK.md) | staged enterprise delivery runbook connecting approved discovery, ownership, artifacts, configuration, secrets, reconciliation, acceptance, handoff, and operation |
 | [`ENTERPRISE_DEPLOYMENT.md`](ENTERPRISE_DEPLOYMENT.md) | OCI release, enterprise configuration, secrets, GitOps, extensions, and acceptance |
