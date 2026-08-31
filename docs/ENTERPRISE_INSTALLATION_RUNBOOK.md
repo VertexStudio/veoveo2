@@ -392,7 +392,8 @@ For every check, retain:
 - date, environment, actor, and command or procedure;
 - selected source, image, chart, and configuration identities;
 - sanitized result and evidence location;
-- explicit status: passed, failed, blocked, or not executed;
+- explicit status: `passed`, `failed`, `blocked`, `not-executed`,
+  `not-applicable`, or `accepted-limit`;
 - defect or decision owner;
 - any limitation that prevents production reliance.
 
@@ -474,8 +475,8 @@ An installation is ready for the agreed use case when:
 - ordinary restart, backup restore, and clean reproduction have recorded results;
 - backup, restore, upgrade, rollback, monitoring, and support responsibilities are
   accepted;
-- every failed, blocked, skipped, or limited check is recorded and accepted by its
-  owner.
+- every `failed`, `blocked`, `not-executed`, or `accepted-limit` check is recorded and
+  accepted by its owner.
 
 Readiness applies to the agreed scope, environment, and release. It is not a permanent
 claim that every Veoveo capability or future customer workflow is certified.

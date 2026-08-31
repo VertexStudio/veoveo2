@@ -348,6 +348,9 @@ kubectl --context k3d-veoveo-sumo get events --all-namespaces \
 df -h
 df -i
 docker system df
+docker exec k3d-veoveo-sumo-server-0 df -h
+docker exec k3d-veoveo-sumo-server-0 df -i
+docker exec k3d-veoveo-sumo-server-0 crictl images --digests
 ```
 
 Distinguish node filesystem capacity, image garbage collection, Docker image storage,
@@ -365,6 +368,10 @@ Record the exact image reference and first causal error. Confirm DNS and registr
 from the k3d node, then verify the image in the container runtime actually used by
 kubelet. An image present in the Docker host store is not proof that containerd can
 resolve it under the required reference.
+
+Use `crictl inspecti <exact-image-reference>` inside the k3d server container to prove
+that kubelet's runtime can resolve the image. Preserve the registry prefix, repository,
+tag or digest, platform, and containerd namespace shown by the failing event.
 
 Do not turn a one-time image import into the permanent remedy for broken node DNS. The
 durable correction belongs to the local cluster networking or registry-mirror owner.

@@ -27,7 +27,7 @@ Create one copy per installation environment. Link shared decisions instead of s
 assuming that development, acceptance, production, and disaster-recovery environments
 are identical.
 
-Every row uses one status:
+Every check that reports progress uses one status:
 
 | Status | Meaning |
 |---|---|
@@ -36,10 +36,11 @@ Every row uses one status:
 | `passed` | The stated check passed for the recorded release and environment |
 | `failed` | The check ran and produced a product or composition failure |
 | `blocked` | A named prerequisite or external decision prevents execution |
+| `not-executed` | The check was required for this release but did not run |
 | `not-applicable` | The owner approved that the requirement does not apply |
 | `accepted-limit` | The owner accepted a bounded limitation for the agreed use case |
 
-Never turn `failed`, `blocked`, or `not executed` into `passed` through explanatory
+Never turn `failed`, `blocked`, or `not-executed` into `passed` through explanatory
 prose. A platform health endpoint does not prove that its workloads, identity flow,
 business workflow, persistence, or recovery passed.
 
