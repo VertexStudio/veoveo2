@@ -18,7 +18,9 @@ The [enterprise discovery template](ENTERPRISE_DISCOVERY_TEMPLATE.md) records th
 business and operating inputs that precede this contract. The
 [enterprise installation runbook](ENTERPRISE_INSTALLATION_RUNBOOK.md) connects those
 approved inputs to solution design, artifact selection, reconciliation, acceptance,
-and handoff without changing the ownership rules below.
+and handoff without changing the ownership rules below. The
+[enterprise installation readiness record](ENTERPRISE_INSTALLATION_READINESS.md)
+captures the installation's decisions, evidence, defects, limitations, and approvals.
 
 ## Standards And Protocols
 

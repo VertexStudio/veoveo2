@@ -17,6 +17,9 @@ secrets, release, upgrade, and rollback are documented in
 Use the [enterprise installation runbook](ENTERPRISE_INSTALLATION_RUNBOOK.md) for a
 fielded delivery. Local credentials, loopback origins, registry settings, acceptance
 harness identities, and destructive cleanup commands are not enterprise defaults.
+The [enterprise installation readiness record](ENTERPRISE_INSTALLATION_READINESS.md)
+lists the decisions and evidence required when translating local results to a customer
+environment.
 
 ## Source Of Truth
 
@@ -330,6 +333,41 @@ kubectl --context k3d-veoveo-sumo --namespace veoveo logs <pod-name> -c <contain
 
 The current and previous container logs distinguish image, configuration, dependency,
 authentication, and crash-loop failures.
+
+### The node reports DiskPressure or Pods remain Pending
+
+Kubernetes API readiness does not imply that workloads can schedule. Inspect the node,
+taints, events, filesystems, Docker inventory, and the k3d node runtime before deleting
+anything:
+
+```bash
+kubectl --context k3d-veoveo-sumo get nodes -o wide
+kubectl --context k3d-veoveo-sumo describe node
+kubectl --context k3d-veoveo-sumo get events --all-namespaces \
+  --sort-by=.lastTimestamp
+df -h
+df -i
+docker system df
+```
+
+Distinguish node filesystem capacity, image garbage collection, Docker image storage,
+BuildKit cache, containerd content, logs, and persistent volumes. A cache reported as
+reclaimable may belong to a different BuildKit daemon than the selected builder.
+
+Do not prune images, caches, containers, volumes, or Kubernetes resources until the
+owning store and protected data have been identified. PVCs, k3d volumes, databases,
+active images, and generated credential roots are not cleanup candidates merely because
+the node has disk pressure.
+
+### A Pod sandbox or external image cannot be pulled
+
+Record the exact image reference and first causal error. Confirm DNS and registry access
+from the k3d node, then verify the image in the container runtime actually used by
+kubelet. An image present in the Docker host store is not proof that containerd can
+resolve it under the required reference.
+
+Do not turn a one-time image import into the permanent remedy for broken node DNS. The
+durable correction belongs to the local cluster networking or registry-mirror owner.
 
 ## Agent Workflow
 

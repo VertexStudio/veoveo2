@@ -15,7 +15,9 @@ An enterprise engagement starts with the
 [discovery template](ENTERPRISE_DISCOVERY_TEMPLATE.md). After the organization approves
 the initial workflow, owners, constraints, and acceptance outcomes, use the
 [enterprise installation runbook](ENTERPRISE_INSTALLATION_RUNBOOK.md) to coordinate the
-delivery stages around this detailed deployment procedure.
+delivery stages around this detailed deployment procedure. Maintain the
+[enterprise installation readiness record](ENTERPRISE_INSTALLATION_READINESS.md) as
+the status and evidence ledger for the selected environment.
 
 For a workstation-only SUMO deployment, use the
 [local development deployment guide](LOCAL_DEVELOPMENT_DEPLOYMENT.md) instead.
@@ -365,6 +367,11 @@ identity, network, data, or recovery objectives.
 Record the exact artifact identities, configuration revision, commands, results, and
 environment in the installation release evidence. State explicitly when an acceptance
 was not executed.
+
+Use the readiness record to keep static validation, deployed runtime health, identity,
+policy, business effects, persistence, restore, and clean reproduction as separate
+results. Record accepted product limitations without changing core as part of an
+installation repair.
 
 ## Upgrade And Rollback
 

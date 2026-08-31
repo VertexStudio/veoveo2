@@ -478,7 +478,12 @@ failure diagnosis, and destructive cleanup boundaries.
 Installation teams preparing a fielded environment should start with the
 [`deployment guide`](docs/DEPLOYMENT_GUIDE.md). It orders the existing enterprise
 contracts for GitOps, direct Helm, offline delivery, acceptance, upgrade, and rollback
-without inheriting local or Bioma-specific configuration.
+without inheriting local or Bioma-specific configuration. Begin the engagement with the
+[`enterprise discovery template`](docs/ENTERPRISE_DISCOVERY_TEMPLATE.md), coordinate it
+through the
+[`enterprise installation runbook`](docs/ENTERPRISE_INSTALLATION_RUNBOOK.md), and track
+each gate in the
+[`enterprise installation readiness record`](docs/ENTERPRISE_INSTALLATION_READINESS.md).
 
 The [Autonomy Harness shared-responsibility contract](docs/AUTONOMY_HARNESS.md)
 defines how continuously autonomous agents remain contained across identity, data,

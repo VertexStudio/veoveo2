@@ -129,16 +129,16 @@ organization's legal, compliance, or records-management program.
 
 A typical request follows this path:
 
-1. **Sign in.** The person authenticates through the organization's identity provider.
-2. **Select governed context.** Veoveo establishes the tenant, Work Context, roles, and
+1. Sign in. The person authenticates through the organization's identity provider.
+2. Select governed context. Veoveo establishes the tenant, Work Context, roles, and
    allowed applications.
-3. **Discover capabilities.** The user or agent sees only the services and operations
+3. Discover capabilities. The user or agent sees only the services and operations
    permitted for that identity.
-4. **Read or propose.** The actor reads approved information or proposes an action.
-5. **Authorize.** Veoveo evaluates policy before the request reaches the operational
+4. Read or propose. The actor reads approved information or proposes an action.
+5. Authorize. Veoveo evaluates policy before the request reaches the operational
    service.
-6. **Execute.** The selected service performs the operation within its own contract.
-7. **Preserve the result.** Work state, audit events, artifacts, or recordings retain
+6. Execute. The selected service performs the operation within its own contract.
+7. Preserve the result. Work state, audit events, artifacts, or recordings retain
    the evidence required by the workflow.
 
 This separation matters. Authentication proves identity, authorization decides what
@@ -163,6 +163,53 @@ Every installation is shaped by the enterprise. Decisions normally include:
 Veoveo supplies product contracts and deployment artifacts. It does not silently make
 these enterprise decisions.
 
+## Shared Responsibility
+
+A Veoveo installation joins product capabilities with systems owned by the enterprise.
+Responsibility therefore remains distributed.
+
+| Veoveo product responsibility | Enterprise installation responsibility | Connected-system responsibility |
+|---|---|---|
+| Supported platform contracts and release artifacts | Infrastructure, identity, networking, Secrets, configuration, and operation | Correct domain behavior, availability, credentials, and business data |
+| Gateway, policy, work, artifact, and recording capabilities selected by the release | Role design, approved policies, retention, monitoring, backup, and support | Stable interfaces, rate limits, recovery behavior, and effect evidence |
+| Product defect ownership and supported upgrade boundaries | Acceptance of the complete customer composition and residual risk | Ownership of external mutations and ambiguous outcomes |
+
+This division prevents a healthy platform from being mistaken for proof that every
+external system is configured correctly. It also prevents a local integration problem
+from being treated automatically as a product defect.
+
+## What A Successful Installation Proves
+
+Success is layered. Each layer answers a different question:
+
+1. Infrastructure: can the cluster schedule workloads, pull images, attach storage,
+   reach dependencies, and provide required GPU hardware?
+2. Platform: are the selected Veoveo services and Gateway upstreams healthy?
+3. Identity and policy: do people and services see exactly the capabilities intended
+   for their roles, including explicit denials?
+4. Business workflow: does one approved real-world scenario produce an exact,
+   observable result and durable evidence?
+5. Persistence and recovery: do accepted state, audit, artifacts, and recordings
+   survive the agreed restart and restore procedures?
+6. Reproduction and operation: can the enterprise recreate, monitor, maintain,
+   upgrade, and support the installation from documented inputs?
+
+A green health indicator answers only part of the first two questions. It does not prove
+business correctness, authorization, recovery, or production readiness.
+
+## Known Limits And Product Defects
+
+Large platforms can have defects or capabilities that are not yet suitable for a
+particular workflow. A customer installation does not need to repair every product issue
+it encounters. The delivery team records the limitation, identifies the affected
+capability, tests whether the agreed workflow remains valid, and routes the product
+finding to its owner.
+
+The enterprise may accept a bounded limitation when the unavailable behavior is clear
+and the remaining workflow has adequate evidence. It must not receive a claim that a
+failed or untested capability passed. Product fixes proceed independently and trigger
+the affected acceptance again when adopted.
+
 ## What Veoveo Does Not Mean
 
 Veoveo is not unrestricted AI access to company systems. It is not a replacement for
@@ -177,17 +224,17 @@ the organization relies on it.
 
 A normal engagement progresses through several stages:
 
-1. **Discovery:** understand the organization, desired outcomes, systems, constraints,
+1. Discovery: understand the organization, desired outcomes, systems, constraints,
    and decision owners.
-2. **Solution definition:** choose the first workflows, services, integrations, and
+2. Solution definition: choose the first workflows, services, integrations, and
    authority boundaries.
-3. **Installation design:** define infrastructure, identity, networking, storage,
+3. Installation design: define infrastructure, identity, networking, storage,
    secrets, release ownership, and recovery.
-4. **Implementation:** publish selected artifacts, configure the installation, and
+4. Implementation: publish selected artifacts, configure the installation, and
    integrate enterprise-owned services.
-5. **Acceptance:** prove identity, policy, service health, business outcomes, evidence,
+5. Acceptance: prove identity, policy, service health, business outcomes, evidence,
    and recovery separately.
-6. **Handoff and operation:** establish ownership, monitoring, support, upgrades,
+6. Handoff and operation: establish ownership, monitoring, support, upgrades,
    rollback, and periodic access review.
 
 The first goal is not to connect everything. It is to establish one valuable,
@@ -199,7 +246,8 @@ well-bounded workflow that the organization can understand, verify, and operate.
   conversations with a new organization.
 - [Enterprise installation runbook](ENTERPRISE_INSTALLATION_RUNBOOK.md) organizes the
   technical delivery from approved scope through operational handoff.
+- [Enterprise installation readiness](ENTERPRISE_INSTALLATION_READINESS.md) records
+  every decision, prerequisite, acceptance result, known limitation, and final approval.
 - [Deployment guide](DEPLOYMENT_GUIDE.md) defines the detailed installation procedure.
 - [Enterprise deployment](ENTERPRISE_DEPLOYMENT.md) defines ownership of artifacts,
   configuration, infrastructure, secrets, and reconciliation.
-

@@ -28,6 +28,8 @@ Read these documents before changing an installation:
 - [Veoveo explained](VEOVEO_OVERVIEW.md) for the non-technical product model;
 - [Enterprise discovery template](ENTERPRISE_DISCOVERY_TEMPLATE.md) for engagement
   inputs and decision ownership;
+- [Enterprise installation readiness](ENTERPRISE_INSTALLATION_READINESS.md) for the
+  installation's decision, prerequisite, acceptance, defect, and residual-risk record;
 - [Deployment guide](DEPLOYMENT_GUIDE.md) for connected, direct Helm, offline,
   acceptance, upgrade, rollback, and diagnosis procedures;
 - [Enterprise deployment](ENTERPRISE_DEPLOYMENT.md) for artifact, configuration,
@@ -57,6 +59,11 @@ This product repository remains the source for Veoveo contracts and release arti
    automatically authorize a core product change.
 8. Stop before destructive recovery, data migration, authority expansion, or an
    ownership change unless the responsible enterprise owner approves it.
+9. Classify installation composition, infrastructure prerequisites, acceptance
+   procedures, enterprise extensions, and core product behavior separately.
+10. Preserve failed and blocked results. A known product limitation may be accepted for
+    a bounded workflow, but it must not be hidden or repaired through an undocumented
+    state rewrite.
 
 ## Delivery Record
 
@@ -78,6 +85,7 @@ Create an installation delivery record before implementation.
 | Maintenance window | |
 | Rollback decision owner | |
 | Evidence location | |
+| Readiness record | |
 
 ## Stage 0: Discovery Approval
 
@@ -155,6 +163,8 @@ Document:
 - identity provider, issuer, clients, claims, groups, and service identities;
 - network segmentation, allowed ingress, egress, proxies, and private endpoints;
 - storage classes, object storage, encryption, capacity, backup, and restore;
+- node and image-filesystem thresholds, eviction policy, image garbage collection, and
+  the operating margin required for upgrades;
 - monitoring, logging, audit export, alerting, and support routing.
 
 ### Capacity
@@ -162,6 +172,11 @@ Document:
 Estimate workload replicas, CPU, memory, GPU, storage, object growth, recording rate,
 network traffic, image footprint, and retention. State expected growth and the point at
 which capacity must be reviewed.
+
+Inventory transitive runtime images, including init containers, Jobs, the Kubernetes
+sandbox image, GPU components, databases, and administrative utilities. Prove that
+cluster nodes can resolve and pull them through the selected connected, mirrored, or
+offline path. A workstation image cache is not node-runtime evidence.
 
 ### Gate
 
@@ -221,6 +236,10 @@ Render and validate the complete composition before reconciliation. Check that e
 referenced Secret, ConfigMap, service, route, health endpoint, storage claim, and image
 exists in the intended ownership boundary.
 
+Record transport URLs, HTTP authorities, public OAuth resources, audiences, issuers,
+redirect URIs, and TLS names independently. They often share a hostname, but they are
+not interchangeable contract fields.
+
 ### Gate
 
 The installation repository must contain one coherent desired state. Do not rely on an
@@ -249,6 +268,11 @@ groups, roles, service identities, logout, session, and administrative ownership
 
 Use separate human and machine acceptance. A working administrator login does not
 prove an operator's policy or a service client's assertion.
+
+For signing identities, verify that each private key matches its registered public key
+and key identifier. Record the association and algorithm without exposing private
+material. Validate service clients from their real calling namespace and NetworkPolicy,
+including DNS, identity, Gateway, storage, and domain-specific egress.
 
 ### Ordering Rule
 
@@ -296,6 +320,10 @@ Stop and capture evidence when:
 - a required GPU workload lacks hardware-backed execution;
 - the proposed repair changes infrastructure or authority ownership.
 
+An API-server `/readyz` result does not satisfy application readiness. Check desired and
+Ready replicas, current ReplicaSet ownership, pod conditions, restarts, effective image
+IDs, Jobs, storage attachment, node pressure, image pulls, and dependency health.
+
 ## Stage 7: Layered Acceptance
 
 Run each layer separately and record failures as failures. Do not let one green layer
@@ -328,11 +356,21 @@ stand in for another.
 - idempotency and ambiguous-failure behavior;
 - audit and durable task or work state.
 
+For MCP services, record the negotiated protocol version, metadata required on every
+request, exact human and machine capability catalogs, and representative denials.
+Measure real response shapes and sizes. Model full responses deliberately when an API
+returns totals with truncated detail collections.
+
 ### Business Workflow
 
 Run the accepted scenario from the public enterprise boundary. Confirm the initial
 state, authorization decision, external effect, resulting state, evidence correlation,
 and user-visible result. Use real domain evidence rather than inference from pod health.
+
+If the workflow mutates an external system, reserve a durable execution before the
+effect. Define identical and conflicting replay behavior, failure after the effect, and
+the owner of ambiguous recovery. Use an exact domain observation rather than a
+probabilistic metric.
 
 ### Data And Recovery
 
@@ -341,6 +379,11 @@ and user-visible result. Use real domain evidence rather than inference from pod
 - restart persistence without deleting storage;
 - upgrade and rollback within the approved compatibility boundary;
 - monitoring and alert delivery to the enterprise owner.
+
+When recordings are part of the workflow, prove governed catalog discovery, exact
+selection, durable correlation to the business execution, Live consumption,
+finalization, sealing, and History separately. Temporal proximity is not correlation,
+and a Live recording is not evidence of a sealed History manifest.
 
 ### Evidence Record
 
@@ -353,7 +396,41 @@ For every check, retain:
 - defect or decision owner;
 - any limitation that prevents production reliance.
 
-## Stage 8: Handoff
+## Stage 8: Recovery And Clean Reproduction
+
+### Ordinary Restart
+
+Restart one declared ownership boundary at a time without deleting persistent storage.
+Capture resource identities and sanitized business-state fingerprints before and after.
+Verify identity, Gateway policy, business reads, audit, artifact or recording access,
+and dependency health after recovery.
+
+### Backup And Restore
+
+Create a backup through the enterprise-owned procedure and restore it into an approved
+target. Prove application-level readability, not merely the presence of restored bytes.
+Record RPO, RTO, encryption, integrity, and the owners who may initiate restoration.
+
+### Clean Reproduction
+
+Recreate a disposable installation from the approved configuration revision and
+immutable release identities. Do not rely on previous PVCs, local credential material,
+node image caches, shell history, or undocumented patches. Run the complete affected
+acceptance again and record every manual prerequisite in the installation repository or
+runbook.
+
+Clean reproduction and ordinary restart prove different properties. Destructive
+reproduction requires explicit approval and an inventory of protected resources.
+
+### Gate
+
+- ordinary workload recovery preserves accepted state;
+- backup restore produces readable business data;
+- clean reproduction follows only documented inputs and ordering;
+- known product defects and excluded recovery paths remain explicit;
+- no protected enterprise resource is deleted as a convenience.
+
+## Stage 9: Handoff
 
 Before production use, hand over:
 
@@ -372,7 +449,7 @@ Before production use, hand over:
 Confirm that the enterprise can operate the installation without relying on an
 undocumented action performed by the delivery team.
 
-## Stage 9: Ongoing Operation
+## Stage 10: Ongoing Operation
 
 Operate changes through the installation's normal review and reconciliation process.
 Track artifact currency, compatibility, vulnerabilities, capacity, certificates,
@@ -394,6 +471,7 @@ An installation is ready for the agreed use case when:
 - human and machine authorization pass positive and negative checks;
 - the bounded business workflow produces its expected observable result;
 - audit and business evidence remain readable after ordinary restarts;
+- ordinary restart, backup restore, and clean reproduction have recorded results;
 - backup, restore, upgrade, rollback, monitoring, and support responsibilities are
   accepted;
 - every failed, blocked, skipped, or limited check is recorded and accepted by its
@@ -401,4 +479,3 @@ An installation is ready for the agreed use case when:
 
 Readiness applies to the agreed scope, environment, and release. It is not a permanent
 claim that every Veoveo capability or future customer workflow is certified.
-

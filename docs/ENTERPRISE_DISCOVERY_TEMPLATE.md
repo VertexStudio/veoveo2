@@ -115,6 +115,21 @@ For each proposed automated action, answer:
 - Can the operation be made idempotent?
 - Who owns recovery or compensation?
 
+### External Effects And Replay
+
+| Operation | Business identifier | Technical identifier | Durable reservation | Exact effect observation | Replay rule | Recovery owner |
+|---|---|---|---|---|---|---|
+| | | | | | | |
+
+Clarify where an execution becomes durable relative to an external effect. Define what
+happens when the caller loses the response after the external system has acted. A retry
+must not repeat an irreversible operation merely because the business record is still
+incomplete.
+
+Record identical replay, conflicting replay, operator recovery, and compensation as
+separate cases. Do not assume that every external system supports idempotency or
+rollback.
+
 ## Systems And Integrations
 
 ### System Inventory
@@ -133,6 +148,17 @@ For each candidate system, capture:
 - vendor support and change windows;
 - expected read operations and permitted write operations;
 - authoritative source and conflict-resolution rules.
+
+### Interface Semantics
+
+| Interface | Version | Identifier rules | Pagination or truncation | Maximum response | Unknown fields | Error model | Owner |
+|---|---|---|---|---|---|---|---|
+| | | | | | | | |
+
+Ask whether reported counts describe a complete population or only the returned page.
+Record numeric constraints, ordering, finite-value requirements, schema evolution, and
+how real payload sizes will be measured. Business identifiers and external technical
+identifiers need separate types and an explicit mapping owner.
 
 ### Data Movement
 
@@ -170,6 +196,16 @@ exclusion.
 Record the canonical public origin, OAuth audiences, redirect URI ownership, issuer,
 tenant model, and logout expectations during solution design. Do not invent these
 values during deployment.
+
+### Endpoint And Authority Inputs
+
+| Purpose | Public origin | Transport location | HTTP authority | OAuth resource or audience | TLS name | Proxy owner |
+|---|---|---|---|---|---|---|
+| | | | | | | |
+
+Determine how ingress and proxies preserve scheme, host authority, redirect URIs, and
+secure cookies. Record separate browser and machine flows. A successful administrator
+login does not prove an operator flow or a service assertion.
 
 ## Security, Privacy, And Compliance
 
@@ -222,6 +258,35 @@ the complete operating environment.
 | Secret manager and projection | | |
 | Monitoring and logging | | |
 | Backup infrastructure | | |
+
+### Runtime Artifact Closure
+
+| Image or artifact class | Approved source | Mirror required | Node pull path | Offline requirement | Owner |
+|---|---|---|---|---|---|
+| Platform images | | | | | |
+| Extension images | | | | | |
+| Kubernetes sandbox image | | | | | |
+| Init and administrative Jobs | | | | | |
+| GPU and device components | | | | | |
+| Databases and object storage | | | | | |
+
+Test DNS and registry access from cluster nodes and representative Pods. Workstation
+access and a workstation image cache do not prove node-runtime access.
+
+### Storage Pressure And Growth
+
+| Filesystem or store | Current capacity | Expected growth | Warning threshold | Expansion owner | Cleanup authority |
+|---|---|---|---|---|---|
+| Node filesystem | | | | | |
+| Image filesystem | | | | | |
+| Registry | | | | | |
+| Database | | | | | |
+| Object storage | | | | | |
+| Recordings | | | | | |
+
+Capture kubelet eviction thresholds, image garbage-collection behavior, inode limits,
+and the free-space margin needed to pull and unpack an upgrade. Define which caches may
+be pruned and which volumes, images, or persistent data are protected.
 
 Determine whether the environment is connected, restricted-egress, or offline. Record
 proxy, private certificate authority, firewall, registry mirror, and artifact-transfer
@@ -295,6 +360,35 @@ Define technical and business acceptance independently.
 Include negative cases: unauthorized user, invalid input, partial dependency failure,
 duplicate request, unavailable provider, and restart during or after work.
 
+### Catalog And Exposure Acceptance
+
+| Identity | Expected tools | Expected resources | Explicitly hidden capabilities | Expected denial |
+|---|---|---|---|---|
+| | | | | |
+
+Validate discovery and direct invocation separately. Human users must not inherit the
+internal tools used by an orchestrating service. Machine identities require their own
+minimum capability profiles.
+
+### Recording Requirements
+
+Complete this section only when the workflow uses recordings.
+
+| Question | Decision |
+|---|---|
+| Which producer, dataset, application, and recording key identify the stream? | |
+| How is the recording correlated durably to a business execution? | |
+| Must attachment occur before an external action? | |
+| What proves Live availability? | |
+| Who finalizes the producer stream? | |
+| What operation publishes a sealed History manifest? | |
+| What retention, export, legal hold, and deletion rules apply? | |
+| Which roles may read, seal, administer, or export recordings? | |
+
+Treat discovery, Live, finalization, sealing, manifest publication, and History as
+different lifecycle states. Timestamps alone do not prove that a recording belongs to
+a business execution.
+
 ## Delivery Risks And Assumptions
 
 ### Risks
@@ -314,6 +408,16 @@ duplicate request, unavailable provider, and restart during or after work.
 | Dependency | Needed by | Provider | Commitment | Status |
 |---|---|---|---|---|
 | | | | | |
+
+### Known Product Limitations
+
+| Limitation or defect | Affected capability | First workflow impact | Product owner | Enterprise decision | Retest trigger |
+|---|---|---|---|---|---|
+| | | | | | |
+
+An enterprise may accept a bounded product limitation when the agreed workflow remains
+valid. The acceptance must name unavailable behavior and residual risk. Installation
+work must not silently patch core product state or broaden authority to hide the defect.
 
 ## Open Questions And Decisions
 
@@ -347,4 +451,3 @@ Discovery may move into solution design when:
 The output is an approved discovery record and a bounded solution-design backlog. It is
 not yet an installation configuration or a promise that every requested integration is
 supported.
-
