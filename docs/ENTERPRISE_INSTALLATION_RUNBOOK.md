@@ -1,12 +1,15 @@
 # Enterprise Installation Runbook
 
-This runbook organizes a Veoveo enterprise delivery from approved discovery through
-operational handoff. It defines stages, ownership, evidence, and stop conditions. The
-detailed product commands and deployment contracts remain in the linked owning
-documents.
+This runbook governs an AI-guided Veoveo enterprise delivery from the first customer
+conversation through operational handoff. The installation agent uses it to choose the
+next question, discover authorized facts, prepare bounded plans, request approvals,
+execute technical stages, and preserve evidence. Detailed commands and deployment
+contracts remain in the linked owning documents.
 
-Use this runbook for a fielded installation. Every identity, origin, policy, credential,
-and recovery procedure must be approved for the customer environment.
+The customer begins by describing the organization and desired outcome in ordinary
+language. They do not need to read this runbook or complete every installation document
+first. Every identity, origin, policy, credential, production change, and recovery
+procedure still requires approval from its responsible enterprise owner.
 
 ## Standards And Protocols
 
@@ -20,9 +23,106 @@ This runbook does not imply that every enterprise must use Flux, public networki
 specific cloud, or a repository-development deployment profile. Helm is the package
 contract. The enterprise owns its controller and infrastructure choices.
 
+## Start With A Conversation
+
+A request such as the following is enough to begin:
+
+> Help us install Veoveo for our organization. Guide us through the information and
+> approvals you need.
+
+The installation agent responds with the first business question. It does not answer
+with a reading list, a complete questionnaire, a manifest, or a cluster command. The
+first exchange establishes:
+
+- the organization and business area;
+- the first outcome the organization wants to improve;
+- the person accountable for that outcome;
+- whether this is exploration, planning, or an authorized installation engagement.
+
+When one of these facts is unknown, the agent records it as an open question with an
+owner. It does not invent an answer or block unrelated discovery.
+
+## Guided Conversation Contract
+
+The agent repeats one controlled loop throughout the engagement:
+
+1. **Orient.** State the current stage, known facts, and the gate being approached.
+2. **Ask.** Request the smallest coherent set of owner decisions needed for that gate.
+3. **Discover.** With authorization, inspect facts the environment can provide directly.
+4. **Distinguish.** Mark each value as observed fact, enterprise decision, product
+   contract, assumption, or unresolved question.
+5. **Record.** Update the installation readiness record without storing Secret values.
+6. **Propose.** Present the next bounded plan, expected effect, evidence, and recovery
+   boundary.
+7. **Approve or advance.** Obtain the required owner approval before mutation, then run
+   only the approved step and report its result.
+
+Do not ask every discovery question at once. Use the question bank in
+[Enterprise discovery](ENTERPRISE_DISCOVERY_TEMPLATE.md) according to the current gate:
+
+| Conversation stage | Begin with | Advance when |
+|---|---|---|
+| Outcome | What should become possible, safer, faster, or more reliable? | One bounded result and business owner are named |
+| Workflow | Who acts, what decision is made, and what observable result proves success? | Current and intended paths, effects, and acceptance owner are understood |
+| Authority | Who may read, propose, approve, execute, administer, and audit? | Human and machine boundaries have owners |
+| Systems | Which existing systems and data are required for the first workflow? | Interfaces, owners, identifiers, and permitted effects are known |
+| Installation | Where will it run and who owns identity, network, storage, Secrets, and reconciliation? | Architecture decisions and unresolved prerequisites have owners |
+| Operation | Who monitors, recovers, upgrades, and accepts residual risk? | Handoff, recovery, and final approval responsibilities are explicit |
+
+The agent reuses answers already supplied. It asks a specialist only for decisions owned
+by that specialist and explains why the answer is needed. It may group closely related
+questions, but each group must be short enough for the customer to answer confidently.
+
+## Authority And Approval
+
+Conversation grants no infrastructure authority by itself. The agent operates in one of
+four explicit modes:
+
+| Mode | Permitted behavior |
+|---|---|
+| `discover` | Ask questions and perform approved read-only inspection |
+| `plan` | Prepare configuration changes, commands, acceptance procedures, and recovery boundaries without applying them |
+| `execute` | Apply the exact approved bounded change and collect sanitized evidence |
+| `recover` | Perform an owner-approved recovery after preserving the causal failure and protected-resource inventory |
+
+Require an accountable owner before:
+
+- creating or changing identity clients, roles, policies, or service authority;
+- handling or projecting credentials and private material;
+- changing public DNS, TLS, ingress, firewall, proxy, or external exposure;
+- reconciling a fielded environment or promoting a production release;
+- modifying persistent schemas, retention, backup, restore, or protected data;
+- rolling back, deleting, recreating, or taking another destructive recovery action;
+- accepting a product limitation, failed check, or residual business risk.
+
+An approval names the plan or command scope, environment, expected effect, recovery
+boundary, and approver. General encouragement to continue is not approval for an
+unbounded or destructive action.
+
+## Installation Memory
+
+The agent creates one installation-specific copy of
+[Enterprise installation readiness](ENTERPRISE_INSTALLATION_READINESS.md) as soon as the
+organization, environment, and installation owner can be identified. That record is the
+durable state of the engagement. After every decision or check, the agent updates:
+
+- the current stage and next gate;
+- confirmed decisions and their owners;
+- facts observed directly and their evidence locations;
+- open questions, assumptions, dependencies, and blockers;
+- approved plans and the scope of each approval;
+- commands or procedures executed and sanitized results;
+- failed, blocked, not-executed, or accepted-limit checks without converting them to
+  success;
+- the next question, approval, or executable step.
+
+Chat history and shell history are not installation memory. The readiness record links
+to enterprise-owned configuration and evidence repositories instead of copying Secret
+values or sensitive payloads.
+
 ## Source Documents
 
-Read these documents before changing an installation:
+The installation agent consults these sources as the workflow requires them:
 
 - [Veoveo explained](VEOVEO_OVERVIEW.md) for the non-technical product model;
 - [Enterprise discovery template](ENTERPRISE_DISCOVERY_TEMPLATE.md) for engagement
@@ -37,6 +137,7 @@ Read these documents before changing an installation:
 - [Autonomy harness](AUTONOMY_HARNESS.md) when agents will operate continuously;
 - the selected Helm chart and component design documents.
 
+The customer does not need to navigate these sources during the guided conversation.
 An installation-specific repository becomes the durable source for customer decisions.
 This product repository remains the source for Veoveo contracts and release artifacts.
 
@@ -65,7 +166,8 @@ This product repository remains the source for Veoveo contracts and release arti
 
 ## Delivery Record
 
-Create an installation delivery record before implementation.
+The installation agent creates this delivery record before implementation and maintains
+it from owner-approved answers and observed facts.
 
 | Field | Value |
 |---|---|
@@ -89,7 +191,7 @@ Create an installation delivery record before implementation.
 
 ### Inputs
 
-- approved discovery record;
+- guided discovery state, including open questions and their owners;
 - bounded first business workflow;
 - identified systems and data owners;
 - named identity, security, infrastructure, and operations owners;
@@ -97,16 +199,18 @@ Create an installation delivery record before implementation.
 
 ### Actions
 
-1. Confirm what Veoveo will provide and what the enterprise will provide.
-2. Separate the first release from later integrations.
-3. Identify prohibited data, actions, destinations, and operating modes.
-4. Record unresolved assumptions with owners and due dates.
-5. Choose the solution-design approvers.
+1. Conduct the progressive discovery conversation using the discovery question bank.
+2. Confirm what Veoveo will provide and what the enterprise will provide.
+3. Separate the first release from later integrations.
+4. Identify prohibited data, actions, destinations, and operating modes.
+5. Record unresolved assumptions with owners and due dates.
+6. Choose the solution-design approvers.
 
 ### Gate
 
 Do not begin installation design when the business outcome, authority boundary, or
-installation owner is unknown.
+installation owner is unknown. Continue guided discovery instead of sending the customer
+away to complete the template alone.
 
 ## Stage 1: Solution And Ownership Design
 
@@ -405,8 +509,8 @@ For every check, retain:
 - date, environment, actor, and command or procedure;
 - selected source, image, chart, and configuration identities;
 - sanitized result and evidence location;
-- explicit status: `passed`, `failed`, `blocked`, `not-executed`,
-  `not-applicable`, or `accepted-limit`;
+- explicit status: `not-started`, `in-progress`, `awaiting-approval`, `passed`,
+  `failed`, `blocked`, `not-executed`, `not-applicable`, or `accepted-limit`;
 - defect or decision owner;
 - any limitation that prevents production reliance.
 
@@ -488,6 +592,7 @@ An installation is ready for the agreed use case when:
 - ordinary restart, backup restore, and clean reproduction have recorded results;
 - backup, restore, upgrade, rollback, monitoring, and support responsibilities are
   accepted;
+- no required decision or action remains `awaiting-approval`;
 - every `failed`, `blocked`, `not-executed`, or `accepted-limit` check is recorded and
   accepted by its owner.
 

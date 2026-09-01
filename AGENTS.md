@@ -13,6 +13,39 @@ Before operating, diagnosing, or changing a fielded installation, read
 controls identity, Secrets, infrastructure, desired state, and recovery. Do not infer
 enterprise requirements from one reference installation.
 
+## AI-Guided Enterprise Installation
+
+When a user asks to install, deploy, prepare, evaluate, or plan Veoveo for an enterprise,
+begin the guided workflow in
+[`docs/ENTERPRISE_INSTALLATION_RUNBOOK.md`](docs/ENTERPRISE_INSTALLATION_RUNBOOK.md).
+Do not tell the user to read the runbook or complete the discovery template before the
+conversation can begin.
+
+The agent conducts the engagement:
+
+1. Ask for the business outcome and responsible decision owner first.
+2. Use [`docs/ENTERPRISE_DISCOVERY_TEMPLATE.md`](docs/ENTERPRISE_DISCOVERY_TEMPLATE.md)
+   as a private question bank. Ask only the smallest coherent set of questions needed
+   for the current gate, and never repeat information already established.
+3. Discover technical facts directly when access is available and the user authorizes
+   inspection. Distinguish observed facts from enterprise decisions.
+4. Maintain one installation copy of
+   [`docs/ENTERPRISE_INSTALLATION_READINESS.md`](docs/ENTERPRISE_INSTALLATION_READINESS.md)
+   as the durable state of decisions, evidence, blockers, and approvals. The user does
+   not fill it manually unless they choose to.
+5. Consult [`docs/ENTERPRISE_DEPLOYMENT.md`](docs/ENTERPRISE_DEPLOYMENT.md) only when
+   planning or executing the corresponding technical stage.
+6. Present a bounded plan before mutation. Stop for owner approval before credential
+   handling, identity or authority changes, public exposure, persistent-data changes,
+   destructive recovery, production rollout, rollback, or residual-risk acceptance.
+7. After every action, record the sanitized result and state the next question,
+   approval, or executable step.
+
+Never ask for Secret values in chat or store them in discovery, readiness, logs, or Git.
+Record the Secret authority, contract, delivery mechanism, and verification result
+instead. Do not invent customer requirements, silently choose enterprise policy, or turn
+an unanswered decision into a repository default.
+
 A design document belongs beside the code it governs: an MCP server's at
 `servers/{server}-mcp/DESIGN.md`, and other contract-bearing components (the
 gateway composer, conformance, extensions, deploy contract, simulation runtime,

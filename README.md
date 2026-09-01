@@ -28,7 +28,7 @@ What an engagement leaves behind is not a subscription. It is the factory.
 [Executable showcases](#executable-showcases) ·
 [Connectors](#enterprise-connectors) ·
 [Veoveo explained](docs/VEOVEO_OVERVIEW.md) ·
-[Enterprise discovery](docs/ENTERPRISE_DISCOVERY_TEMPLATE.md) ·
+[AI-guided installation](docs/ENTERPRISE_INSTALLATION_RUNBOOK.md) ·
 [Deployment](#deploy-your-installation) ·
 [Software factory](#a-software-factory) ·
 [Technical design](docs/TECH_DESIGN.md) ·
@@ -470,9 +470,14 @@ repository.
 | Enterprise GitOps | Immutable OCI charts and image digests reconciled by the installation owner's Flux or equivalent controller. | [`docs/ENTERPRISE_DEPLOYMENT.md`](docs/ENTERPRISE_DEPLOYMENT.md) |
 | Offline | A verified bundle containing runtime images, charts, schemas, checksums, image identities, and SPDX SBOMs. | [`deploy/offline`](deploy/offline/README.md) |
 
-Installation teams preparing a fielded environment should start with the
-[`enterprise installation runbook`](docs/ENTERPRISE_INSTALLATION_RUNBOOK.md). It routes
-discovery through the
+To begin a fielded installation, tell an AI agent working with this repository what
+organization and business outcome you want to support. The agent follows the
+[`enterprise installation runbook`](docs/ENTERPRISE_INSTALLATION_RUNBOOK.md), asks for
+the next required decision, discovers authorized technical facts, stops at approval
+boundaries, and maintains the installation evidence. The customer does not need to read
+or complete every document before the process can begin.
+
+Behind that conversation, the runbook routes discovery through the
 [`enterprise discovery template`](docs/ENTERPRISE_DISCOVERY_TEMPLATE.md), the technical
 installation through
 [`enterprise deployment`](docs/ENTERPRISE_DEPLOYMENT.md), and decisions and evidence

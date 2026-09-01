@@ -161,6 +161,16 @@ requires the rest.
 
 ## A Practical Starting Point
 
+An organization can begin with a simple request to an AI agent working with the Veoveo
+repository:
+
+> Help us install Veoveo. Guide us through the information and approvals you need.
+
+The agent asks progressive questions, discovers technical facts when authorized,
+prepares bounded plans, stops for owner decisions, and maintains the installation
+evidence. The customer does not need to understand or complete every technical document
+before the conversation starts.
+
 An enterprise engagement normally moves through five stages:
 
 **Discover → Define → Install → Prove → Operate**
@@ -196,11 +206,12 @@ claim that an unavailable or untested capability passed.
 
 ## Continue From Here
 
-- [Enterprise discovery template](ENTERPRISE_DISCOVERY_TEMPLATE.md) guides the first
-  conversations with a new organization.
-- [Enterprise installation runbook](ENTERPRISE_INSTALLATION_RUNBOOK.md) organizes the
-  delivery from approved scope through operational handoff.
-- [Enterprise installation readiness](ENTERPRISE_INSTALLATION_READINESS.md) records
-  decisions, prerequisites, acceptance evidence, limitations, and approval.
+The installation agent uses these sources behind the guided conversation:
+
+- [Enterprise installation runbook](ENTERPRISE_INSTALLATION_RUNBOOK.md) governs the
+  conversation, planning, approvals, execution, and handoff.
+- [Enterprise discovery](ENTERPRISE_DISCOVERY_TEMPLATE.md) supplies adaptive questions.
+- [Enterprise installation readiness](ENTERPRISE_INSTALLATION_READINESS.md) preserves
+  decisions, evidence, limitations, blockers, and approvals.
 - [Enterprise deployment](ENTERPRISE_DEPLOYMENT.md) defines the normative technical
-  installation contract and procedure.
+  execution contract and procedure.

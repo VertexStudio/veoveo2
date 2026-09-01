@@ -1,8 +1,9 @@
 # Enterprise Discovery Template
 
-Use this template to begin a Veoveo engagement with a new organization. It provides a
-repeatable structure without assuming that every company has the same systems,
-regulations, workflows, or deployment model.
+This document is the installation agent's adaptive question bank for a Veoveo engagement.
+It provides a repeatable discovery structure without assuming that every company has the
+same systems, regulations, workflows, or deployment model. It is not a questionnaire
+that the customer must complete before receiving help.
 
 Discovery is complete enough to begin solution design when the initial business
 outcome, authority boundaries, system owners, installation constraints, and acceptance
@@ -13,7 +14,63 @@ Do not collect passwords, private keys, access tokens, production datasets, or o
 Secret values in this document. Record the owning system and approved delivery
 mechanism instead.
 
+## Agent Interview Contract
+
+The agent conducts discovery as a conversation governed by the
+[enterprise installation runbook](ENTERPRISE_INSTALLATION_RUNBOOK.md). Begin with the
+desired business outcome and ask only the questions needed to reach the next runbook
+gate. Do not paste this document into chat or walk through every heading mechanically.
+
+For each answer, the agent records:
+
+| Attribute | Meaning |
+|---|---|
+| Value | The owner-approved answer or sanitized observed fact |
+| Kind | `enterprise-decision`, `observed-fact`, `product-contract`, `assumption`, or `open-question` |
+| Owner | The person or team accountable for the value |
+| Source | Conversation, approved repository, environment observation, or linked evidence |
+| Confidence | `confirmed`, `provisional`, or `unknown` |
+| Revisit trigger | Date, event, dependency, or design decision that requires review |
+
+The agent follows these rules:
+
+1. Ask one short group of related questions at a time and explain the decision it
+   unlocks.
+2. Reuse established answers. Do not make the customer restate information because it
+   appears in another section.
+3. Offer examples only to clarify the expected kind of answer. Do not turn an example
+   into a customer requirement.
+4. Inspect infrastructure, configuration, and catalogs directly when authorized. Ask
+   the owner to decide policy; do not ask them to manually report facts the agent can
+   observe safely.
+5. Accept `unknown` as a valid temporary answer. Record an owner and resolution trigger
+   rather than guessing.
+6. Summarize the confirmed state at each runbook gate and ask the named approver to
+   correct it before advancing.
+7. Route implementation details to
+   [Enterprise deployment](ENTERPRISE_DEPLOYMENT.md) only after the corresponding
+   enterprise decision exists.
+
+### Progressive Question Order
+
+| Priority | Topic | Ask when | Skip or defer when |
+|---|---|---|---|
+| 1 | Desired outcome and owner | Always at the beginning | Never |
+| 2 | First workflow and observable success | The outcome is understood | The engagement is only an initial product conversation |
+| 3 | Users, authority, and external effects | The workflow actors and actions are known | The first workflow remains read-only and roles are not yet being designed |
+| 4 | Systems, data, and interfaces | The workflow requires a connected capability | The system is outside the first release |
+| 5 | Security and compliance | Data, actors, or effects enter scope | The applicable owner has not yet been identified; record the blocker |
+| 6 | Infrastructure and identity | The engagement moves into installation design | The current mode is discovery only |
+| 7 | Reliability, recovery, and support | A fielded environment is being planned | No production or accepted operating environment is in scope |
+| 8 | Acceptance and handoff | The bounded solution can be stated | Required business or technical owners remain unknown |
+
+Questions later in this document are prompts for the agent, not a requirement to ask all
+of them. The agent may omit a section only when the readiness record states why it is
+not applicable or deferred.
+
 ## Document Control
+
+The agent maintains this metadata from the conversation and installation record.
 
 | Field | Entry |
 |---|---|

@@ -1,13 +1,15 @@
 # Enterprise Installation Readiness
 
-This document is the control record for a fielded Veoveo installation. It converts
-business discovery and solution design into decisions, prerequisites, acceptance
+This document is the installation agent's durable control record for a fielded Veoveo
+installation. It converts the guided customer conversation, authorized environment
+discovery, and solution design into decisions, prerequisites, approvals, acceptance
 evidence, operating ownership, and explicit residual risk.
 
-Use it with the [enterprise discovery template](ENTERPRISE_DISCOVERY_TEMPLATE.md) and
-the [enterprise installation runbook](ENTERPRISE_INSTALLATION_RUNBOOK.md). Discovery
-explains what the organization needs. The runbook orders the delivery. This record
-proves that every required decision and check has an owner and a result.
+The [enterprise installation runbook](ENTERPRISE_INSTALLATION_RUNBOOK.md) governs the
+agent's behavior. [Enterprise discovery](ENTERPRISE_DISCOVERY_TEMPLATE.md) supplies its
+adaptive questions. This record preserves what the organization decided, what the agent
+observed or executed, what evidence exists, and what must happen next. The customer does
+not need to populate it manually.
 
 Record only values approved for this installation. Do not store passwords, tokens,
 private keys, production payloads, or other Secret values here.
@@ -22,9 +24,26 @@ An internal adapter or acceptance harness is not a public enterprise contract.
 
 ## How To Use This Record
 
-Create one copy per installation environment. Link shared decisions instead of silently
-assuming that development, acceptance, production, and disaster-recovery environments
-are identical.
+The installation agent creates one copy per installation environment as soon as the
+organization, environment, and installation owner are identifiable. Link shared
+decisions instead of silently assuming that development, acceptance, production, and
+disaster-recovery environments are identical.
+
+Update the record after every owner decision, approved inspection, plan approval,
+execution step, acceptance check, failure classification, and recovery action. Each
+entry distinguishes:
+
+- an enterprise decision from an observed environmental fact;
+- a proposed action from an approved or executed action;
+- expected evidence from evidence actually collected;
+- a product contract from an installation-specific choice;
+- a blocker from a failed check;
+- an accepted limitation from a passed capability.
+
+Chat summaries and terminal history may help during one session, but they are not the
+durable record. Store sanitized evidence in the enterprise-approved destination and link
+it here. Never copy Secret values, private material, sensitive payloads, or unredacted
+identity tokens into this document.
 
 Every check that reports progress uses one status:
 
@@ -32,6 +51,7 @@ Every check that reports progress uses one status:
 |---|---|
 | `not-started` | No owner-approved work or evidence exists |
 | `in-progress` | Work has started, but the gate has not passed |
+| `awaiting-approval` | A bounded plan exists and the named owner must approve it before execution |
 | `passed` | The stated check passed for the recorded release and environment |
 | `failed` | The check ran and produced a product or composition failure |
 | `blocked` | A named prerequisite or external decision prevents execution |
@@ -42,6 +62,31 @@ Every check that reports progress uses one status:
 Never turn `failed`, `blocked`, or `not-executed` into `passed` through explanatory
 prose. A platform health endpoint does not prove that its workloads, identity flow,
 business workflow, persistence, or recovery passed.
+
+## Conversation And Execution State
+
+The agent keeps this section current so another authorized agent or owner can resume
+without relying on the previous chat.
+
+| Field | Recorded value |
+|---|---|
+| Current runbook stage | |
+| Agent operating mode | `discover`, `plan`, `execute`, or `recover` |
+| Current gate | |
+| Last confirmed customer decision | |
+| Last observed fact and evidence | |
+| Approved plan identifier and scope | |
+| Approval owner and timestamp | |
+| Last executed step and result | |
+| First causal failure, if any | |
+| Protected resources or state | |
+| Open question or blocker | |
+| Next question, approval, or bounded action | |
+
+Before executing a mutation, this state must identify the approved scope, environment,
+expected effect, evidence, recovery boundary, and approver. After execution, replace the
+planned result with the sanitized observed result. Do not carry approval from one stage,
+environment, or materially different plan into another.
 
 ## Installation Identity
 

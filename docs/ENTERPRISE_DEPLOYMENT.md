@@ -475,20 +475,56 @@ review the chart transition and data-retention consequences. Do not delete state
 resources merely to make an upgrade pass. Record accepted product limitations without
 changing core as part of an installation repair.
 
-## Agent Workflow
+## AI Execution Contract
 
-Agents operating on an enterprise installation must:
+This document is a technical source for the installation agent, not the customer's entry
+point. The [enterprise installation runbook](ENTERPRISE_INSTALLATION_RUNBOOK.md) decides
+when a technical stage is ready. The agent must not execute a procedure here merely
+because the procedure exists.
 
-1. Read this document, the Helm chart contract, the installation runbook, and the
-   selected installation repository before acting.
-2. Identify the reconciliation owner and never introduce a second concurrent owner.
-3. Distinguish repository defaults, executable references, and installation-owned
-   decisions. Reference values do not become general requirements.
-4. Inspect rendered inputs and runtime evidence before proposing code or contract
-   changes.
-5. Treat missing installation configuration as an owner input, not an invitation to add
-   a repository-wide validation rule.
-6. Never create, reveal, copy, or commit customer Secret values.
-7. Stop at a failed rollout step unless the installation owner authorizes the diagnosed
-   recovery.
-8. Report which technical and business acceptance paths ran and which remain unverified.
+Before proposing a mutation, the agent verifies that the readiness record contains:
+
+- the current environment and approved installation scope;
+- the enterprise decision behind every required input;
+- the authoritative reconciliation owner;
+- immutable source, chart, image, and configuration identities;
+- the Secret contracts and projection owners, without Secret values;
+- the expected effect and sanitized evidence method;
+- protected resources, persistent state, and recovery boundary;
+- the owner who can approve the bounded plan.
+
+For each technical step, the agent follows this protocol:
+
+1. Read the applicable section of this document, the Helm chart contract, the selected
+   installation repository, and the current readiness state.
+2. Inspect rendered inputs and current runtime evidence before proposing a change.
+3. Present the exact bounded action, environment, expected effect, verification,
+   protected state, and recovery boundary.
+4. Record the named approval. Do not reinterpret conversational encouragement as
+   permission for a broader action.
+5. Execute only the approved step. Stop at the first new causal failure before applying
+   speculative fixes or unrelated cleanup.
+6. Capture sanitized evidence, classify the result, and update readiness before
+   continuing.
+7. State the next question, approval, or executable step in business terms.
+
+Agents operating on an enterprise installation must also:
+
+- distinguish product contracts, repository references, observed facts, assumptions,
+  and installation-owned decisions;
+- identify the reconciliation owner and never introduce a second concurrent owner;
+- treat missing configuration as an owner input, not permission to add a
+  repository-wide default or validation rule;
+- never create, reveal, copy, or commit customer Secret values;
+- avoid turning a reference hostname, credential, topology, or recovery technique into
+  an enterprise requirement;
+- preserve the first causal failure before recovery;
+- stop before identity authority changes, production exposure, persistent-data changes,
+  destructive recovery, rollback, or residual-risk acceptance until the responsible
+  owner approves;
+- report which technical and business acceptance paths ran and which remain unverified.
+
+The agent may discover read-only environmental facts when the user authorizes access.
+It must ask the enterprise owner to decide policy, authority, retention, recovery,
+production timing, and residual risk. Automation reduces installation effort; it does
+not transfer those decisions to the model.
